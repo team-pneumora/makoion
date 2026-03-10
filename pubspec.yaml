@@ -1,0 +1,10 @@
+name: makoion_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+workspace:
+  - projects/core
+  - projects/model_router
+  - projects/db

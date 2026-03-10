@@ -1,0 +1,253 @@
+package io.makoion.mobileclaw.data
+
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+
+class ShellDatabaseHelper(
+    context: Context,
+) : SQLiteOpenHelper(context, databaseName, null, databaseVersion) {
+    override fun onCreate(db: SQLiteDatabase) {
+        createApprovalTables(db)
+        createAuditTables(db)
+        createDeviceTables(db)
+    }
+
+    override fun onUpgrade(
+        db: SQLiteDatabase,
+        oldVersion: Int,
+        newVersion: Int,
+    ) {
+        if (oldVersion < 2) {
+            createDeviceTables(db)
+        }
+        if (oldVersion >= 2 && oldVersion < 3) {
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN transport_endpoint TEXT
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN delivered_at INTEGER
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN last_error TEXT
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                UPDATE transfer_outbox
+                SET updated_at = created_at
+                WHERE updated_at = 0
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion >= 2 && oldVersion < 4) {
+            db.execSQL(
+                """
+                ALTER TABLE paired_devices
+                ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'Loopback'
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE paired_devices
+                ADD COLUMN endpoint_url TEXT
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE paired_devices
+                ADD COLUMN trusted_secret TEXT
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion >= 2 && oldVersion < 5) {
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN file_refs_json TEXT
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion >= 2 && oldVersion < 6) {
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN delivery_mode TEXT
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN receipt_json TEXT
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion >= 2 && oldVersion < 7) {
+            db.execSQL(
+                """
+                ALTER TABLE approval_requests
+                ADD COLUMN intent_payload_json TEXT
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion >= 2 && oldVersion < 8) {
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                UPDATE transfer_outbox
+                SET next_attempt_at = updated_at
+                WHERE next_attempt_at = 0
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion >= 2 && oldVersion < 9) {
+            db.execSQL(
+                """
+                ALTER TABLE paired_devices
+                ADD COLUMN validation_mode TEXT NOT NULL DEFAULT 'Normal'
+                """.trimIndent(),
+            )
+        }
+    }
+
+    private fun createApprovalTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE approval_requests (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                intent_action TEXT NOT NULL,
+                assessed_risk TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                intent_payload_json TEXT,
+                requested_at INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                decided_at INTEGER
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX idx_approval_requests_status
+            ON approval_requests(status)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createAuditTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE audit_events (
+                id TEXT PRIMARY KEY,
+                request_id TEXT,
+                action TEXT NOT NULL,
+                result TEXT NOT NULL,
+                details TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX idx_audit_events_created_at
+            ON audit_events(created_at DESC)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createDeviceTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE paired_devices (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL,
+                transport_mode TEXT NOT NULL DEFAULT 'Loopback',
+                endpoint_url TEXT,
+                trusted_secret TEXT,
+                validation_mode TEXT NOT NULL DEFAULT 'Normal',
+                paired_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE pairing_sessions (
+                id TEXT PRIMARY KEY,
+                requested_role TEXT NOT NULL,
+                qr_secret TEXT NOT NULL,
+                requested_capabilities TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                decided_at INTEGER
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE transfer_outbox (
+                id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                file_names_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                transport_endpoint TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                file_refs_json TEXT,
+                delivery_mode TEXT,
+                receipt_json TEXT,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                delivered_at INTEGER,
+                last_error TEXT
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX idx_pairing_sessions_status
+            ON pairing_sessions(status)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX idx_transfer_outbox_status
+            ON transfer_outbox(status)
+            """.trimIndent(),
+        )
+    }
+
+    companion object {
+        private const val databaseName = "mobileclaw_shell.db"
+        private const val databaseVersion = 9
+    }
+}
