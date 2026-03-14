@@ -71,6 +71,9 @@ Current scope:
 - Physical-device `validate-direct-http-companion-actions.ps1` validation was confirmed on 2026-03-13 for:
   - `session.notify` with desktop notification display confirmed through companion summary and Android audit `delivered`
   - `workflow.run` `best_effort` across `open_latest_transfer` and `open_actions_folder`, with companion summary `Executed: true` and Android audit `completed`
+- Physical-device `validate-direct-http-companion-actions.ps1` validation was confirmed on 2026-03-14 for:
+  - `app.open` `record_only` and `best_effort` across `latest_action`, with companion summary `Target label: Latest action folder` and Android audit `recorded` / `opened`
+  - `workflow.run` `record_only` and `best_effort` across `open_latest_action`, with companion summary `Workflow label: Open latest action` and Android audit `recorded` / `completed`
 - Physical-device delete-consent rejection surface validation was confirmed on 2026-03-13 for:
   - Files action console `Request Android delete consent (8)` button plus persisted rejection note
   - workflow snapshot `Organize copied files but still needs Android delete consent` with `Action needed`

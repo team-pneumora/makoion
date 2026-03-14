@@ -174,16 +174,20 @@
       - `inbox`
       - `latest_transfer`
       - `actions_folder`
+      - `latest_action`
     - `app.open` `best_effort` open + audit `opened`
       - `inbox`
       - `latest_transfer`
       - `actions_folder`
+      - `latest_action`
     - `workflow.run` `record_only`
       - `open_latest_transfer`
       - `open_actions_folder`
+      - `open_latest_action`
     - `workflow.run` `best_effort` execute + audit `completed`
       - `open_latest_transfer`
       - `open_actions_folder`
+      - `open_latest_action`
   - `scripts/validate-shell-recovery.ps1` 로 실기기 shell recovery 검증 완료
     - stale `Sending` draft -> manual shell recovery -> `Delivered`
     - due retry draft -> immediate drain 재기동 -> `Delivered`

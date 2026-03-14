@@ -90,9 +90,9 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 - [x] `scripts/validate-direct-http-companion-actions.ps1` 를 실기기 `adb reverse` Direct HTTP 환경에서 실행
 - [x] `session.notify` 가 companion `actions/` 에 materialize되고 desktop notification 이 실제 표시되며 audit `delivered` 가 남음
 - [x] `app.open` `record_only` 가 companion `actions/` 에 materialize되고 audit `recorded` 가 남음
-- [x] `app.open` `best_effort` 가 `inbox`, `latest_transfer`, `actions_folder` 를 각각 열고 audit `opened` 가 남음
-- [x] `workflow.run` `record_only` 가 `open_latest_transfer`, `open_actions_folder` 둘 다 materialize되고 audit `recorded` 가 남음
-- [x] `workflow.run` `best_effort` 가 `open_latest_transfer`, `open_actions_folder` 둘 다 실제 실행하고 audit `completed` 가 남음
+- [x] `app.open` `best_effort` 가 `inbox`, `latest_transfer`, `actions_folder`, `latest_action` 을 각각 열고 audit `opened` 가 남음
+- [x] `workflow.run` `record_only` 가 `open_latest_transfer`, `open_actions_folder`, `open_latest_action` 셋 다 materialize되고 audit `recorded` 가 남음
+- [x] `workflow.run` `best_effort` 가 `open_latest_transfer`, `open_actions_folder`, `open_latest_action` 셋 다 실제 실행하고 audit `completed` 가 남음
 
 ---
 
