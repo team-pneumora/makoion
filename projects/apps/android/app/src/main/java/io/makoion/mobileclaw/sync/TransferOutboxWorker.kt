@@ -11,15 +11,18 @@ class TransferOutboxWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val application = applicationContext as MobileClawApplication
+        val coordinator = application.appContainer.transferBridgeCoordinator
         return try {
-            application.appContainer.transferBridgeCoordinator.drainOutbox()
+            coordinator.drainOutbox()
             application.appContainer.devicePairingRepository.refresh()
             application.appContainer.auditTrailRepository.refresh()
             Result.success()
         } catch (_: Throwable) {
             if (runAttemptCount >= 1) {
+                coordinator.noteWorkerFailure(runAttemptCount)
                 Result.failure()
             } else {
+                coordinator.noteWorkerRetry(runAttemptCount)
                 Result.retry()
             }
         }

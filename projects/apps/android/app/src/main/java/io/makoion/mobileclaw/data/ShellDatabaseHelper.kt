@@ -11,6 +11,9 @@ class ShellDatabaseHelper(
         createApprovalTables(db)
         createAuditTables(db)
         createDeviceTables(db)
+        createOrganizeExecutionTables(db)
+        createAgentTaskTables(db)
+        createChatTranscriptTables(db)
     }
 
     override fun onUpgrade(
@@ -133,6 +136,75 @@ class ShellDatabaseHelper(
                 """.trimIndent(),
             )
         }
+        if (oldVersion < 10) {
+            createOrganizeExecutionTables(db)
+        }
+        if (oldVersion < 11) {
+            createAgentTaskTables(db)
+        }
+        if (oldVersion < 12) {
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "action_key",
+                columnDefinition = "TEXT NOT NULL DEFAULT 'agent.turn'",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "retry_count",
+                columnDefinition = "INTEGER NOT NULL DEFAULT 0",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "max_retry_count",
+                columnDefinition = "INTEGER NOT NULL DEFAULT 0",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "next_retry_at",
+                columnDefinition = "INTEGER",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "last_error",
+                columnDefinition = "TEXT",
+            )
+        }
+        if (oldVersion < 13) {
+            db.execSQL(
+                """
+                ALTER TABLE transfer_outbox
+                ADD COLUMN approval_request_id TEXT
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS idx_transfer_outbox_approval_request_id
+                ON transfer_outbox(approval_request_id)
+                """.trimIndent(),
+            )
+        }
+        if (oldVersion < 14) {
+            createChatTranscriptTables(db)
+        }
+        if (oldVersion < 15) {
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "thread_id",
+                columnDefinition = "TEXT NOT NULL DEFAULT 'thread-primary'",
+            )
+            db.execSQL(
+                """
+                CREATE INDEX IF NOT EXISTS idx_agent_tasks_thread_id
+                ON agent_tasks(thread_id)
+                """.trimIndent(),
+            )
+        }
     }
 
     private fun createApprovalTables(db: SQLiteDatabase) {
@@ -218,6 +290,7 @@ class ShellDatabaseHelper(
                 device_id TEXT NOT NULL,
                 device_name TEXT NOT NULL,
                 file_names_json TEXT NOT NULL,
+                approval_request_id TEXT,
                 status TEXT NOT NULL,
                 transport_endpoint TEXT,
                 attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -244,10 +317,161 @@ class ShellDatabaseHelper(
             ON transfer_outbox(status)
             """.trimIndent(),
         )
+        db.execSQL(
+            """
+            CREATE INDEX idx_transfer_outbox_approval_request_id
+            ON transfer_outbox(approval_request_id)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createOrganizeExecutionTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS organize_executions (
+                approval_id TEXT PRIMARY KEY,
+                result_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_organize_executions_updated_at
+            ON organize_executions(updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createAgentTaskTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                action_key TEXT NOT NULL DEFAULT 'agent.turn',
+                thread_id TEXT NOT NULL DEFAULT 'thread-primary',
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                reply_preview TEXT,
+                destination TEXT NOT NULL,
+                approval_request_id TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                max_retry_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at INTEGER,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
+            ON agent_tasks(status)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_updated_at
+            ON agent_tasks(updated_at DESC)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_approval_request_id
+            ON agent_tasks(approval_request_id)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_thread_id
+            ON agent_tasks(thread_id)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_next_retry_at
+            ON agent_tasks(next_retry_at)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createChatTranscriptTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                linked_task_id TEXT,
+                linked_approval_id TEXT,
+                created_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at
+            ON chat_threads(updated_at DESC)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_created_at
+            ON chat_messages(thread_id, created_at ASC)
+            """.trimIndent(),
+        )
+    }
+
+    private fun addColumnIfMissing(
+        db: SQLiteDatabase,
+        tableName: String,
+        columnName: String,
+        columnDefinition: String,
+    ) {
+        if (tableHasColumn(db, tableName, columnName)) {
+            return
+        }
+        db.execSQL(
+            """
+            ALTER TABLE $tableName
+            ADD COLUMN $columnName $columnDefinition
+            """.trimIndent(),
+        )
+    }
+
+    private fun tableHasColumn(
+        db: SQLiteDatabase,
+        tableName: String,
+        columnName: String,
+    ): Boolean {
+        db.rawQuery("PRAGMA table_info($tableName)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            while (cursor.moveToNext()) {
+                if (cursor.getString(nameIndex).equals(columnName, ignoreCase = true)) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 9
+        private const val databaseVersion = 15
     }
 }

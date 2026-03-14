@@ -9,6 +9,6 @@ class MobileClawApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        appContainer.transferBridgeCoordinator.scheduleRecovery()
+        appContainer.shellRecoveryCoordinator.start()
     }
 }

@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.text.format.Formatter
+import io.makoion.mobileclaw.BuildConfig
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -25,8 +26,10 @@ enum class OrganizeExecutionStatus {
 data class OrganizeExecutionEntry(
     val fileId: String,
     val fileName: String,
+    val mimeType: String? = null,
     val sourceLabel: String,
     val destinationFolder: String,
+    val sourceUri: String? = null,
     val status: OrganizeExecutionStatus,
     val detail: String,
 )
@@ -45,6 +48,7 @@ data class OrganizeExecutionResult(
     val verifiedCount: Int,
     val destinationLabel: String,
     val entries: List<OrganizeExecutionEntry>,
+    val statusNote: String? = null,
 ) {
     val summary: String
         get() = buildString {
@@ -76,7 +80,15 @@ data class OrganizeExecutionResult(
             append(".")
         }
 
-    fun rebuild(entries: List<OrganizeExecutionEntry>): OrganizeExecutionResult {
+    val summaryWithStatusNote: String
+        get() = statusNote?.takeIf { it.isNotBlank() }?.let { note ->
+            "$summary $note"
+        } ?: summary
+
+    fun rebuild(
+        entries: List<OrganizeExecutionEntry>,
+        statusNote: String? = this.statusNote,
+    ): OrganizeExecutionResult {
         return copy(
             movedCount = entries.count { it.status == OrganizeExecutionStatus.Moved },
             copiedOnlyCount = entries.count { it.status == OrganizeExecutionStatus.CopiedOnly },
@@ -84,6 +96,7 @@ data class OrganizeExecutionResult(
             failedCount = entries.count { it.status == OrganizeExecutionStatus.Failed },
             verifiedCount = entries.count { it.status != OrganizeExecutionStatus.Failed },
             entries = entries,
+            statusNote = statusNote,
         )
     }
 }
@@ -136,6 +149,8 @@ class FileActionExecutor(
             ?: throw IllegalStateException("No organize payload was stored for this approval request.")
         val payload = OrganizeApprovalPayload.fromJson(payloadRaw)
         return withContext(Dispatchers.IO) {
+            val forceDeleteConsentForTesting = BuildConfig.DEBUG &&
+                payload.forceDeleteConsentForTesting
             var movedCount = 0
             var copiedOnlyCount = 0
             var deleteConsentRequiredCount = 0
@@ -150,6 +165,7 @@ class FileActionExecutor(
                     entries += OrganizeExecutionEntry(
                         fileId = step.fileId,
                         fileName = step.fileName,
+                        mimeType = step.mimeType,
                         sourceLabel = step.sourceLabel,
                         destinationFolder = step.destinationFolder,
                         status = OrganizeExecutionStatus.Failed,
@@ -169,8 +185,10 @@ class FileActionExecutor(
                     entries += OrganizeExecutionEntry(
                         fileId = step.fileId,
                         fileName = step.fileName,
+                        mimeType = step.mimeType,
                         sourceLabel = step.sourceLabel,
                         destinationFolder = step.destinationFolder,
+                        sourceUri = sourceUri.toString(),
                         status = OrganizeExecutionStatus.Failed,
                         detail = "Managed destination could not be created: ${error.message}",
                     )
@@ -193,8 +211,10 @@ class FileActionExecutor(
                     entries += OrganizeExecutionEntry(
                         fileId = step.fileId,
                         fileName = step.fileName,
+                        mimeType = step.mimeType,
                         sourceLabel = step.sourceLabel,
                         destinationFolder = step.destinationFolder,
+                        sourceUri = sourceUri.toString(),
                         status = OrganizeExecutionStatus.Failed,
                         detail = "Copy into the managed destination failed before verification.",
                     )
@@ -212,8 +232,10 @@ class FileActionExecutor(
                     entries += OrganizeExecutionEntry(
                         fileId = step.fileId,
                         fileName = step.fileName,
+                        mimeType = step.mimeType,
                         sourceLabel = step.sourceLabel,
                         destinationFolder = step.destinationFolder,
+                        sourceUri = sourceUri.toString(),
                         status = OrganizeExecutionStatus.Failed,
                         detail = verification.detail,
                     )
@@ -222,14 +244,16 @@ class FileActionExecutor(
 
                 verifiedCount += 1
 
-                when (deleteSourceBestEffort(step.fileId, sourceUri)) {
+                when (deleteSourceBestEffort(step.fileId, sourceUri, forceDeleteConsentForTesting)) {
                     DeleteDisposition.Deleted -> {
                         movedCount += 1
                         entries += OrganizeExecutionEntry(
                             fileId = step.fileId,
                             fileName = step.fileName,
+                            mimeType = step.mimeType,
                             sourceLabel = step.sourceLabel,
                             destinationFolder = step.destinationFolder,
+                            sourceUri = sourceUri.toString(),
                             status = OrganizeExecutionStatus.Moved,
                             detail = "${verification.detail} Original source removed successfully.",
                         )
@@ -239,10 +263,16 @@ class FileActionExecutor(
                         entries += OrganizeExecutionEntry(
                             fileId = step.fileId,
                             fileName = step.fileName,
+                            mimeType = step.mimeType,
                             sourceLabel = step.sourceLabel,
                             destinationFolder = step.destinationFolder,
+                            sourceUri = sourceUri.toString(),
                             status = OrganizeExecutionStatus.DeleteConsentRequired,
-                            detail = "${verification.detail} Android still requires explicit delete consent for the original source.",
+                            detail = if (forceDeleteConsentForTesting) {
+                                "${verification.detail} Debug build forced this run into the Android delete consent path for regression testing."
+                            } else {
+                                "${verification.detail} Android still requires explicit delete consent for the original source."
+                            },
                         )
                     }
                     DeleteDisposition.Failed -> {
@@ -250,8 +280,10 @@ class FileActionExecutor(
                         entries += OrganizeExecutionEntry(
                             fileId = step.fileId,
                             fileName = step.fileName,
+                            mimeType = step.mimeType,
                             sourceLabel = step.sourceLabel,
                             destinationFolder = step.destinationFolder,
+                            sourceUri = sourceUri.toString(),
                             status = OrganizeExecutionStatus.CopiedOnly,
                             detail = "${verification.detail} Original source could not be removed automatically.",
                         )
@@ -273,11 +305,17 @@ class FileActionExecutor(
                 action = "files.organize.execute",
                 result = when {
                     failedCount > 0 -> "partial"
+                    deleteConsentRequiredCount > 0 && forceDeleteConsentForTesting -> "delete_consent_forced"
                     deleteConsentRequiredCount > 0 -> "delete_consent_required"
                     copiedOnlyCount > 0 -> "copied_only"
                     else -> "moved"
                 },
-                details = result.summary,
+                details = buildString {
+                    append(result.summary)
+                    if (forceDeleteConsentForTesting) {
+                        append(" Debug build forced the delete consent path for supported MediaStore files.")
+                    }
+                },
             )
             result
         }
@@ -285,31 +323,49 @@ class FileActionExecutor(
 
     suspend fun prepareDeleteConsent(result: OrganizeExecutionResult): DeleteConsentLaunch? {
         val entries = result.entries.filter { it.status == OrganizeExecutionStatus.DeleteConsentRequired }
-        val uris = entries.mapNotNull { shareUriFor(it.fileId) }
-            .distinct()
-            .filter { isMediaStoreSource(it.toString(), it) }
-        if (uris.isEmpty()) {
+        val uris = entries.map { entry ->
+            deleteConsentUriFor(entry)
+        }
+        if (uris.any { it == null }) {
+            auditTrailRepository.logAction(
+                action = "files.organize.delete_consent",
+                result = "unsupported",
+                details = "Delete consent could not be prepared because at least one original source was not a supported MediaStore media URI.",
+            )
+            return null
+        }
+        val distinctUris = uris.filterNotNull().distinct()
+        if (distinctUris.isEmpty()) {
             return null
         }
 
-        val intentSender = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
-                MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
+        val intentSender = runCatching {
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                    MediaStore.createDeleteRequest(context.contentResolver, distinctUris).intentSender
+                }
+                distinctUris.size == 1 -> {
+                    legacyRecoverableDeleteIntentSender(distinctUris.first()) ?: return null
+                }
+                else -> return null
             }
-            uris.size == 1 -> {
-                legacyRecoverableDeleteIntentSender(uris.first()) ?: return null
-            }
-            else -> return null
+        }.getOrElse { error ->
+            auditTrailRepository.logAction(
+                action = "files.organize.delete_consent",
+                result = "failed",
+                details = "Android rejected the delete consent request: ${error.message ?: error::class.java.simpleName}",
+            )
+            return null
         }
 
         auditTrailRepository.logAction(
             action = "files.organize.delete_consent",
             result = "requested",
-            details = "Requested Android delete consent for ${uris.size} original files after organize execution.",
+            details = "Requested Android delete consent for ${distinctUris.size} original files after organize execution.",
         )
         return DeleteConsentLaunch(
             intentSender = intentSender,
-            requestedCount = uris.size,
+            requestedCount = distinctUris.size,
         )
     }
 
@@ -318,12 +374,25 @@ class FileActionExecutor(
         granted: Boolean,
     ): OrganizeExecutionResult {
         if (!granted) {
+            val updatedEntries = result.entries.map { entry ->
+                if (entry.status != OrganizeExecutionStatus.DeleteConsentRequired) {
+                    return@map entry
+                }
+                entry.copy(
+                    detail = consentDetailPrefix(entry.detail) +
+                        " Delete consent was denied or cancelled. Retry the Android consent request to remove the original source.",
+                )
+            }
+            val deniedResult = result.rebuild(
+                entries = updatedEntries,
+                statusNote = "Delete consent was denied or cancelled. Original files remain pending removal until you retry the Android consent request.",
+            )
             auditTrailRepository.logAction(
                 action = "files.organize.delete_consent",
                 result = "denied",
                 details = "Delete consent was denied or cancelled. Original files remain in place.",
             )
-            return result
+            return deniedResult
         }
 
         val updatedEntries = result.entries.map { entry ->
@@ -335,19 +404,22 @@ class FileActionExecutor(
             if (sourceUri == null || !sourceExists(sourceUri)) {
                 entry.copy(
                     status = OrganizeExecutionStatus.Moved,
-                    detail = entry.detail.substringBefore(" Android still requires") +
+                    detail = consentDetailPrefix(entry.detail) +
                         " Delete consent completed and the original source was removed.",
                 )
             } else {
                 entry.copy(
                     status = OrganizeExecutionStatus.CopiedOnly,
-                    detail = entry.detail.substringBefore(" Android still requires") +
+                    detail = consentDetailPrefix(entry.detail) +
                         " Delete consent completed but the original source is still present.",
                 )
             }
         }
 
-        val updatedResult = result.rebuild(updatedEntries)
+        val updatedResult = result.rebuild(
+            entries = updatedEntries,
+            statusNote = null,
+        )
         auditTrailRepository.logAction(
             action = "files.organize.delete_consent",
             result = if (updatedResult.deleteConsentRequiredCount == 0) "resolved" else "partial",
@@ -370,6 +442,24 @@ class FileActionExecutor(
             fileId.startsWith("content://") -> Uri.parse(fileId)
             else -> null
         }
+    }
+
+    private fun deleteConsentUriFor(entry: OrganizeExecutionEntry): Uri? {
+        val storedSourceUri = entry.sourceUri
+            ?.takeIf { it.isNotBlank() }
+            ?.let(Uri::parse)
+        if (storedSourceUri != null && !isMediaStoreSource(entry.fileId, storedSourceUri)) {
+            return null
+        }
+
+        if (!entry.fileId.startsWith("media-")) {
+            return storedSourceUri
+        }
+
+        val mediaId = entry.fileId.removePrefix("media-").toLongOrNull() ?: return storedSourceUri
+        val collectionUri = mediaDeleteCollectionFor(entry.mimeType ?: storedSourceUri?.let(context.contentResolver::getType))
+            ?: return storedSourceUri
+        return ContentUris.withAppendedId(collectionUri, mediaId)
     }
 
     private fun createManagedDestination(
@@ -454,7 +544,11 @@ class FileActionExecutor(
     private fun deleteSourceBestEffort(
         fileId: String,
         sourceUri: Uri,
+        forceDeleteConsentForTesting: Boolean,
     ): DeleteDisposition {
+        if (forceDeleteConsentForTesting && isMediaStoreSource(fileId, sourceUri)) {
+            return DeleteDisposition.PermissionRequired
+        }
         return runCatching {
             DocumentFile.fromSingleUri(context, sourceUri)?.let { document ->
                 if (document.delete()) {
@@ -473,6 +567,14 @@ class FileActionExecutor(
                 else -> DeleteDisposition.Failed
             }
         }
+    }
+
+    private fun consentDetailPrefix(detail: String): String {
+        return detail
+            .substringBefore(" Android still requires")
+            .substringBefore(" Debug build forced")
+            .substringBefore(" Delete consent completed")
+            .substringBefore(" Delete consent was denied or cancelled")
     }
 
     private fun legacyRecoverableDeleteIntentSender(sourceUri: Uri): IntentSender? {
@@ -521,6 +623,16 @@ class FileActionExecutor(
             sourceUri.authority?.contains("media", ignoreCase = true) == true
     }
 
+    private fun mediaDeleteCollectionFor(mimeType: String?): Uri? {
+        return when {
+            mimeType.isNullOrBlank() -> null
+            mimeType.startsWith("image/") -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("audio/") -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("video/") -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            else -> null
+        }
+    }
+
     private fun mediaCollectionFor(mimeType: String): Pair<Uri, String> {
         return when {
             mimeType.startsWith("image/") -> {
@@ -539,7 +651,7 @@ class FileActionExecutor(
     }
 
     companion object {
-        private const val managedDestinationLabel = "MobileClaw"
+        private const val managedDestinationLabel = "Makoion"
     }
 }
 

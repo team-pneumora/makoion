@@ -104,21 +104,22 @@
 
 ---
 
-## ADR-006: 파일을 1급 객체로 취급
+## ADR-006: 파일 그래프는 유지하되 UX는 chat-first agent로 둔다
 
 **상태**: 확정
 **날짜**: 2026-03-08
 
-**맥락**: MobileClaw는 "채팅 앱"이 아니라 "파일 중심 개인 작업 허브". 비전 문서의 "File-first, not chat-first" 원칙.
+**맥락**: Makoion은 채팅/음성으로 요청을 받고 연결된 자원을 실행하는 개인 AI agent 서버다. 파일은 여전히 핵심 자원이지만, 제품 UX의 중심은 file-first 브라우저가 아니라 chat-first agent여야 한다.
 
-**결정**: Unified File Graph로 모든 파일 소스(로컬, 클라우드, Companion)를 하나의 그래프로 추상화한다. 10개 핵심 파일 API를 제공한다.
+**결정**: Unified File Graph로 모든 파일 소스(로컬, 클라우드, Companion)를 하나의 그래프로 추상화한다. 다만 이 그래프는 제품의 주 UI가 아니라 agent가 활용하는 capability layer로 다루며, 사용자의 주 진입점은 채팅/음성으로 둔다. 10개 핵심 파일 API는 유지한다.
 
 **10개 API**: search, preview, summarize, organize, move, copy, share, dedupe, send_to_device, request_from_device
 
 **근거**:
-- 사용자가 "파일이 어디 있든" 동일하게 다룰 수 있음
-- 검색/요약/정리/중복제거가 그래프 위에서 동작
-- 비전 문서 Section 8 "파일 중심 아키텍처" 준수
+- 사용자는 채팅으로 요청하고, agent가 필요한 파일/기기 자원을 조합해 실행해야 함
+- 파일은 여전히 핵심 자원이므로 검색/요약/정리/중복제거가 그래프 위에서 동작해야 함
+- 파일 그래프를 capability layer로 두면 로컬/클라우드/companion 자원을 같은 모델로 확장 가능
+- 마스터 플랜 Section 5.2, 6, 7.2의 chat-first / capability-first 방향과 일치
 
 ---
 
@@ -144,7 +145,7 @@
 **상태**: 확정
 **날짜**: 2026-03-08
 
-**맥락**: 비전 문서(`mobileclaw_dev_instruction_ko.md`)의 Section 3.2, 19에 명시된 비목표.
+**맥락**: 마스터 플랜(`makoion_dev_instruction_ko.md`)의 Section 3.2와 핵심 설계 원칙에 명시된 비목표.
 
 **절대 하지 말 것**:
 1. OpenClaw Gateway를 폰으로 옮기는 방식 ← 서버 중심 아닌 폰 중심

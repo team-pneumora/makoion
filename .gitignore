@@ -17,3 +17,6 @@ projects/apps/android/.kotlin/
 projects/apps/desktop-companion/inbox*/
 projects/apps/desktop-companion/companion-validate-*.log
 projects/apps/desktop-companion/companion-validate-*.err
+inbox/
+results/
+tmp-mobileclaw-shell*.db

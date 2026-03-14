@@ -1,10 +1,11 @@
-# MobileClaw 아키텍처
+# Makoion 아키텍처
 
 ## 문서 인덱스
 
 - `current-status.md` — 현재 구현 범위, 검증 상태, 다음 우선순위
 - `decisions.md` — ADR
 - `phase0-checklist.md` — Phase 0 체크리스트
+- `phase1-checklist.md` — Phase 1 실기기 체크리스트 및 검증 기록
 
 ---
 
@@ -13,16 +14,19 @@
 ```
 [User]
   → [Chat / Voice / Widget / Share Sheet / Notification Actions]
-  → [Phone Hub]
-       → [Session Manager]     세션 관리 (대화, 작업)
-       → [Policy Engine]       권한/리스크/승인 판단
-       → [Task Engine]         이벤트 기반 작업 엔진
-       → [Unified File Graph]  파일/폴더/컬렉션 통합 그래프
-       → [Memory Store]        영구 메모리 + 벡터 검색
-       → [Capability Brokers]  기기별 능력 중개
-       → [Model Router]        다중 AI 프로바이더 라우팅
-       → [Sync Engine]         클라우드/기기 간 동기화
-       → [Companion Router]    원격 기기 제어
+  → [Phone Agent Runtime]
+       → [Session Manager]      세션 관리 (대화, 작업)
+       → [Turn Processor]       입력 처리, 계획/질문/실행 분기
+       → [Planner]              자연어 요청 -> 실행 가능한 intent/task 분해
+       → [Task Engine]          이벤트 기반 작업 엔진
+       → [Resource Registry]    연결 자원/기기/capability 정본
+       → [Unified File Graph]   파일/폴더/컬렉션 자원 계층
+       → [Capability Broker]    실제 실행 가능한 도구 선택/호출
+       → [Policy / Approval / Audit]
+       → [Memory Store]         영구 메모리 + 벡터 검색
+       → [Model Router]         다중 AI 프로바이더 라우팅
+       → [Recovery Coordinator] 재시작/foreground 복구
+       → [Companion Router]     원격 기기 제어
   → [Cloud Providers / LLM APIs / Push Services]
   → [Companion Nodes: PC / Mac / iPad / Tablet]
 ```
@@ -92,7 +96,7 @@ UserProfile ──1:N──→ Conversation ──1:N──→ Message
 | `FileNode` | 통합 파일 그래프의 노드. 로컬/클라우드/Companion 구분 없이 동일 |
 | `FileSource` | 파일의 원본 위치 (local, gdrive, onedrive, dropbox, companion) |
 | `SemanticTag` | 파일의 의미적 태그 (날짜, 위치, 프로젝트, 인물, 문서유형) |
-| `Device` | 연결된 기기 (Phone Hub, Companion Desktop/Tablet) |
+| `Device` | 연결된 기기 (Phone Agent Runtime, Companion Desktop/Tablet) |
 | `ApprovalRequest` | 고위험 작업의 사용자 승인 요청 |
 | `AuditEvent` | 모든 액션의 감사 기록 |
 | `MemoryItem` | 영구 기억 항목 + 벡터 임베딩 |

@@ -1,5 +1,12 @@
 package io.makoion.desktopcompanion;
 
+import java.awt.Color;
+import java.awt.Desktop;
+import java.awt.Graphics2D;
+import java.awt.GraphicsEnvironment;
+import java.awt.SystemTray;
+import java.awt.TrayIcon;
+import java.awt.image.BufferedImage;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -27,14 +34,39 @@ import java.util.zip.ZipInputStream;
 
 public final class Main {
     private static final int RECEIPT_VERSION = 1;
+    private static final String SUPPORTED_CAPABILITIES_JSON =
+        "[\"files.transfer\",\"session.notify\",\"app.open\",\"workflow.run\"]";
     private static final Pattern TRANSFER_ID_PATTERN =
         Pattern.compile("\"transfer_id\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern REQUEST_ID_PATTERN =
+        Pattern.compile("\"request_id\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern DEVICE_NAME_PATTERN =
         Pattern.compile("\"device_name\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern TITLE_PATTERN =
+        Pattern.compile("\"title\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern BODY_PATTERN =
+        Pattern.compile("\"body\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern SOURCE_PATTERN =
+        Pattern.compile("\"source\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern TARGET_KIND_PATTERN =
+        Pattern.compile("\"target_kind\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern TARGET_LABEL_PATTERN =
+        Pattern.compile("\"target_label\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern OPEN_MODE_PATTERN =
+        Pattern.compile("\"open_mode\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern WORKFLOW_ID_PATTERN =
+        Pattern.compile("\"workflow_id\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern WORKFLOW_LABEL_PATTERN =
+        Pattern.compile("\"workflow_label\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern RUN_MODE_PATTERN =
+        Pattern.compile("\"run_mode\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern FILE_NAMES_PATTERN =
         Pattern.compile("\"file_names\"\\s*:\\s*\\[(.*?)]", Pattern.DOTALL);
     private static final Pattern JSON_STRING_PATTERN =
         Pattern.compile("\"((?:\\\\.|[^\"\\\\])*)\"");
+    private static final Object TRAY_LOCK = new Object();
+    private static TrayIcon trayIcon;
+    private static boolean trayIconInitializationAttempted;
 
     private Main() {
     }
@@ -49,6 +81,9 @@ public final class Main {
         );
         server.createContext("/health", new HealthHandler(config));
         server.createContext("/api/v1/transfers", new TransferHandler(config));
+        server.createContext("/api/v1/session/notify", new SessionNotifyHandler(config));
+        server.createContext("/api/v1/app/open", new AppOpenHandler(config));
+        server.createContext("/api/v1/workflow/run", new WorkflowRunHandler(config));
         server.setExecutor(Executors.newCachedThreadPool());
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> server.stop(0)));
@@ -115,6 +150,8 @@ public final class Main {
                 + "\"host\":\"" + escapeJson(config.host()) + "\","
                 + "\"port\":" + config.port() + ","
                 + "\"trust_enabled\":" + (!config.trustedSecret().isBlank()) + ","
+                + "\"capabilities\":" + SUPPORTED_CAPABILITIES_JSON + ","
+                + "\"notification_display_supported\":" + isNotificationDisplaySupported() + ","
                 + "\"inbox_dir\":\"" + escapeJson(config.inboxDir().toAbsolutePath().toString()) + "\","
                 + "\"materialized_transfer_count\":" + countTransferDirectories(config.inboxDir())
                 + "}";
@@ -531,14 +568,649 @@ public final class Main {
         }
     }
 
+    private static final class SessionNotifyHandler implements HttpHandler {
+        private final CompanionConfig config;
+
+        private SessionNotifyHandler(CompanionConfig config) {
+            this.config = config;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJson(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+                return;
+            }
+
+            Headers headers = exchange.getRequestHeaders();
+            String presentedSecret = headers.getFirst("X-MobileClaw-Trusted-Secret");
+            if (!config.trustedSecret().isBlank() && !config.trustedSecret().equals(presentedSecret)) {
+                sendJson(exchange, 401, "{\"error\":\"invalid_trusted_secret\"}");
+                return;
+            }
+
+            String payload = readUtf8(exchange.getRequestBody());
+            String requestId = extractRequestId(payload);
+            String source = extractSource(payload);
+            String deviceName = extractDeviceName(payload);
+            String title = extractTitle(payload);
+            String body = extractBody(payload);
+
+            Path actionDir = createActionDirectory(config.inboxDir(), "notify", requestId);
+            Files.writeString(actionDir.resolve("request.json"), payload, StandardCharsets.UTF_8);
+            NotificationDisplayResult displayResult = displayNotification(title, body);
+            Files.writeString(
+                actionDir.resolve("summary.txt"),
+                buildNotificationSummary(requestId, source, deviceName, title, body, displayResult),
+                StandardCharsets.UTF_8
+            );
+
+            String response = "{"
+                + "\"status\":\"accepted\","
+                + "\"receipt_version\":" + RECEIPT_VERSION + ","
+                + "\"acknowledged_at\":\"" + escapeJson(Instant.now().toString()) + "\","
+                + "\"capability\":\"session.notify\","
+                + "\"request_id\":\"" + escapeJson(requestId) + "\","
+                + "\"materialized_dir\":\"" + escapeJson(actionDir.getFileName().toString()) + "\","
+                + "\"notification_displayed\":" + displayResult.displayed() + ","
+                + "\"status_detail\":\"" + escapeJson(displayResult.detail()) + "\""
+                + "}";
+            sendJson(exchange, 202, response);
+        }
+
+        private String extractRequestId(String payload) {
+            Matcher matcher = REQUEST_ID_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return "notify-" + UUID.randomUUID();
+        }
+
+        private String extractTitle(String payload) {
+            Matcher matcher = TITLE_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Makoion session notify";
+        }
+
+        private String extractBody(String payload) {
+            Matcher matcher = BODY_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Notification body was empty.";
+        }
+
+        private String extractSource(String payload) {
+            Matcher matcher = SOURCE_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "unknown";
+        }
+
+        private String extractDeviceName(String payload) {
+            Matcher matcher = DEVICE_NAME_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Unknown device";
+        }
+
+        private String buildNotificationSummary(
+            String requestId,
+            String source,
+            String deviceName,
+            String title,
+            String body,
+            NotificationDisplayResult displayResult
+        ) {
+            return "Makoion companion notification\n"
+                + "Request: " + requestId + "\n"
+                + "Source: " + source + "\n"
+                + "Device: " + deviceName + "\n"
+                + "Title: " + title + "\n"
+                + "Body: " + body + "\n"
+                + "Displayed: " + displayResult.displayed() + "\n"
+                + "Detail: " + displayResult.detail() + "\n";
+        }
+    }
+
+    private static final class AppOpenHandler implements HttpHandler {
+        private final CompanionConfig config;
+
+        private AppOpenHandler(CompanionConfig config) {
+            this.config = config;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJson(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+                return;
+            }
+
+            Headers headers = exchange.getRequestHeaders();
+            String presentedSecret = headers.getFirst("X-MobileClaw-Trusted-Secret");
+            if (!config.trustedSecret().isBlank() && !config.trustedSecret().equals(presentedSecret)) {
+                sendJson(exchange, 401, "{\"error\":\"invalid_trusted_secret\"}");
+                return;
+            }
+
+            String payload = readUtf8(exchange.getRequestBody());
+            String requestId = extractRequestId(payload);
+            String source = extractSource(payload);
+            String deviceName = extractDeviceName(payload);
+            String targetKind = extractTargetKind(payload);
+            String targetLabel = extractTargetLabel(payload);
+            String openMode = extractOpenMode(payload);
+
+            Path actionDir = createActionDirectory(config.inboxDir(), "app-open", requestId);
+            Files.writeString(actionDir.resolve("request.json"), payload, StandardCharsets.UTF_8);
+            DesktopOpenResult openResult = openRequestedTarget(config, targetKind, openMode);
+            Files.writeString(
+                actionDir.resolve("summary.txt"),
+                buildOpenSummary(
+                    requestId,
+                    source,
+                    deviceName,
+                    targetKind,
+                    targetLabel,
+                    openMode,
+                    openResult
+                ),
+                StandardCharsets.UTF_8
+            );
+
+            String response = "{"
+                + "\"status\":\"accepted\","
+                + "\"receipt_version\":" + RECEIPT_VERSION + ","
+                + "\"acknowledged_at\":\"" + escapeJson(Instant.now().toString()) + "\","
+                + "\"capability\":\"app.open\","
+                + "\"request_id\":\"" + escapeJson(requestId) + "\","
+                + "\"target_kind\":\"" + escapeJson(targetKind) + "\","
+                + "\"materialized_dir\":\"" + escapeJson(actionDir.getFileName().toString()) + "\","
+                + "\"opened\":" + openResult.opened() + ","
+                + "\"opened_path\":\"" + escapeJson(openResult.openedPath()) + "\","
+                + "\"status_detail\":\"" + escapeJson(openResult.detail()) + "\""
+                + "}";
+            sendJson(exchange, 202, response);
+        }
+
+        private String extractRequestId(String payload) {
+            Matcher matcher = REQUEST_ID_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return "app-open-" + UUID.randomUUID();
+        }
+
+        private String extractSource(String payload) {
+            Matcher matcher = SOURCE_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "unknown";
+        }
+
+        private String extractDeviceName(String payload) {
+            Matcher matcher = DEVICE_NAME_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Unknown device";
+        }
+
+        private String extractTargetKind(String payload) {
+            Matcher matcher = TARGET_KIND_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "inbox";
+        }
+
+        private String extractTargetLabel(String payload) {
+            Matcher matcher = TARGET_LABEL_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Desktop companion inbox";
+        }
+
+        private String extractOpenMode(String payload) {
+            Matcher matcher = OPEN_MODE_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "best_effort";
+        }
+
+        private String buildOpenSummary(
+            String requestId,
+            String source,
+            String deviceName,
+            String targetKind,
+            String targetLabel,
+            String openMode,
+            DesktopOpenResult openResult
+        ) {
+            return "Makoion companion app.open\n"
+                + "Request: " + requestId + "\n"
+                + "Source: " + source + "\n"
+                + "Device: " + deviceName + "\n"
+                + "Target kind: " + targetKind + "\n"
+                + "Target label: " + targetLabel + "\n"
+                + "Open mode: " + openMode + "\n"
+                + "Opened: " + openResult.opened() + "\n"
+                + "Opened path: " + openResult.openedPath() + "\n"
+                + "Detail: " + openResult.detail() + "\n";
+        }
+    }
+
+    private static final class WorkflowRunHandler implements HttpHandler {
+        private final CompanionConfig config;
+
+        private WorkflowRunHandler(CompanionConfig config) {
+            this.config = config;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJson(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+                return;
+            }
+
+            Headers headers = exchange.getRequestHeaders();
+            String presentedSecret = headers.getFirst("X-MobileClaw-Trusted-Secret");
+            if (!config.trustedSecret().isBlank() && !config.trustedSecret().equals(presentedSecret)) {
+                sendJson(exchange, 401, "{\"error\":\"invalid_trusted_secret\"}");
+                return;
+            }
+
+            String payload = readUtf8(exchange.getRequestBody());
+            String requestId = extractRequestId(payload);
+            String source = extractSource(payload);
+            String deviceName = extractDeviceName(payload);
+            String workflowId = extractWorkflowId(payload);
+            String workflowLabel = extractWorkflowLabel(payload);
+            String runMode = extractRunMode(payload);
+
+            Path actionDir = createActionDirectory(config.inboxDir(), "workflow-run", requestId);
+            Files.writeString(actionDir.resolve("request.json"), payload, StandardCharsets.UTF_8);
+            WorkflowRunResult workflowResult = runWorkflow(config, workflowId, runMode);
+            Files.writeString(
+                actionDir.resolve("summary.txt"),
+                buildWorkflowSummary(
+                    requestId,
+                    source,
+                    deviceName,
+                    workflowId,
+                    workflowLabel,
+                    runMode,
+                    workflowResult
+                ),
+                StandardCharsets.UTF_8
+            );
+
+            String response = "{"
+                + "\"status\":\"accepted\","
+                + "\"receipt_version\":" + RECEIPT_VERSION + ","
+                + "\"acknowledged_at\":\"" + escapeJson(Instant.now().toString()) + "\","
+                + "\"capability\":\"workflow.run\","
+                + "\"request_id\":\"" + escapeJson(requestId) + "\","
+                + "\"workflow_id\":\"" + escapeJson(workflowId) + "\","
+                + "\"materialized_dir\":\"" + escapeJson(actionDir.getFileName().toString()) + "\","
+                + "\"executed\":" + workflowResult.executed() + ","
+                + "\"status_detail\":\"" + escapeJson(workflowResult.detail()) + "\""
+                + "}";
+            sendJson(exchange, 202, response);
+        }
+
+        private String extractRequestId(String payload) {
+            Matcher matcher = REQUEST_ID_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return "workflow-run-" + UUID.randomUUID();
+        }
+
+        private String extractSource(String payload) {
+            Matcher matcher = SOURCE_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "unknown";
+        }
+
+        private String extractDeviceName(String payload) {
+            Matcher matcher = DEVICE_NAME_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Unknown device";
+        }
+
+        private String extractWorkflowId(String payload) {
+            Matcher matcher = WORKFLOW_ID_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "unknown";
+        }
+
+        private String extractWorkflowLabel(String payload) {
+            Matcher matcher = WORKFLOW_LABEL_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "Desktop workflow";
+        }
+
+        private String extractRunMode(String payload) {
+            Matcher matcher = RUN_MODE_PATTERN.matcher(payload);
+            if (matcher.find()) {
+                return unescapeJson(matcher.group(1));
+            }
+            return "best_effort";
+        }
+
+        private String buildWorkflowSummary(
+            String requestId,
+            String source,
+            String deviceName,
+            String workflowId,
+            String workflowLabel,
+            String runMode,
+            WorkflowRunResult workflowResult
+        ) {
+            return "Makoion companion workflow.run\n"
+                + "Request: " + requestId + "\n"
+                + "Source: " + source + "\n"
+                + "Device: " + deviceName + "\n"
+                + "Workflow id: " + workflowId + "\n"
+                + "Workflow label: " + workflowLabel + "\n"
+                + "Run mode: " + runMode + "\n"
+                + "Executed: " + workflowResult.executed() + "\n"
+                + "Detail: " + workflowResult.detail() + "\n";
+        }
+    }
+
     private record ArchiveExtractionSummary(
         int extractedEntries,
         int fileEntryCount
     ) {
     }
 
+    private record NotificationDisplayResult(
+        boolean displayed,
+        String detail
+    ) {
+    }
+
+    private record DesktopOpenResult(
+        boolean opened,
+        String detail,
+        String openedPath
+    ) {
+    }
+
+    private record WorkflowRunResult(
+        boolean executed,
+        String detail
+    ) {
+    }
+
     private static String readUtf8(InputStream inputStream) throws IOException {
         return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    private static Path createActionDirectory(Path inboxDir, String prefix, String requestId)
+        throws IOException {
+        String timestamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+            .withZone(ZoneOffset.UTC)
+            .format(Instant.now());
+        Path actionsDir = inboxDir.resolve("actions");
+        Files.createDirectories(actionsDir);
+        Path actionDir = actionsDir.resolve(
+            timestamp + "-" + safePathSegment(prefix) + "-" + safePathSegment(requestId)
+        );
+        Files.createDirectories(actionDir);
+        return actionDir;
+    }
+
+    private static boolean isNotificationDisplaySupported() {
+        return !GraphicsEnvironment.isHeadless() && SystemTray.isSupported();
+    }
+
+    private static NotificationDisplayResult displayNotification(String title, String body) {
+        if (!isNotificationDisplaySupported()) {
+            return new NotificationDisplayResult(
+                false,
+                "Desktop notification UI is unavailable, so the request was recorded only."
+            );
+        }
+        try {
+            TrayIcon icon;
+            synchronized (TRAY_LOCK) {
+                icon = ensureTrayIcon();
+            }
+            if (icon == null) {
+                return new NotificationDisplayResult(
+                    false,
+                    "System tray could not be initialized, so the request was recorded only."
+                );
+            }
+            icon.displayMessage(title, body, TrayIcon.MessageType.NONE);
+            return new NotificationDisplayResult(
+                true,
+                "Desktop notification was displayed through the system tray."
+            );
+        } catch (Exception exception) {
+            return new NotificationDisplayResult(
+                false,
+                "Notification display failed: " + exception.getMessage()
+            );
+        }
+    }
+
+    private static DesktopOpenResult openRequestedTarget(
+        CompanionConfig config,
+        String targetKind,
+        String openMode
+    ) {
+        if ("record_only".equalsIgnoreCase(openMode)) {
+            return new DesktopOpenResult(
+                false,
+                "Request was recorded without opening a desktop surface.",
+                ""
+            );
+        }
+        if (!Desktop.isDesktopSupported()) {
+            return new DesktopOpenResult(
+                false,
+                "Desktop actions are unavailable, so the request was recorded only.",
+                ""
+            );
+        }
+        try {
+            Desktop desktop = Desktop.getDesktop();
+            if (!desktop.isSupported(Desktop.Action.OPEN)) {
+                return new DesktopOpenResult(
+                    false,
+                    "Desktop OPEN action is unavailable, so the app.open request was recorded only.",
+                    ""
+                );
+            }
+            Path targetPath;
+            String targetSummary;
+            if ("inbox".equalsIgnoreCase(targetKind)) {
+                targetPath = config.inboxDir();
+                targetSummary = "Companion inbox";
+            } else if ("latest_transfer".equalsIgnoreCase(targetKind)) {
+                targetPath = findLatestTransferDirectory(config.inboxDir());
+                if (targetPath == null) {
+                    return new DesktopOpenResult(
+                        false,
+                        "No materialized transfer directory was found for latest_transfer.",
+                        ""
+                    );
+                }
+                targetSummary = "Latest transfer directory";
+            } else if ("actions_folder".equalsIgnoreCase(targetKind)) {
+                targetPath = ensureActionsDirectory(config.inboxDir());
+                targetSummary = "Companion actions directory";
+            } else {
+                return new DesktopOpenResult(
+                    false,
+                    "Unknown app.open target kind: " + targetKind,
+                    ""
+                );
+            }
+            desktop.open(targetPath.toFile());
+            return new DesktopOpenResult(
+                true,
+                targetSummary + " was opened through the desktop shell.",
+                targetPath.toAbsolutePath().toString()
+            );
+        } catch (Exception exception) {
+            return new DesktopOpenResult(
+                false,
+                "Desktop open failed: " + exception.getMessage(),
+                ""
+            );
+        }
+    }
+
+    private static WorkflowRunResult runWorkflow(
+        CompanionConfig config,
+        String workflowId,
+        String runMode
+    ) {
+        if ("open_latest_transfer".equalsIgnoreCase(workflowId)) {
+            if ("record_only".equalsIgnoreCase(runMode)) {
+                return new WorkflowRunResult(
+                    false,
+                    "Workflow request was recorded without executing open_latest_transfer."
+                );
+            }
+            if (!Desktop.isDesktopSupported()) {
+                return new WorkflowRunResult(
+                    false,
+                    "Desktop actions are unavailable, so the workflow request was recorded only."
+                );
+            }
+            try {
+                Desktop desktop = Desktop.getDesktop();
+                if (!desktop.isSupported(Desktop.Action.OPEN)) {
+                    return new WorkflowRunResult(
+                        false,
+                        "Desktop OPEN action is unavailable, so the workflow request was recorded only."
+                    );
+                }
+                Path latestTransferDir = findLatestTransferDirectory(config.inboxDir());
+                if (latestTransferDir == null) {
+                    return new WorkflowRunResult(
+                        false,
+                        "No materialized transfer directory was found for open_latest_transfer."
+                    );
+                }
+                desktop.open(latestTransferDir.toFile());
+                return new WorkflowRunResult(
+                    true,
+                    "Latest transfer directory was opened through the desktop shell: "
+                        + latestTransferDir.getFileName()
+                );
+            } catch (Exception exception) {
+                return new WorkflowRunResult(
+                    false,
+                    "Desktop workflow failed: " + exception.getMessage()
+                );
+            }
+        }
+        if ("open_actions_folder".equalsIgnoreCase(workflowId)) {
+            if ("record_only".equalsIgnoreCase(runMode)) {
+                return new WorkflowRunResult(
+                    false,
+                    "Workflow request was recorded without executing open_actions_folder."
+                );
+            }
+            if (!Desktop.isDesktopSupported()) {
+                return new WorkflowRunResult(
+                    false,
+                    "Desktop actions are unavailable, so the workflow request was recorded only."
+                );
+            }
+            try {
+                Desktop desktop = Desktop.getDesktop();
+                if (!desktop.isSupported(Desktop.Action.OPEN)) {
+                    return new WorkflowRunResult(
+                        false,
+                        "Desktop OPEN action is unavailable, so the workflow request was recorded only."
+                    );
+                }
+                Path actionsDir = ensureActionsDirectory(config.inboxDir());
+                desktop.open(actionsDir.toFile());
+                return new WorkflowRunResult(
+                    true,
+                    "Companion actions directory was opened through the desktop shell: "
+                        + actionsDir.getFileName()
+                );
+            } catch (Exception exception) {
+                return new WorkflowRunResult(
+                    false,
+                    "Desktop workflow failed: " + exception.getMessage()
+                );
+            }
+        }
+        return new WorkflowRunResult(
+            false,
+            "Unknown workflow id: " + workflowId
+        );
+    }
+
+    private static Path findLatestTransferDirectory(Path inboxDir) throws IOException {
+        if (!Files.exists(inboxDir)) {
+            return null;
+        }
+        try (var paths = Files.list(inboxDir)) {
+            return paths
+                .filter(Files::isDirectory)
+                .filter(path -> !"actions".equalsIgnoreCase(path.getFileName().toString()))
+                .max((left, right) -> left.getFileName().toString().compareTo(right.getFileName().toString()))
+                .orElse(null);
+        }
+    }
+
+    private static Path ensureActionsDirectory(Path inboxDir) throws IOException {
+        Path actionsDir = inboxDir.resolve("actions");
+        Files.createDirectories(actionsDir);
+        return actionsDir;
+    }
+
+    private static TrayIcon ensureTrayIcon() throws Exception {
+        if (trayIcon != null) {
+            return trayIcon;
+        }
+        if (trayIconInitializationAttempted) {
+            return null;
+        }
+        trayIconInitializationAttempted = true;
+
+        BufferedImage image = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        graphics.setColor(new Color(0x14, 0x8A, 0x73));
+        graphics.fillRoundRect(0, 0, 16, 16, 6, 6);
+        graphics.setColor(new Color(0xF5, 0xF1, 0xE6));
+        graphics.fillOval(4, 4, 8, 8);
+        graphics.dispose();
+
+        TrayIcon created = new TrayIcon(image, "Makoion desktop companion");
+        created.setImageAutoSize(true);
+        SystemTray.getSystemTray().add(created);
+        trayIcon = created;
+        return trayIcon;
     }
 
     private static void sendJson(HttpExchange exchange, int statusCode, String payload)

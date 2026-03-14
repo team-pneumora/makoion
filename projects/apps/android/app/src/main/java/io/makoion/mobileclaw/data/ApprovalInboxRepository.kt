@@ -46,6 +46,12 @@ interface ApprovalInboxRepository {
     suspend fun submitOrganizeApproval(
         plan: FileOrganizePlan,
         items: List<IndexedFileItem>,
+        forceDeleteConsentForTesting: Boolean = false,
+    ): ApprovalInboxItem?
+
+    suspend fun submitTransferApproval(
+        device: PairedDeviceState,
+        files: List<IndexedFileItem>,
     ): ApprovalInboxItem?
 
     suspend fun recordExecutionOutcome(
@@ -85,6 +91,7 @@ class PersistentApprovalInboxRepository(
     override suspend fun submitOrganizeApproval(
         plan: FileOrganizePlan,
         items: List<IndexedFileItem>,
+        forceDeleteConsentForTesting: Boolean,
     ): ApprovalInboxItem? {
         if (plan.steps.isEmpty()) {
             return null
@@ -94,6 +101,7 @@ class PersistentApprovalInboxRepository(
         val payload = buildOrganizeApprovalPayload(
             plan = plan,
             items = items,
+            forceDeleteConsentForTesting = forceDeleteConsentForTesting,
             requestedAtEpochMs = now,
         )
         val approvalId = "approval-${UUID.randomUUID()}"
@@ -102,11 +110,14 @@ class PersistentApprovalInboxRepository(
             "Medium" -> ApprovalInboxRisk.Medium
             else -> ApprovalInboxRisk.Low
         }
-        val title = "Organize ${plan.steps.size} files into MobileClaw folders"
+        val title = "Organize ${plan.steps.size} files into Makoion folders"
         val summary = buildString {
             append("Execution will copy files into managed MediaStore folders, verify the destination bytes, ")
             append("and delete the source only when Android grants that path. ")
             append("Some originals may remain pending explicit delete consent.")
+            if (forceDeleteConsentForTesting) {
+                append(" Debug build regression mode will intentionally keep supported MediaStore originals pending delete consent.")
+            }
         }
         withContext(Dispatchers.IO) {
             databaseHelper.writableDatabase.insert(
@@ -127,7 +138,70 @@ class PersistentApprovalInboxRepository(
         auditTrailRepository.logAction(
             action = "files.organize",
             result = "approval_requested",
-            details = "Requested approval to organize ${plan.steps.size} files via ${plan.strategy.name}.",
+            details = buildString {
+                append("Requested approval to organize ")
+                append(plan.steps.size)
+                append(" files via ")
+                append(plan.strategy.name)
+                append(".")
+                if (forceDeleteConsentForTesting) {
+                    append(" Debug build will force the delete consent path for supported MediaStore files.")
+                }
+            },
+        )
+        refresh()
+        return _items.value.firstOrNull { it.id == approvalId }
+    }
+
+    override suspend fun submitTransferApproval(
+        device: PairedDeviceState,
+        files: List<IndexedFileItem>,
+    ): ApprovalInboxItem? {
+        if (files.isEmpty()) {
+            return null
+        }
+
+        val now = System.currentTimeMillis()
+        val approvalId = "approval-${UUID.randomUUID()}"
+        val payload = TransferApprovalPayload(
+            deviceId = device.id,
+            deviceName = device.name,
+            fileReferences = files.map { file ->
+                TransferFileReference(
+                    sourceId = file.id,
+                    name = file.name,
+                    mimeType = file.mimeType,
+                )
+            },
+            requestedAtEpochMs = now,
+        )
+        val summary = buildString {
+            append("Execution will queue ")
+            append(files.size)
+            append(" file(s) for ")
+            append(device.name)
+            append(" through the companion bridge. Background delivery may continue after approval.")
+        }
+        withContext(Dispatchers.IO) {
+            databaseHelper.writableDatabase.insert(
+                "approval_requests",
+                null,
+                ContentValues().apply {
+                    put("id", approvalId)
+                    put("title", "Send ${files.size} files to ${device.name}")
+                    put("intent_action", "files.transfer.execute")
+                    put("assessed_risk", ApprovalInboxRisk.High.name)
+                    put("summary", summary)
+                    put("intent_payload_json", payload.toJson())
+                    put("requested_at", now)
+                    put("status", ApprovalInboxStatus.Pending.name)
+                },
+            )
+        }
+        auditTrailRepository.logAction(
+            action = "files.transfer",
+            result = "approval_requested",
+            details = "Requested approval to send ${files.size} files to ${device.name}.",
         )
         refresh()
         return _items.value.firstOrNull { it.id == approvalId }

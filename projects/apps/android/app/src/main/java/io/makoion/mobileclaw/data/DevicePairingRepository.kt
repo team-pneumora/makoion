@@ -120,6 +120,66 @@ data class CompanionHealthCheckResult(
     val checkedAtLabel: String,
 )
 
+enum class CompanionSessionNotifyStatus {
+    Delivered,
+    Failed,
+    Misconfigured,
+    Skipped,
+}
+
+data class CompanionSessionNotifyResult(
+    val deviceId: String,
+    val status: CompanionSessionNotifyStatus,
+    val summary: String,
+    val detail: String,
+    val sentAtLabel: String,
+)
+
+enum class CompanionAppOpenStatus {
+    Opened,
+    Recorded,
+    Failed,
+    Misconfigured,
+    Skipped,
+}
+
+data class CompanionAppOpenResult(
+    val deviceId: String,
+    val targetKind: String,
+    val targetLabel: String,
+    val status: CompanionAppOpenStatus,
+    val summary: String,
+    val detail: String,
+    val sentAtLabel: String,
+)
+
+enum class CompanionWorkflowRunStatus {
+    Completed,
+    Recorded,
+    Failed,
+    Misconfigured,
+    Skipped,
+}
+
+data class CompanionWorkflowRunResult(
+    val deviceId: String,
+    val workflowId: String,
+    val status: CompanionWorkflowRunStatus,
+    val summary: String,
+    val detail: String,
+    val sentAtLabel: String,
+)
+
+private const val defaultRemoteActionMode = "best_effort"
+private const val recordOnlyRemoteActionMode = "record_only"
+const val companionCapabilityFilesTransfer = "files.transfer"
+const val companionCapabilitySessionNotify = "session.notify"
+const val companionCapabilityAppOpen = "app.open"
+const val companionCapabilityWorkflowRun = "workflow.run"
+const val companionAppOpenTargetInbox = "inbox"
+const val companionAppOpenTargetLatestTransfer = "latest_transfer"
+const val companionAppOpenTargetActionsFolder = "actions_folder"
+
 interface DevicePairingRepository {
     val pairedDevices: StateFlow<List<PairedDeviceState>>
     val pairingSessions: StateFlow<List<PairingSessionState>>
@@ -134,6 +194,7 @@ interface DevicePairingRepository {
     suspend fun queueTransfer(
         deviceId: String,
         files: List<IndexedFileItem>,
+        approvalRequestId: String? = null,
     )
 
     suspend fun armDirectHttpBridge(deviceId: String)
@@ -152,7 +213,29 @@ interface DevicePairingRepository {
 
     suspend fun probeCompanion(deviceId: String): CompanionHealthCheckResult
 
+    suspend fun sendSessionNotification(
+        deviceId: String,
+        title: String,
+        body: String,
+    ): CompanionSessionNotifyResult
+
+    suspend fun sendAppOpen(
+        deviceId: String,
+        targetKind: String,
+        targetLabel: String,
+        openMode: String = defaultRemoteActionMode,
+    ): CompanionAppOpenResult
+
+    suspend fun sendWorkflowRun(
+        deviceId: String,
+        workflowId: String,
+        workflowLabel: String,
+        runMode: String = defaultRemoteActionMode,
+    ): CompanionWorkflowRunResult
+
     suspend fun retryFailedTransfers(deviceId: String? = null)
+
+    suspend fun retryTransferApproval(approvalRequestId: String): Int
 
     suspend fun refresh()
 }
@@ -192,9 +275,10 @@ class PersistentDevicePairingRepository(
                         "requested_capabilities",
                         JSONArray(
                             listOf(
-                                "files.transfer",
-                                "app.open",
-                                "session.notify",
+                                companionCapabilityFilesTransfer,
+                                companionCapabilityAppOpen,
+                                companionCapabilitySessionNotify,
+                                companionCapabilityWorkflowRun,
                             ),
                         ).toString(),
                     )
@@ -234,10 +318,7 @@ class PersistentDevicePairingRepository(
                     put("name", deviceName)
                     put("role", session.requestedRole)
                     put("status", "Bridge ready")
-                    put(
-                        "capabilities_json",
-                        JSONArray(session.requestedCapabilities).toString(),
-                    )
+                    put("capabilities_json", emptyJsonArrayString())
                     put("transport_mode", DeviceTransportMode.Loopback.name)
                     put("endpoint_url", defaultEndpointFor(session.qrSecret))
                     put("trusted_secret", session.qrSecret.lowercase())
@@ -277,6 +358,7 @@ class PersistentDevicePairingRepository(
     override suspend fun queueTransfer(
         deviceId: String,
         files: List<IndexedFileItem>,
+        approvalRequestId: String?,
     ) {
         if (files.isEmpty()) {
             return
@@ -301,6 +383,7 @@ class PersistentDevicePairingRepository(
                     put("device_id", deviceId)
                     put("device_name", device.name)
                     put("file_names_json", JSONArray(fileNames).toString())
+                    put("approval_request_id", approvalRequestId)
                     put("file_refs_json", fileReferencesJson)
                     put("status", TransferDraftStatus.Queued.name)
                     put("created_at", now)
@@ -345,6 +428,7 @@ class PersistentDevicePairingRepository(
                 ContentValues().apply {
                     put("transport_mode", DeviceTransportMode.DirectHttp.name)
                     put("endpoint_url", device.endpointLabel ?: defaultEndpointFor(trustedSecret))
+                    put("capabilities_json", emptyJsonArrayString())
                     put("trusted_secret", trustedSecret)
                     put("status", "LAN bridge armed")
                 },
@@ -418,6 +502,7 @@ class PersistentDevicePairingRepository(
                 "paired_devices",
                 ContentValues().apply {
                     put("endpoint_url", endpointUrl)
+                    put("capabilities_json", emptyJsonArrayString())
                     put("status", "LAN bridge endpoint updated")
                 },
                 "id = ?",
@@ -522,11 +607,19 @@ class PersistentDevicePairingRepository(
                 if (responseCode in 200..299) {
                     val healthJson = runCatching { JSONObject(responseBody) }.getOrNull()
                     val transferCount = healthJson?.optLong("materialized_transfer_count", -1L) ?: -1L
+                    val capabilities = advertisedCapabilitiesFromHealthJson(healthJson)
+                    updateAdvertisedCapabilities(
+                        deviceId = device.id,
+                        capabilities = capabilities,
+                    )
                     CompanionHealthCheckResult(
                         deviceId = device.id,
                         status = CompanionHealthStatus.Healthy,
                         summary = buildString {
-                            append("Companion responded with HTTP $responseCode")
+                            append("HTTP $responseCode")
+                            if (capabilities.isNotEmpty()) {
+                                append(" • ${capabilities.size} capabilities")
+                            }
                             if (transferCount >= 0L) {
                                 append(" • $transferCount materialized")
                             }
@@ -557,7 +650,11 @@ class PersistentDevicePairingRepository(
                     deviceId = device.id,
                     status = CompanionHealthStatus.Unreachable,
                     summary = "Companion probe could not reach the endpoint.",
-                    detail = error.message ?: endpoint,
+                    detail = directHttpReachabilityDetail(
+                        requestUrl = healthUrl,
+                        fallbackUrl = endpoint,
+                        error = error,
+                    ),
                     checkedAtLabel = DateUtils.getRelativeTimeSpanString(
                         checkedAt,
                         checkedAt,
@@ -576,6 +673,575 @@ class PersistentDevicePairingRepository(
                 CompanionHealthStatus.Skipped -> "skipped"
             },
             details = "Companion probe for ${device.name}: ${result.summary} ${result.detail}".trim(),
+        )
+        refresh()
+        return result
+    }
+
+    override suspend fun sendSessionNotification(
+        deviceId: String,
+        title: String,
+        body: String,
+    ): CompanionSessionNotifyResult {
+        val sentAt = System.currentTimeMillis()
+        val sentAtLabel = DateUtils.getRelativeTimeSpanString(
+            sentAt,
+            sentAt,
+            DateUtils.SECOND_IN_MILLIS,
+        ).toString()
+        val device = _pairedDevices.value.firstOrNull { it.id == deviceId }
+        if (device == null) {
+            return CompanionSessionNotifyResult(
+                deviceId = deviceId,
+                status = CompanionSessionNotifyStatus.Misconfigured,
+                summary = "Selected device is no longer available.",
+                detail = "Refresh paired devices before trying session.notify again.",
+                sentAtLabel = sentAtLabel,
+            )
+        }
+        if (device.transportMode != DeviceTransportMode.DirectHttp) {
+            val result = CompanionSessionNotifyResult(
+                deviceId = device.id,
+                status = CompanionSessionNotifyStatus.Skipped,
+                summary = "Loopback mode does not expose companion session.notify.",
+                detail = "Arm LAN bridge first if you want to send a remote session notification.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.session_notify",
+                result = "skipped",
+                details = "Skipped session.notify for ${device.name} because loopback transport is active.",
+            )
+            return result
+        }
+        if (!device.supportsCapability(companionCapabilitySessionNotify)) {
+            val result = CompanionSessionNotifyResult(
+                deviceId = device.id,
+                status = CompanionSessionNotifyStatus.Skipped,
+                summary = "Companion has not advertised session.notify yet.",
+                detail = "Run Check companion health to refresh the remote capability snapshot before sending session.notify.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.session_notify",
+                result = "skipped",
+                details = "Skipped session.notify for ${device.name} because the latest /health capability snapshot does not advertise session.notify.",
+            )
+            return result
+        }
+        val endpoint = device.endpointLabel
+        if (endpoint.isNullOrBlank()) {
+            val result = CompanionSessionNotifyResult(
+                deviceId = device.id,
+                status = CompanionSessionNotifyStatus.Misconfigured,
+                summary = "Companion endpoint is missing.",
+                detail = "Direct HTTP mode needs an endpoint URL before the shell can send session notifications.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.session_notify",
+                result = "misconfigured",
+                details = "session.notify could not run for ${device.name} because endpoint_url was missing.",
+            )
+            return result
+        }
+
+        val result = withContext(Dispatchers.IO) {
+            val notifyUrl = runCatching { sessionNotifyUrlFor(endpoint) }.getOrNull()
+            if (notifyUrl == null) {
+                return@withContext CompanionSessionNotifyResult(
+                    deviceId = device.id,
+                    status = CompanionSessionNotifyStatus.Misconfigured,
+                    summary = "Endpoint URL could not be parsed.",
+                    detail = endpoint,
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+            val trustedSecret = queryTrustedSecret(device.id)
+            runCatching {
+                val payload = JSONObject()
+                    .put("request_id", "notify-${UUID.randomUUID()}")
+                    .put("source", BuildConfig.APPLICATION_ID)
+                    .put("device_name", "Makoion Android shell")
+                    .put("title", title)
+                    .put("body", body)
+                    .put("requested_at", sentAt)
+                    .toString()
+                val connection = (URL(notifyUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 3_000
+                    readTimeout = 4_000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    trustedSecret?.takeIf { it.isNotBlank() }?.let { secret ->
+                        setRequestProperty("X-MobileClaw-Trusted-Secret", secret)
+                    }
+                }
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(payload)
+                }
+                val responseCode = connection.responseCode
+                val responseBody = runCatching {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                }.getOrElse {
+                    connection.errorStream?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
+                }
+                connection.disconnect()
+
+                if (responseCode in 200..299) {
+                    val responseJson = runCatching { JSONObject(responseBody) }.getOrNull()
+                    CompanionSessionNotifyResult(
+                        deviceId = device.id,
+                        status = CompanionSessionNotifyStatus.Delivered,
+                        summary = "Companion accepted session.notify with HTTP $responseCode.",
+                        detail = buildString {
+                            responseJson?.optString("status_detail")?.takeIf { it.isNotBlank() }?.let { detail ->
+                                append(detail)
+                            }
+                            responseJson?.optString("materialized_dir")?.takeIf { it.isNotBlank() }?.let { materializedDir ->
+                                if (isNotBlank()) {
+                                    append(" • ")
+                                }
+                                append(materializedDir)
+                            }
+                            if (isBlank()) {
+                                append(notifyUrl)
+                            }
+                        },
+                        sentAtLabel = sentAtLabel,
+                    )
+                } else {
+                    CompanionSessionNotifyResult(
+                        deviceId = device.id,
+                        status = CompanionSessionNotifyStatus.Failed,
+                        summary = "Companion returned HTTP $responseCode for session.notify.",
+                        detail = responseBody.take(160).ifBlank { notifyUrl },
+                        sentAtLabel = sentAtLabel,
+                    )
+                }
+            }.getOrElse { error ->
+                CompanionSessionNotifyResult(
+                    deviceId = device.id,
+                    status = CompanionSessionNotifyStatus.Failed,
+                    summary = "Companion session.notify could not reach the endpoint.",
+                    detail = directHttpReachabilityDetail(
+                        requestUrl = notifyUrl,
+                        fallbackUrl = endpoint,
+                        error = error,
+                    ),
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+        }
+
+        auditTrailRepository.logAction(
+            action = "devices.session_notify",
+            result = when (result.status) {
+                CompanionSessionNotifyStatus.Delivered -> "delivered"
+                CompanionSessionNotifyStatus.Failed -> "failed"
+                CompanionSessionNotifyStatus.Misconfigured -> "misconfigured"
+                CompanionSessionNotifyStatus.Skipped -> "skipped"
+            },
+            details = "session.notify for ${device.name}: ${result.summary} ${result.detail}".trim(),
+        )
+        return result
+    }
+
+    override suspend fun sendAppOpen(
+        deviceId: String,
+        targetKind: String,
+        targetLabel: String,
+        openMode: String,
+    ): CompanionAppOpenResult {
+        val sentAt = System.currentTimeMillis()
+        val sentAtLabel = DateUtils.getRelativeTimeSpanString(
+            sentAt,
+            sentAt,
+            DateUtils.SECOND_IN_MILLIS,
+        ).toString()
+        val device = _pairedDevices.value.firstOrNull { it.id == deviceId }
+        if (device == null) {
+            return CompanionAppOpenResult(
+                deviceId = deviceId,
+                targetKind = targetKind,
+                targetLabel = targetLabel,
+                status = CompanionAppOpenStatus.Misconfigured,
+                summary = "Selected device is no longer available.",
+                detail = "Refresh paired devices before trying app.open again.",
+                sentAtLabel = sentAtLabel,
+            )
+        }
+        if (device.transportMode != DeviceTransportMode.DirectHttp) {
+            val result = CompanionAppOpenResult(
+                deviceId = device.id,
+                targetKind = targetKind,
+                targetLabel = targetLabel,
+                status = CompanionAppOpenStatus.Skipped,
+                summary = "Loopback mode does not expose companion app.open.",
+                detail = "Arm LAN bridge first if you want to open a desktop surface over HTTP.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.app_open",
+                result = "skipped",
+                details = "Skipped app.open ($targetKind) for ${device.name} because loopback transport is active.",
+            )
+            return result
+        }
+        if (!device.supportsCapability(companionCapabilityAppOpen)) {
+            val result = CompanionAppOpenResult(
+                deviceId = device.id,
+                targetKind = targetKind,
+                targetLabel = targetLabel,
+                status = CompanionAppOpenStatus.Skipped,
+                summary = "Companion has not advertised app.open yet.",
+                detail = "Run Check companion health to refresh the remote capability snapshot before sending app.open.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.app_open",
+                result = "skipped",
+                details = "Skipped app.open ($targetKind) for ${device.name} because the latest /health capability snapshot does not advertise app.open.",
+            )
+            return result
+        }
+        val endpoint = device.endpointLabel
+        if (endpoint.isNullOrBlank()) {
+            val result = CompanionAppOpenResult(
+                deviceId = device.id,
+                targetKind = targetKind,
+                targetLabel = targetLabel,
+                status = CompanionAppOpenStatus.Misconfigured,
+                summary = "Companion endpoint is missing.",
+                detail = "Direct HTTP mode needs an endpoint URL before the shell can request app.open.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.app_open",
+                result = "misconfigured",
+                details = "app.open ($targetKind) could not run for ${device.name} because endpoint_url was missing.",
+            )
+            return result
+        }
+
+        val result = withContext(Dispatchers.IO) {
+            val appOpenUrl = runCatching { appOpenUrlFor(endpoint) }.getOrNull()
+            if (appOpenUrl == null) {
+                return@withContext CompanionAppOpenResult(
+                    deviceId = device.id,
+                    targetKind = targetKind,
+                    targetLabel = targetLabel,
+                    status = CompanionAppOpenStatus.Misconfigured,
+                    summary = "Endpoint URL could not be parsed.",
+                    detail = endpoint,
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+            val trustedSecret = queryTrustedSecret(device.id)
+            runCatching {
+                val payload = JSONObject()
+                    .put("request_id", "app-open-${UUID.randomUUID()}")
+                    .put("source", BuildConfig.APPLICATION_ID)
+                    .put("device_name", "Makoion Android shell")
+                    .put("target_kind", targetKind)
+                    .put("target_label", targetLabel)
+                    .put("open_mode", openMode)
+                    .put("requested_at", sentAt)
+                    .toString()
+                val connection = (URL(appOpenUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 3_000
+                    readTimeout = 4_000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    trustedSecret?.takeIf { it.isNotBlank() }?.let { secret ->
+                        setRequestProperty("X-MobileClaw-Trusted-Secret", secret)
+                    }
+                }
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(payload)
+                }
+                val responseCode = connection.responseCode
+                val responseBody = runCatching {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                }.getOrElse {
+                    connection.errorStream?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
+                }
+                connection.disconnect()
+
+                if (responseCode in 200..299) {
+                    val responseJson = runCatching { JSONObject(responseBody) }.getOrNull()
+                    val status = when {
+                        responseJson?.optBoolean("opened", false) == true -> CompanionAppOpenStatus.Opened
+                        openMode.equals(recordOnlyRemoteActionMode, ignoreCase = true) -> CompanionAppOpenStatus.Recorded
+                        else -> CompanionAppOpenStatus.Failed
+                    }
+                    CompanionAppOpenResult(
+                        deviceId = device.id,
+                        targetKind = targetKind,
+                        targetLabel = targetLabel,
+                        status = status,
+                        summary = when (status) {
+                            CompanionAppOpenStatus.Opened ->
+                                "Companion accepted app.open for $targetLabel with HTTP $responseCode."
+                            CompanionAppOpenStatus.Recorded ->
+                                "Companion recorded app.open for $targetLabel with HTTP $responseCode."
+                            else -> "Companion accepted app.open but did not open $targetLabel."
+                        },
+                        detail = buildString {
+                            responseJson?.optString("status_detail")?.takeIf { it.isNotBlank() }?.let { detail ->
+                                append(detail)
+                            }
+                            responseJson?.optString("opened_path")?.takeIf { it.isNotBlank() }?.let { openedPath ->
+                                if (isNotBlank()) {
+                                    append(" • ")
+                                }
+                                append(openedPath)
+                            }
+                            responseJson?.optString("materialized_dir")?.takeIf { it.isNotBlank() }?.let { materializedDir ->
+                                if (isNotBlank()) {
+                                    append(" • ")
+                                }
+                                append(materializedDir)
+                            }
+                            if (isBlank()) {
+                                append(appOpenUrl)
+                            }
+                        },
+                        sentAtLabel = sentAtLabel,
+                    )
+                } else {
+                    CompanionAppOpenResult(
+                        deviceId = device.id,
+                        targetKind = targetKind,
+                        targetLabel = targetLabel,
+                        status = CompanionAppOpenStatus.Failed,
+                        summary = "Companion returned HTTP $responseCode for app.open $targetLabel.",
+                        detail = responseBody.take(160).ifBlank { appOpenUrl },
+                        sentAtLabel = sentAtLabel,
+                    )
+                }
+            }.getOrElse { error ->
+                CompanionAppOpenResult(
+                    deviceId = device.id,
+                    targetKind = targetKind,
+                    targetLabel = targetLabel,
+                    status = CompanionAppOpenStatus.Failed,
+                    summary = "Companion app.open could not reach the endpoint for $targetLabel.",
+                    detail = directHttpReachabilityDetail(
+                        requestUrl = appOpenUrl,
+                        fallbackUrl = endpoint,
+                        error = error,
+                    ),
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+        }
+
+        auditTrailRepository.logAction(
+            action = "devices.app_open",
+            result = when (result.status) {
+                CompanionAppOpenStatus.Opened -> "opened"
+                CompanionAppOpenStatus.Recorded -> "recorded"
+                CompanionAppOpenStatus.Failed -> "failed"
+                CompanionAppOpenStatus.Misconfigured -> "misconfigured"
+                CompanionAppOpenStatus.Skipped -> "skipped"
+            },
+            details = "app.open $targetKind for ${device.name}: ${result.summary} ${result.detail}".trim(),
+        )
+        return result
+    }
+
+    override suspend fun sendWorkflowRun(
+        deviceId: String,
+        workflowId: String,
+        workflowLabel: String,
+        runMode: String,
+    ): CompanionWorkflowRunResult {
+        val sentAt = System.currentTimeMillis()
+        val sentAtLabel = DateUtils.getRelativeTimeSpanString(
+            sentAt,
+            sentAt,
+            DateUtils.SECOND_IN_MILLIS,
+        ).toString()
+        val device = _pairedDevices.value.firstOrNull { it.id == deviceId }
+        if (device == null) {
+            return CompanionWorkflowRunResult(
+                deviceId = deviceId,
+                workflowId = workflowId,
+                status = CompanionWorkflowRunStatus.Misconfigured,
+                summary = "Selected device is no longer available.",
+                detail = "Refresh paired devices before trying workflow.run again.",
+                sentAtLabel = sentAtLabel,
+            )
+        }
+        if (device.transportMode != DeviceTransportMode.DirectHttp) {
+            val result = CompanionWorkflowRunResult(
+                deviceId = device.id,
+                workflowId = workflowId,
+                status = CompanionWorkflowRunStatus.Skipped,
+                summary = "Loopback mode does not expose companion workflow.run.",
+                detail = "Arm LAN bridge first if you want to run a desktop workflow over HTTP.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.workflow_run",
+                result = "skipped",
+                details = "Skipped workflow.run for ${device.name} because loopback transport is active.",
+            )
+            return result
+        }
+        if (!device.supportsCapability(companionCapabilityWorkflowRun)) {
+            val result = CompanionWorkflowRunResult(
+                deviceId = device.id,
+                workflowId = workflowId,
+                status = CompanionWorkflowRunStatus.Skipped,
+                summary = "Companion has not advertised workflow.run yet.",
+                detail = "Run Check companion health to refresh the remote capability snapshot before sending workflow.run.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.workflow_run",
+                result = "skipped",
+                details = "Skipped workflow.run for ${device.name} because the latest /health capability snapshot does not advertise workflow.run.",
+            )
+            return result
+        }
+        val endpoint = device.endpointLabel
+        if (endpoint.isNullOrBlank()) {
+            val result = CompanionWorkflowRunResult(
+                deviceId = device.id,
+                workflowId = workflowId,
+                status = CompanionWorkflowRunStatus.Misconfigured,
+                summary = "Companion endpoint is missing.",
+                detail = "Direct HTTP mode needs an endpoint URL before the shell can request workflow.run.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.workflow_run",
+                result = "misconfigured",
+                details = "workflow.run could not run for ${device.name} because endpoint_url was missing.",
+            )
+            return result
+        }
+
+        val result = withContext(Dispatchers.IO) {
+            val workflowUrl = runCatching { workflowRunUrlFor(endpoint) }.getOrNull()
+            if (workflowUrl == null) {
+                return@withContext CompanionWorkflowRunResult(
+                    deviceId = device.id,
+                    workflowId = workflowId,
+                    status = CompanionWorkflowRunStatus.Misconfigured,
+                    summary = "Endpoint URL could not be parsed.",
+                    detail = endpoint,
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+            val trustedSecret = queryTrustedSecret(device.id)
+            runCatching {
+                val payload = JSONObject()
+                    .put("request_id", "workflow-run-${UUID.randomUUID()}")
+                    .put("source", BuildConfig.APPLICATION_ID)
+                    .put("device_name", "Makoion Android shell")
+                    .put("workflow_id", workflowId)
+                    .put("workflow_label", workflowLabel)
+                    .put("run_mode", runMode)
+                    .put("requested_at", sentAt)
+                    .toString()
+                val connection = (URL(workflowUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 3_000
+                    readTimeout = 4_000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    trustedSecret?.takeIf { it.isNotBlank() }?.let { secret ->
+                        setRequestProperty("X-MobileClaw-Trusted-Secret", secret)
+                    }
+                }
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(payload)
+                }
+                val responseCode = connection.responseCode
+                val responseBody = runCatching {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                }.getOrElse {
+                    connection.errorStream?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
+                }
+                connection.disconnect()
+
+                if (responseCode in 200..299) {
+                    val responseJson = runCatching { JSONObject(responseBody) }.getOrNull()
+                    val status = when {
+                        responseJson?.optBoolean("executed", false) == true -> CompanionWorkflowRunStatus.Completed
+                        runMode.equals(recordOnlyRemoteActionMode, ignoreCase = true) -> CompanionWorkflowRunStatus.Recorded
+                        else -> CompanionWorkflowRunStatus.Failed
+                    }
+                    CompanionWorkflowRunResult(
+                        deviceId = device.id,
+                        workflowId = workflowId,
+                        status = status,
+                        summary = when (status) {
+                            CompanionWorkflowRunStatus.Completed ->
+                                "Companion accepted workflow.run with HTTP $responseCode."
+                            CompanionWorkflowRunStatus.Recorded ->
+                                "Companion recorded workflow.run with HTTP $responseCode."
+                            else -> "Companion accepted workflow.run but did not execute the workflow."
+                        },
+                        detail = buildString {
+                            responseJson?.optString("status_detail")?.takeIf { it.isNotBlank() }?.let { detail ->
+                                append(detail)
+                            }
+                            responseJson?.optString("materialized_dir")?.takeIf { it.isNotBlank() }?.let { materializedDir ->
+                                if (isNotBlank()) {
+                                    append(" • ")
+                                }
+                                append(materializedDir)
+                            }
+                            if (isBlank()) {
+                                append(workflowUrl)
+                            }
+                        },
+                        sentAtLabel = sentAtLabel,
+                    )
+                } else {
+                    CompanionWorkflowRunResult(
+                        deviceId = device.id,
+                        workflowId = workflowId,
+                        status = CompanionWorkflowRunStatus.Failed,
+                        summary = "Companion returned HTTP $responseCode for workflow.run.",
+                        detail = responseBody.take(160).ifBlank { workflowUrl },
+                        sentAtLabel = sentAtLabel,
+                    )
+                }
+            }.getOrElse { error ->
+                CompanionWorkflowRunResult(
+                    deviceId = device.id,
+                    workflowId = workflowId,
+                    status = CompanionWorkflowRunStatus.Failed,
+                    summary = "Companion workflow.run could not reach the endpoint.",
+                    detail = directHttpReachabilityDetail(
+                        requestUrl = workflowUrl,
+                        fallbackUrl = endpoint,
+                        error = error,
+                    ),
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+        }
+
+        auditTrailRepository.logAction(
+            action = "devices.workflow_run",
+            result = when (result.status) {
+                CompanionWorkflowRunStatus.Completed -> "completed"
+                CompanionWorkflowRunStatus.Recorded -> "recorded"
+                CompanionWorkflowRunStatus.Failed -> "failed"
+                CompanionWorkflowRunStatus.Misconfigured -> "misconfigured"
+                CompanionWorkflowRunStatus.Skipped -> "skipped"
+            },
+            details = "workflow.run $workflowId for ${device.name}: ${result.summary} ${result.detail}".trim(),
         )
         return result
     }
@@ -617,6 +1283,38 @@ class PersistentDevicePairingRepository(
         )
         refresh()
         transferOutboxScheduler?.scheduleDrain()
+    }
+
+    override suspend fun retryTransferApproval(approvalRequestId: String): Int {
+        val requeuedCount = withContext(Dispatchers.IO) {
+            val values = ContentValues().apply {
+                val now = System.currentTimeMillis()
+                put("status", TransferDraftStatus.Queued.name)
+                put("updated_at", now)
+                put("next_attempt_at", now)
+                putNull("last_error")
+            }
+            databaseHelper.writableDatabase.update(
+                "transfer_outbox",
+                values,
+                "approval_request_id = ? AND status = ?",
+                arrayOf(approvalRequestId, TransferDraftStatus.Failed.name),
+            )
+        }
+        auditTrailRepository.logAction(
+            action = "files.send_to_device",
+            result = if (requeuedCount > 0) "requeued" else "requeue_skipped",
+            details = if (requeuedCount > 0) {
+                "Requeued $requeuedCount failed transfer draft(s) for approval $approvalRequestId."
+            } else {
+                "No failed transfer drafts were available for approval $approvalRequestId."
+            },
+        )
+        refresh()
+        if (requeuedCount > 0) {
+            transferOutboxScheduler?.scheduleDrain()
+        }
+        return requeuedCount
     }
 
     override suspend fun refresh() {
@@ -834,6 +1532,39 @@ class PersistentDevicePairingRepository(
         }
     }
 
+    private fun advertisedCapabilitiesFromHealthJson(healthJson: JSONObject?): List<String> {
+        val capabilitiesJson = healthJson?.optJSONArray("capabilities") ?: return emptyList()
+        return buildList {
+            for (index in 0 until capabilitiesJson.length()) {
+                add(capabilitiesJson.optString(index))
+            }
+        }.map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    private suspend fun updateAdvertisedCapabilities(
+        deviceId: String,
+        capabilities: List<String>,
+    ) = withContext(Dispatchers.IO) {
+        databaseHelper.writableDatabase.update(
+            "paired_devices",
+            ContentValues().apply {
+                put("capabilities_json", JSONArray(capabilities).toString())
+            },
+            "id = ?",
+            arrayOf(deviceId),
+        )
+    }
+
+    private fun emptyJsonArrayString(): String = JSONArray(emptyList<String>()).toString()
+
+    private fun PairedDeviceState.supportsCapability(capability: String): Boolean {
+        return capabilities.any { advertised ->
+            advertised.equals(capability, ignoreCase = true)
+        }
+    }
+
     private fun defaultEndpointFor(secret: String): String {
         val normalized = secret.lowercase().replace(" ", "")
         return if (BuildConfig.DEBUG) {
@@ -846,6 +1577,61 @@ class PersistentDevicePairingRepository(
     private fun healthUrlFor(endpoint: String): String {
         val url = URL(endpoint)
         return URL(url.protocol, url.host, url.port, "/health").toString()
+    }
+
+    private suspend fun queryTrustedSecret(deviceId: String): String? = withContext(Dispatchers.IO) {
+        databaseHelper.readableDatabase.query(
+            "paired_devices",
+            arrayOf("trusted_secret"),
+            "id = ?",
+            arrayOf(deviceId),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) {
+                null
+            } else {
+                cursor.getString(cursor.getColumnIndexOrThrow("trusted_secret"))
+            }
+        }
+    }
+
+    private fun sessionNotifyUrlFor(endpoint: String): String {
+        val url = URL(endpoint)
+        return URL(url.protocol, url.host, url.port, "/api/v1/session/notify").toString()
+    }
+
+    private fun appOpenUrlFor(endpoint: String): String {
+        val url = URL(endpoint)
+        return URL(url.protocol, url.host, url.port, "/api/v1/app/open").toString()
+    }
+
+    private fun workflowRunUrlFor(endpoint: String): String {
+        val url = URL(endpoint)
+        return URL(url.protocol, url.host, url.port, "/api/v1/workflow/run").toString()
+    }
+
+    private fun directHttpReachabilityDetail(
+        requestUrl: String,
+        fallbackUrl: String,
+        error: Throwable,
+    ): String {
+        val baseDetail = error.message ?: fallbackUrl
+        val parsedUrl = runCatching { URL(requestUrl) }.getOrNull()
+            ?: runCatching { URL(fallbackUrl) }.getOrNull()
+            ?: return baseDetail
+        val port = parsedUrl.port.takeIf { it > 0 } ?: parsedUrl.defaultPort
+        return when (parsedUrl.host.lowercase()) {
+            "127.0.0.1",
+            "localhost",
+            ->
+                "$baseDetail. Restore adb reverse for tcp:$port and confirm the desktop companion is listening on that port."
+            "10.0.2.2" ->
+                "$baseDetail. Confirm the emulator host route is available and the desktop companion is listening on port $port."
+            else -> baseDetail
+        }
     }
 
     private fun parseReceiptMetadata(raw: String): ReceiptMetadata? {

@@ -14,15 +14,23 @@ import io.makoion.mobileclaw.ui.ShellSection
 import io.makoion.mobileclaw.ui.theme.MobileClawTheme
 
 class MainActivity : ComponentActivity() {
-    private var requestedSection by mutableStateOf(ShellSection.Overview)
+    private var requestedSection by mutableStateOf(ShellSection.Chat)
+    private var requestedTaskId by mutableStateOf<String?>(null)
+    private var requestedTaskFollowUpKey by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedSection = resolveSection(intent)
+        requestedTaskId = resolveTaskId(intent)
+        requestedTaskFollowUpKey = resolveTaskFollowUpKey(intent)
         enableEdgeToEdge()
         setContent {
             MobileClawTheme {
-                MobileClawShellApp(startSection = requestedSection)
+                MobileClawShellApp(
+                    startSection = requestedSection,
+                    startTaskId = requestedTaskId,
+                    startTaskFollowUpKey = requestedTaskFollowUpKey,
+                )
             }
         }
     }
@@ -31,11 +39,21 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         requestedSection = resolveSection(intent)
+        requestedTaskId = resolveTaskId(intent)
+        requestedTaskFollowUpKey = resolveTaskFollowUpKey(intent)
     }
 
     private fun resolveSection(intent: Intent?): ShellSection {
         return ShellSection.fromRouteKey(
             intent?.getStringExtra(ShellNotificationCenter.extraOpenSection),
         )
+    }
+
+    private fun resolveTaskId(intent: Intent?): String? {
+        return intent?.getStringExtra(ShellNotificationCenter.extraOpenTaskId)
+    }
+
+    private fun resolveTaskFollowUpKey(intent: Intent?): String? {
+        return intent?.getStringExtra(ShellNotificationCenter.extraOpenTaskFollowUpKey)
     }
 }

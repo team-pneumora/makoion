@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import io.makoion.mobileclaw.notifications.ShellNotificationCenter
 import io.makoion.mobileclaw.sync.TransferOutboxWorker
 import java.net.HttpURLConnection
 import java.net.URL
@@ -15,7 +16,10 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,7 +30,10 @@ class TransferBridgeCoordinator(
     private val context: Context,
     private val databaseHelper: ShellDatabaseHelper,
     private val auditTrailRepository: AuditTrailRepository,
+    private val agentTaskRepository: AgentTaskRepository,
 ) : TransferOutboxScheduler {
+    private val coordinatorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun scheduleDrain(delayMs: Long) {
         val requestBuilder = OneTimeWorkRequestBuilder<TransferOutboxWorker>()
         if (delayMs > 0L) {
@@ -49,10 +56,14 @@ class TransferBridgeCoordinator(
     }
 
     fun scheduleRecovery() {
-        scheduleDrain()
+        coordinatorScope.launch {
+            recoverShellState()
+        }
     }
 
-    suspend fun drainOutbox() {
+    suspend fun recoverShellState(
+        scheduleWork: Boolean = true,
+    ): TransferRecoverySnapshot {
         val now = System.currentTimeMillis()
         val recoveredCount = withContext(Dispatchers.IO) { recoverStaleSendingDrafts(now) }
         if (recoveredCount > 0) {
@@ -62,23 +73,53 @@ class TransferBridgeCoordinator(
                 details = "Recovered $recoveredCount interrupted transfer drafts back into the queue.",
             )
         }
+        val dueQueuedDraftCount = withContext(Dispatchers.IO) { queryDueQueuedDraftCount(now) }
+        val delayedQueuedSnapshot = withContext(Dispatchers.IO) { queryDelayedQueuedRetrySnapshot(now) }
+        val immediateDrainRequested = recoveredCount > 0 || dueQueuedDraftCount > 0
+        when {
+            scheduleWork && immediateDrainRequested -> scheduleDrain()
+            scheduleWork && delayedQueuedSnapshot.nextAttemptAtEpochMillis != null -> {
+                scheduleDrain(delayedQueuedSnapshot.nextAttemptAtEpochMillis - now)
+            }
+        }
+        return TransferRecoverySnapshot(
+            recoveredStaleDraftCount = recoveredCount,
+            dueQueuedDraftCount = dueQueuedDraftCount,
+            delayedQueuedDraftCount = delayedQueuedSnapshot.queuedCount,
+            nextAttemptAtEpochMillis = delayedQueuedSnapshot.nextAttemptAtEpochMillis,
+            immediateDrainRequested = immediateDrainRequested,
+        )
+    }
+
+    suspend fun drainOutbox() {
+        val now = System.currentTimeMillis()
+        val recoverySnapshot = recoverShellState(scheduleWork = false)
+        val recoveredCount = recoverySnapshot.recoveredStaleDraftCount
         val drafts = withContext(Dispatchers.IO) { queryQueuedDrafts(now) }
         if (drafts.isEmpty()) {
             scheduleNextQueuedDrain(now)
             return
         }
+        var deliveredCount = 0
+        var failedCount = 0
+        var retryScheduledCount = 0
+        var skippedCount = 0
         drafts.forEach { draft ->
             if (!markSending(draft)) {
+                skippedCount += 1
                 return@forEach
             }
             when (val result = deliver(draft)) {
-                is DeliveryResult.Delivered -> markDelivered(
-                    draft = draft,
-                    endpoint = result.endpoint,
-                    deliveryMode = result.deliveryMode,
-                    receiptJson = result.receiptJson,
-                    receiptWarning = result.receiptWarning,
-                )
+                is DeliveryResult.Delivered -> {
+                    markDelivered(
+                        draft = draft,
+                        endpoint = result.endpoint,
+                        deliveryMode = result.deliveryMode,
+                        receiptJson = result.receiptJson,
+                        receiptWarning = result.receiptWarning,
+                    )
+                    deliveredCount += 1
+                }
                 is DeliveryResult.Failed -> {
                     val attemptNumber = draft.attemptCount + 1
                     if (result.retryable && attemptNumber < maxDeliveryAttempts) {
@@ -87,13 +128,29 @@ class TransferBridgeCoordinator(
                             message = result.message,
                             retryDelayMs = result.retryAfterMillis ?: computeRetryDelayMs(attemptNumber),
                         )
+                        retryScheduledCount += 1
                     } else {
                         markFailed(draft, result.message)
+                        failedCount += 1
                     }
                 }
             }
         }
-        scheduleNextQueuedDrain(System.currentTimeMillis())
+        val completedAt = System.currentTimeMillis()
+        val scheduledRetrySnapshot = scheduleNextQueuedDrain(completedAt)
+        auditTrailRepository.logAction(
+            action = "devices.transport",
+            result = "drain_completed",
+            details = buildDrainSummary(
+                processedCount = drafts.size,
+                deliveredCount = deliveredCount,
+                failedCount = failedCount,
+                retryScheduledCount = retryScheduledCount,
+                skippedCount = skippedCount,
+                recoveredCount = recoveredCount,
+                scheduledRetrySnapshot = scheduledRetrySnapshot,
+            ),
+        )
     }
 
     private suspend fun markSending(draft: PendingTransferDraft): Boolean {
@@ -129,6 +186,12 @@ class TransferBridgeCoordinator(
         }
             .also { claimed ->
                 if (claimed) {
+                    updateLinkedTask(
+                        draft = draft,
+                        status = AgentTaskStatus.Running,
+                        summary = "Bridge delivery is sending ${draft.fileNames.size} files to ${draft.deviceName}.",
+                        replyPreview = "Transfer delivery started for ${draft.deviceName}.",
+                    )
                     auditTrailRepository.logAction(
                         action = "files.send_to_device",
                         result = "sending",
@@ -182,6 +245,12 @@ class TransferBridgeCoordinator(
                 }
             },
         )
+        updateLinkedTask(
+            draft = draft,
+            status = AgentTaskStatus.Succeeded,
+            summary = "Bridge delivery completed for ${draft.fileNames.size} files to ${draft.deviceName}.",
+            replyPreview = "Transfer delivered to ${draft.deviceName}.",
+        )
     }
 
     private suspend fun markFailed(
@@ -217,6 +286,13 @@ class TransferBridgeCoordinator(
             action = "files.send_to_device",
             result = "failed",
             details = "Bridge delivery failed for ${draft.deviceName}: $message",
+        )
+        updateLinkedTask(
+            draft = draft,
+            status = AgentTaskStatus.Failed,
+            summary = "Bridge delivery failed for ${draft.deviceName}: $message",
+            replyPreview = "Transfer failed for ${draft.deviceName}.",
+            lastError = message,
         )
     }
 
@@ -257,6 +333,14 @@ class TransferBridgeCoordinator(
             result = "retry_scheduled",
             details = "Retry scheduled for ${draft.deviceName} in ${safeRetryDelayMs / 1000}s: $message",
         )
+        updateLinkedTask(
+            draft = draft,
+            status = AgentTaskStatus.RetryScheduled,
+            summary = "Bridge delivery will retry for ${draft.deviceName} in ${safeRetryDelayMs / 1000}s.",
+            replyPreview = "Retry scheduled for ${draft.deviceName}.",
+            nextRetryAtEpochMillis = retryAt,
+            lastError = message,
+        )
     }
 
     private suspend fun deliver(draft: PendingTransferDraft): DeliveryResult = withContext(Dispatchers.IO) {
@@ -290,6 +374,7 @@ class TransferBridgeCoordinator(
                 "device_id",
                 "device_name",
                 "file_names_json",
+                "approval_request_id",
                 "file_refs_json",
                 "attempt_count",
             ),
@@ -303,6 +388,7 @@ class TransferBridgeCoordinator(
             val deviceIdIndex = cursor.getColumnIndexOrThrow("device_id")
             val deviceNameIndex = cursor.getColumnIndexOrThrow("device_name")
             val fileNamesIndex = cursor.getColumnIndexOrThrow("file_names_json")
+            val approvalRequestIdIndex = cursor.getColumnIndexOrThrow("approval_request_id")
             val fileRefsIndex = cursor.getColumnIndexOrThrow("file_refs_json")
             val attemptCountIndex = cursor.getColumnIndexOrThrow("attempt_count")
 
@@ -312,6 +398,7 @@ class TransferBridgeCoordinator(
                     id = cursor.getString(idIndex),
                     deviceId = cursor.getString(deviceIdIndex),
                     deviceName = cursor.getString(deviceNameIndex),
+                    approvalRequestId = cursor.getString(approvalRequestIdIndex),
                     fileNames = jsonArrayToList(cursor.getString(fileNamesIndex)),
                     fileReferences = jsonArrayToFileReferences(fileRefsRaw),
                     attemptCount = cursor.getInt(attemptCountIndex),
@@ -341,7 +428,66 @@ class TransferBridgeCoordinator(
         )
     }
 
-    private fun scheduleNextQueuedDrain(now: Long) {
+    private suspend fun updateLinkedTask(
+        draft: PendingTransferDraft,
+        status: AgentTaskStatus,
+        summary: String,
+        replyPreview: String,
+        nextRetryAtEpochMillis: Long? = null,
+        lastError: String? = null,
+    ) {
+        val approvalRequestId = draft.approvalRequestId ?: return
+        val updatedTask = agentTaskRepository.updateTaskByApprovalRequestId(
+            approvalRequestId = approvalRequestId,
+            status = status,
+            summary = summary,
+            replyPreview = replyPreview.take(maxReplyPreviewLength),
+            nextRetryAtEpochMillis = nextRetryAtEpochMillis,
+            lastError = lastError,
+        ) ?: return
+        ShellNotificationCenter.maybeShowTaskFollowUp(context, updatedTask)
+    }
+
+    private fun queryDueQueuedDraftCount(now: Long): Int {
+        return databaseHelper.readableDatabase.rawQuery(
+            """
+            SELECT COUNT(*)
+            FROM transfer_outbox
+            WHERE status = ? AND next_attempt_at <= ?
+            """.trimIndent(),
+            arrayOf(TransferDraftStatus.Queued.name, now.toString()),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.getInt(0)
+            } else {
+                0
+            }
+        }
+    }
+
+    private fun scheduleNextQueuedDrain(now: Long): QueuedRetrySnapshot {
+        val snapshot = queryDelayedQueuedRetrySnapshot(now)
+        snapshot.nextAttemptAtEpochMillis?.let { nextAttemptAt ->
+            scheduleDrain(nextAttemptAt - now)
+        }
+        return snapshot
+    }
+
+    private fun queryDelayedQueuedRetrySnapshot(now: Long): QueuedRetrySnapshot {
+        val queuedCount = databaseHelper.readableDatabase.rawQuery(
+            """
+            SELECT COUNT(*)
+            FROM transfer_outbox
+            WHERE status = ? AND next_attempt_at > ?
+            """.trimIndent(),
+            arrayOf(TransferDraftStatus.Queued.name, now.toString()),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.getInt(0)
+            } else {
+                0
+            }
+        }
         val nextAttemptAt = databaseHelper.readableDatabase.rawQuery(
             """
             SELECT MIN(next_attempt_at)
@@ -356,8 +502,69 @@ class TransferBridgeCoordinator(
                 0L
             }
         }
-        if (nextAttemptAt > now) {
-            scheduleDrain(nextAttemptAt - now)
+        return QueuedRetrySnapshot(
+            queuedCount = queuedCount,
+            nextAttemptAtEpochMillis = nextAttemptAt.takeIf { it > now },
+        )
+    }
+
+    private fun buildDrainSummary(
+        processedCount: Int,
+        deliveredCount: Int,
+        failedCount: Int,
+        retryScheduledCount: Int,
+        skippedCount: Int,
+        recoveredCount: Int,
+        scheduledRetrySnapshot: QueuedRetrySnapshot,
+    ): String {
+        return buildString {
+            append("Transfer drain processed ")
+            append(processedCount)
+            append(" draft(s): ")
+            append(deliveredCount)
+            append(" delivered, ")
+            append(retryScheduledCount)
+            append(" retry scheduled, ")
+            append(failedCount)
+            append(" failed")
+            if (skippedCount > 0) {
+                append(", ")
+                append(skippedCount)
+                append(" skipped claim")
+            }
+            if (recoveredCount > 0) {
+                append(". Recovered ")
+                append(recoveredCount)
+                append(" stale sending draft(s) first")
+            }
+            scheduledRetrySnapshot.nextAttemptAtEpochMillis?.let { nextAttemptAt ->
+                append(". ")
+                append(scheduledRetrySnapshot.queuedCount)
+                append(" delayed queued draft(s) remain; next retry in ")
+                append(((nextAttemptAt - System.currentTimeMillis()).coerceAtLeast(0L)) / 1000L)
+                append("s")
+            }
+            append(".")
+        }
+    }
+
+    fun noteWorkerRetry(runAttemptCount: Int) {
+        coordinatorScope.launch {
+            auditTrailRepository.logAction(
+                action = "devices.transport",
+                result = "worker_retry",
+                details = "Transfer worker requested retry after an unexpected drain failure on run attempt ${runAttemptCount + 1}.",
+            )
+        }
+    }
+
+    fun noteWorkerFailure(runAttemptCount: Int) {
+        coordinatorScope.launch {
+            auditTrailRepository.logAction(
+                action = "devices.transport",
+                result = "worker_failed",
+                details = "Transfer worker failed after ${runAttemptCount + 1} attempt(s). Manual recovery or app foreground refresh may be required.",
+            )
         }
     }
 
@@ -855,6 +1062,7 @@ class TransferBridgeCoordinator(
         private const val maxDeliveryAttempts = 5
         private const val staleSendingTimeoutMs = 90_000L
         private const val minRetryDelayMs = 15_000L
+        private const val maxReplyPreviewLength = 240
         private val acceptedReceiptStatuses = setOf("accepted", "ok", "completed")
         private val retryDelayStepsMs = listOf(15_000L, 30_000L, 60_000L, 120_000L, 300_000L)
     }
@@ -864,9 +1072,23 @@ private data class PendingTransferDraft(
     val id: String,
     val deviceId: String,
     val deviceName: String,
+    val approvalRequestId: String? = null,
     val fileNames: List<String>,
     val fileReferences: List<TransferFileReference>,
     val attemptCount: Int,
+)
+
+private data class QueuedRetrySnapshot(
+    val queuedCount: Int,
+    val nextAttemptAtEpochMillis: Long?,
+)
+
+data class TransferRecoverySnapshot(
+    val recoveredStaleDraftCount: Int = 0,
+    val dueQueuedDraftCount: Int = 0,
+    val delayedQueuedDraftCount: Int = 0,
+    val nextAttemptAtEpochMillis: Long? = null,
+    val immediateDrainRequested: Boolean = false,
 )
 
 private data class BridgeDeviceState(

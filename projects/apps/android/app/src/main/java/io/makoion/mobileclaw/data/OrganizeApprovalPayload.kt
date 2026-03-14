@@ -15,12 +15,14 @@ data class OrganizeApprovalStep(
 data class OrganizeApprovalPayload(
     val strategy: FileOrganizeStrategy,
     val requestedAtEpochMs: Long,
+    val forceDeleteConsentForTesting: Boolean = false,
     val steps: List<OrganizeApprovalStep>,
 ) {
     fun toJson(): String {
         return JSONObject()
             .put("strategy", strategy.name)
             .put("requested_at", requestedAtEpochMs)
+            .put("force_delete_consent_for_testing", forceDeleteConsentForTesting)
             .put(
                 "steps",
                 JSONArray().apply {
@@ -64,6 +66,7 @@ data class OrganizeApprovalPayload(
                     json.optString("strategy", FileOrganizeStrategy.ByType.name),
                 ),
                 requestedAtEpochMs = json.optLong("requested_at", System.currentTimeMillis()),
+                forceDeleteConsentForTesting = json.optBoolean("force_delete_consent_for_testing", false),
                 steps = steps,
             )
         }
@@ -73,12 +76,14 @@ data class OrganizeApprovalPayload(
 fun buildOrganizeApprovalPayload(
     plan: FileOrganizePlan,
     items: List<IndexedFileItem>,
+    forceDeleteConsentForTesting: Boolean = false,
     requestedAtEpochMs: Long = System.currentTimeMillis(),
 ): OrganizeApprovalPayload {
     val itemIndex = items.associateBy { it.id }
     return OrganizeApprovalPayload(
         strategy = plan.strategy,
         requestedAtEpochMs = requestedAtEpochMs,
+        forceDeleteConsentForTesting = forceDeleteConsentForTesting,
         steps = plan.steps.map { step ->
             val item = itemIndex[step.fileId]
             OrganizeApprovalStep(

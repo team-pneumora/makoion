@@ -1,17 +1,26 @@
-# MobileClaw (Makoion)
+# Makoion (legacy MobileClaw codebase)
+
+## 가장 먼저 볼 문서
+
+- `makoion_dev_instruction_ko.md`
+  - 저장소의 **단일 기준 서비스/앱 개발 계획서**
+  - 제품 방향이 충돌하면 이 문서를 최우선으로 따른다
+  - 현재 구현 이력 문서보다 우선한다
+
+---
 
 ## 프로젝트 한줄 정의
 
-**폰을 중심으로 파일/기기/클라우드를 하나의 작업 표면으로 묶는 유비쿼터스 AI 허브**
+**내 폰에서 돌아가는 개인 AI agent 서버 + 내가 연결한 자원을 대신 운용하는 실행 비서**
 
-서버 없이 폰이 정본(source of truth). 채팅이 아닌 파일 중심. 이벤트 기반 태스크 엔진.
+폰이 agent runtime의 정본(source of truth). 제품 UX는 chat-first. 파일/드라이브/companion/MCP/API는 agent가 활용하는 자원 계층.
 
 ---
 
 ## 핵심 설계 원칙
 
 1. **Phone is the source of truth** — 대화, 메모리, 작업 상태, 파일 인덱스의 정본은 폰 로컬 DB
-2. **File-first, not chat-first** — 채팅은 UI일 뿐. 핵심 객체는 파일, 폴더, 컬렉션, 작업, 기기
+2. **Chat-first UX, capability-first architecture** — 사용자는 채팅/음성으로 상호작용하고, 시스템은 capability를 조합해 실행
 3. **Tasks, not daemons** — 상시 서버가 아닌 이벤트 기반 작업 엔진. OS가 앱을 죽여도 복구 가능
 4. **Capability-driven** — 모델은 OS API를 직접 호출하지 않음. Intent → Policy → Executor → Audit
 5. **No hidden privilege** — 위험한 작업은 항상 승인/감사/취소 가능
@@ -30,9 +39,9 @@
 ### 상태 요약
 
 - **Phase 0**: 완료
-- **Phase 1**: `projects/apps/android` 네이티브 셸 + SAF 인덱싱 + 승인/감사 영속화 + 음성 전사 + 파일 그래프 액션 + Android share + organize approval -> MediaStore move 실행 + destination verification + actual delete consent launcher + 기기 페어링 UI + 전송 outbox + background bridge worker + Direct HTTP transport mode + receipt validation/review 상태 + device-level validation fault mode + endpoint presets (`adb reverse` / emulator host) + manual bridge controls + retry/backoff diagnostics UI + transport audit trace + companion health probe + streaming archive 대용량 전송 + unresolved payload manifest-only fallback + retryable transfer backoff/recovery
+- **Phase 1**: `projects/apps/android` 네이티브 셸 + SAF 인덱싱 + 승인/감사 영속화 + 음성 전사 + 파일 그래프 액션 + Android share + organize approval -> MediaStore move 실행 + destination verification + actual delete consent launcher + 기기 페어링 UI + 전송 outbox + background bridge worker + Direct HTTP transport mode + receipt validation/review 상태 + device-level validation fault mode + endpoint presets (`adb reverse` / emulator host) + debug adb transport bootstrap + debug-only cleartext validation config + debug-only FileProvider archive payload generator + manual bridge controls + retry/backoff diagnostics UI + transport audit trace + companion health probe + physical-device adb reverse bootstrap/health probe 검증 + physical-device synthetic manifest-only fault-mode draft validation + physical-device archive payload validation (`archive_zip`, `archive_zip_streaming`) + physical-device archive payload fault-mode validation (`archive_zip`, `archive_zip_streaming`, `partial/malformed/retry/timeout/disconnect/delayed_ack`) + streaming archive 대용량 전송 + unresolved payload manifest-only fallback + retryable transfer backoff/recovery
 - **Phase 2 시드**: `projects/apps/desktop-companion` 최소 HTTP endpoint + archive/streaming payload extraction + transfer directory materialization + receipt metadata 응답 완료
-- **현재 우선순위**: organize 실행의 on-device 검증/삭제 권한 고도화, direct HTTP transport 실기기 검증 고도화, background/task recovery 고도화
+- **현재 우선순위**: organize 실행의 on-device 검증/삭제 권한 고도화, background/task recovery 고도화, direct HTTP pull-based recovery 후속 설계/검증
 
 ### Phase 0 진행 상태
 
@@ -89,7 +98,7 @@ makoion/
 │
 ├── docs/architecture/           # 아키텍처 문서
 ├── references/                  # 레퍼런스 (openclaw, nanoclaw)
-├── mobileclaw_dev_instruction_ko.md  # 비전 문서
+├── makoion_dev_instruction_ko.md     # 마스터 플랜
 └── CLAUDE.md                    # 이 파일
 ```
 
@@ -137,7 +146,7 @@ dart test test/task_engine/task_state_machine_test.dart
 
 - `references/openclaw/` — 대규모 멀티채널 AI 플랫폼 (7,950 파일)
 - `references/nanoclaw/` — 경량 컨테이너 기반 AI 어시스턴트 (272 파일)
-- `mobileclaw_dev_instruction_ko.md` — MobileClaw 비전 문서 v0.2
+- `makoion_dev_instruction_ko.md` — Makoion 마스터 플랜 v1.0
 - `docs/architecture/current-status.md` — 현재 구현 범위 + 검증 상태 + 다음 우선순위
 - `docs/architecture/decisions.md` — 아키텍처 결정 기록 (ADR)
 - `docs/architecture/phase0-checklist.md` — Phase 0 체크리스트

@@ -15,6 +15,8 @@ data class AuditTrailEvent(
     val headline: String,
     val result: String,
     val details: String,
+    val requestId: String? = null,
+    val createdAtEpochMillis: Long,
     val createdAtLabel: String,
 )
 
@@ -25,6 +27,7 @@ interface AuditTrailRepository {
         action: String,
         result: String,
         details: String,
+        requestId: String? = null,
     )
 
     suspend fun logApprovalDecision(
@@ -47,12 +50,13 @@ class PersistentAuditTrailRepository(
         action: String,
         result: String,
         details: String,
+        requestId: String?,
     ) {
         insertEvent(
             action = action,
             result = result,
             details = details,
-            requestId = null,
+            requestId = requestId,
         )
         refresh()
     }
@@ -80,7 +84,7 @@ class PersistentAuditTrailRepository(
             val events = mutableListOf<AuditTrailEvent>()
             databaseHelper.readableDatabase.query(
                 "audit_events",
-                arrayOf("id", "action", "result", "details", "created_at"),
+                arrayOf("id", "action", "result", "details", "request_id", "created_at"),
                 null,
                 null,
                 null,
@@ -92,6 +96,7 @@ class PersistentAuditTrailRepository(
                 val actionIndex = cursor.getColumnIndexOrThrow("action")
                 val resultIndex = cursor.getColumnIndexOrThrow("result")
                 val detailsIndex = cursor.getColumnIndexOrThrow("details")
+                val requestIdIndex = cursor.getColumnIndexOrThrow("request_id")
                 val createdAtIndex = cursor.getColumnIndexOrThrow("created_at")
 
                 while (cursor.moveToNext()) {
@@ -101,6 +106,8 @@ class PersistentAuditTrailRepository(
                         headline = cursor.getString(actionIndex),
                         result = cursor.getString(resultIndex),
                         details = cursor.getString(detailsIndex),
+                        requestId = cursor.getString(requestIdIndex),
+                        createdAtEpochMillis = createdAt,
                         createdAtLabel = DateUtils.getRelativeTimeSpanString(
                             createdAt,
                             now,
