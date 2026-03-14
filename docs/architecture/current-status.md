@@ -1,6 +1,6 @@
 # 현재 진행 상태 및 로드맵
 
-기준 날짜: 2026-03-13
+기준 날짜: 2026-03-14
 
 이 문서는 Makoion(현 코드베이스명 MobileClaw)의 현재 구현 범위, 검증 상태, 남은 우선순위를 한 곳에서 빠르게 확인하기 위한 상태 문서다.
 
@@ -202,6 +202,9 @@
   - 2026-03-14 build에서 validation cleanup 경로 추가 후 `scripts/validate-shell-recovery-soak.ps1` 8 iterations 재검증 통과
     - validation device / pairing session / transfer draft cleanup가 각 run 종료 후 수행됨
     - paired device / pairing session / transfer outbox count가 더 이상 증가하지 않음
+  - 2026-03-14 `scripts/validate-shell-recovery-soak.ps1` 30분 duration rerun 통과
+    - `19 iterations`, `37 checks`, `0 failures`
+    - 이전 stale sending manual recovery false-negative 원인이던 debug command auto-open foreground recovery race를 `validate-shell-recovery.ps1` 쪽에서 차단
 - `projects/apps/desktop-companion`
   - `javac` 컴파일
   - `/health` 응답 확인

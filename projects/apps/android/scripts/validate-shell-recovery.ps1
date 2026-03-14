@@ -218,7 +218,8 @@ function Invoke-DebugTransportCommand {
     param(
         [string]$Command,
         [hashtable]$StringExtras = @{},
-        [hashtable]$IntExtras = @{}
+        [hashtable]$IntExtras = @{},
+        [hashtable]$BoolExtras = @{}
     )
 
     $arguments = @(
@@ -241,6 +242,9 @@ function Invoke-DebugTransportCommand {
     }
     foreach ($entry in $IntExtras.GetEnumerator()) {
         $arguments += @("--ei", $entry.Key, [string]$entry.Value)
+    }
+    foreach ($entry in $BoolExtras.GetEnumerator()) {
+        $arguments += @("--ez", $entry.Key, [string]$entry.Value)
     }
 
     & $adbPath @arguments | Out-Null
@@ -462,6 +466,8 @@ function Validate-StaleSendingRecovery {
         file_prefix = $filePrefix
     } -IntExtras @{
         file_count = 1
+    } -BoolExtras @{
+        open_devices_after_command = $false
     }
 
     $queuedState = Wait-ForState -Description "stale sending draft queued" -TimeoutSeconds 20 -Predicate {
@@ -473,7 +479,9 @@ function Validate-StaleSendingRecovery {
     $beforeRecoveryAudit = Get-LatestAuditTimestamp -State $queuedState -Action "shell.recovery"
 
     Write-ValidationStep "Requesting manual shell recovery for stale sending draft"
-    Invoke-DebugTransportCommand -Command "request_shell_recovery"
+    Invoke-DebugTransportCommand -Command "request_shell_recovery" -BoolExtras @{
+        open_devices_after_command = $false
+    }
 
     $recoveredAudit = Wait-ForAuditEvent -Action "files.send_to_device" -ExpectedResults @("recovered") -AfterCreatedAt $beforeRecoveredAudit -DetailsNeedle "" -TimeoutSeconds 20
     $recoveryAudit = Wait-ForAuditEvent -Action "shell.recovery" -ExpectedResults @("passed") -AfterCreatedAt $beforeRecoveryAudit -DetailsNeedle "Transfer recovery repaired" -TimeoutSeconds 20
@@ -506,6 +514,8 @@ function Validate-DueRetryRecovery {
         file_prefix = $filePrefix
     } -IntExtras @{
         file_count = 1
+    } -BoolExtras @{
+        open_devices_after_command = $false
     }
 
     $queuedState = Wait-ForState -Description "due retry draft queued" -TimeoutSeconds 20 -Predicate {
@@ -516,7 +526,9 @@ function Validate-DueRetryRecovery {
     $beforeRecoveryAudit = Get-LatestAuditTimestamp -State $queuedState -Action "shell.recovery"
 
     Write-ValidationStep "Requesting manual shell recovery for due retry draft"
-    Invoke-DebugTransportCommand -Command "request_shell_recovery"
+    Invoke-DebugTransportCommand -Command "request_shell_recovery" -BoolExtras @{
+        open_devices_after_command = $false
+    }
 
     $recoveryAudit = Wait-ForAuditEvent -Action "shell.recovery" -ExpectedResults @("passed") -AfterCreatedAt $beforeRecoveryAudit -DetailsNeedle "immediate drain was requested" -TimeoutSeconds 20
     $deliveredState = Wait-ForState -Description "due retry delivered after recovery" -TimeoutSeconds 30 -Predicate {
@@ -551,6 +563,8 @@ function Validate-DelayedRetryRecovery {
     } -IntExtras @{
         file_count = 1
         retry_delay_seconds = $DelaySeconds
+    } -BoolExtras @{
+        open_devices_after_command = $false
     }
 
     $queuedState = Wait-ForState -Description "delayed retry draft queued" -TimeoutSeconds 20 -Predicate {
@@ -565,7 +579,9 @@ function Validate-DelayedRetryRecovery {
     $scheduledRetryAt = [long]$queuedTransfer.next_attempt_at
 
     Write-ValidationStep "Requesting manual shell recovery for delayed retry draft"
-    Invoke-DebugTransportCommand -Command "request_shell_recovery"
+    Invoke-DebugTransportCommand -Command "request_shell_recovery" -BoolExtras @{
+        open_devices_after_command = $false
+    }
 
     $recoveryAudit = Wait-ForAuditEvent -Action "shell.recovery" -ExpectedResults @("passed") -AfterCreatedAt $beforeRecoveryAudit -DetailsNeedle "delayed queued draft" -TimeoutSeconds 20
     $stillQueuedState = Wait-ForState -Description "delayed retry remains queued immediately after recovery" -TimeoutSeconds 10 -Predicate {
@@ -619,13 +635,17 @@ try {
 
     $beforeBootstrapRecoveryAudit = Get-LatestAuditTimestamp -State $bootstrappedState -Action "shell.recovery"
     Write-ValidationStep "Requesting shell recovery to refresh runtime state before companion probe"
-    Invoke-DebugTransportCommand -Command "request_shell_recovery"
+    Invoke-DebugTransportCommand -Command "request_shell_recovery" -BoolExtras @{
+        open_devices_after_command = $false
+    }
     $bootstrapRecoveryAudit = Wait-ForAuditEvent -Action "shell.recovery" -ExpectedResults @("passed") -AfterCreatedAt $beforeBootstrapRecoveryAudit -DetailsNeedle "" -TimeoutSeconds 30
 
     $beforeProbeAudit = Get-LatestAuditTimestamp -State $bootstrappedState -Action "devices.health_probe"
     Write-ValidationStep "Probing companion health from the device"
     Invoke-DebugTransportCommand -Command "probe_health" -StringExtras @{
         device_id = $deviceId
+    } -BoolExtras @{
+        open_devices_after_command = $false
     }
     $healthProbeAudit = Wait-ForAuditEvent -Action "devices.health_probe" -ExpectedResults @("ok") -AfterCreatedAt $beforeProbeAudit -DetailsNeedle "" -TimeoutSeconds 20
     Write-ValidationStep "Companion health probe succeeded; starting recovery scenarios"
@@ -648,6 +668,8 @@ try {
         try {
             Invoke-DebugTransportCommand -Command "cleanup_validation_device" -StringExtras @{
                 device_id = $cleanupDeviceId
+            } -BoolExtras @{
+                open_devices_after_command = $false
             }
         } catch {
             Write-ValidationStep "Cleanup skipped for ${cleanupDeviceId}: $($_.Exception.Message)"

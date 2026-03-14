@@ -2,7 +2,7 @@
 
 Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 수준까지 올리고, 핵심 사용자 흐름의 성공/실패 판단 근거를 문서로 남긴다.
 
-기준 날짜: 2026-03-13
+기준 날짜: 2026-03-14
 
 ---
 
@@ -84,6 +84,9 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 - [x] delayed retry draft가 force-stop / relaunch 뒤 scheduled retry 시점에 `Delivered` 됨
 - [x] `scripts/validate-shell-recovery-soak.ps1` short combined smoke loop 2회가 실기기 `adb reverse` Direct HTTP 환경에서 통과
 - [x] foreground due retry smoke가 background-first queue 후 foreground resume 으로 stable 하게 반복됨
+- [x] `scripts/validate-shell-recovery-soak.ps1` 30분 duration rerun 이 실기기 `adb reverse` Direct HTTP 환경에서 통과
+  - 기록: `19 iterations`, `37 checks`, `0 failures`
+  - stale sending manual recovery false-negative를 만들던 debug command auto-open foreground recovery race 제거 후 재검증
 
 ### companion actions seed
 
@@ -113,6 +116,7 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
   - 현재까지는 `validate-shell-recovery.ps1`, `validate-shell-lifecycle-recovery.ps1`, `validate-shell-recovery-soak.ps1` short smoke loop 기준 baseline recovery가 실기기 통과
   - 2026-03-14 기준 `validate-shell-recovery-soak.ps1` 는 `DurationMinutes`, `StepTimeoutMinutes`, artifact directory, default `summary.json` output을 지원해 multi-hour run 자동화 준비가 됨
   - 2026-03-14 기준 validation cleanup 추가 후 8-iteration short soak 재검증도 통과했고 device/session/draft 누적이 더 이상 커지지 않음
+  - 2026-03-14 기준 30분 duration rerun 도 `19 iterations`, `37 checks`, `0 failures` 로 통과했지만, multi-hour soak 는 아직 남아 있음
 ---
 
 ## Phase 1 판정

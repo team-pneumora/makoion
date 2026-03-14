@@ -82,6 +82,8 @@ Current scope:
 - Physical-device `validate-shell-lifecycle-recovery.ps1` validation was confirmed on 2026-03-12 for process-death stale sending recovery, background/foreground due retry resilience, and process-death delayed retry recovery over `adb reverse`
 - Physical-device `validate-shell-recovery-soak.ps1` smoke validation was confirmed on 2026-03-12 for 2 combined iterations of manual shell recovery plus lifecycle recovery over `adb reverse`
 - Physical-device `validate-shell-recovery-soak.ps1` post-cleanup validation was confirmed on 2026-03-14 for 8 combined iterations of manual shell recovery plus lifecycle recovery over `adb reverse`, while paired-device / pairing-session / transfer-outbox counts remained flat after each cleanup
+- Physical-device `validate-shell-recovery-soak.ps1` 30-minute duration rerun was confirmed on 2026-03-14 for 19 iterations / 37 checks / 0 failures over `adb reverse`
+- `scripts\\validate-shell-recovery.ps1` now suppresses debug-command auto-open during adb-driven recovery validation so stale-sending manual recovery no longer races with an unintended foreground recovery
 - Physical-device USB reconnect can clear `adb reverse`; if chat-triggered `Check companion health`, `Send notification`, or `workflow.run` suddenly fail with `127.0.0.1:8787` connection errors, rerun `adb reverse tcp:8787 tcp:8787` or `scripts\bootstrap-transport-validation.ps1 -EndpointPreset adb_reverse`
 - The foreground due-retry smoke path now backgrounds the app before queueing the draft so the `Queued -> foreground -> Delivered` transition stays stable across repeated runs
 - Transfer drafts now recover stale `Sending` states, apply per-draft backoff, and schedule delayed retries for retryable HTTP/network failures
