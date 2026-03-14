@@ -111,6 +111,8 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 
 - [ ] background / 장시간 런타임 기준 transfer retry 및 task recovery soak 검증
   - 현재까지는 `validate-shell-recovery.ps1`, `validate-shell-lifecycle-recovery.ps1`, `validate-shell-recovery-soak.ps1` short smoke loop 기준 baseline recovery가 실기기 통과
+  - 2026-03-14 기준 `validate-shell-recovery-soak.ps1` 는 `DurationMinutes`, `StepTimeoutMinutes`, artifact directory, default `summary.json` output을 지원해 multi-hour run 자동화 준비가 됨
+  - 2026-03-14 기준 validation cleanup 추가 후 8-iteration short soak 재검증도 통과했고 device/session/draft 누적이 더 이상 커지지 않음
 ---
 
 ## Phase 1 판정

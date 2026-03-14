@@ -179,6 +179,7 @@ const val companionCapabilityWorkflowRun = "workflow.run"
 const val companionAppOpenTargetInbox = "inbox"
 const val companionAppOpenTargetLatestTransfer = "latest_transfer"
 const val companionAppOpenTargetActionsFolder = "actions_folder"
+const val companionAppOpenTargetLatestAction = "latest_action"
 
 interface DevicePairingRepository {
     val pairedDevices: StateFlow<List<PairedDeviceState>>

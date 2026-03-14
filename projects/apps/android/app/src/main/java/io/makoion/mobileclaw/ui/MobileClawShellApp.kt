@@ -94,6 +94,7 @@ import io.makoion.mobileclaw.data.TransportValidationMode
 import io.makoion.mobileclaw.data.VoiceEntryState
 import io.makoion.mobileclaw.data.companionAppOpenTargetActionsFolder
 import io.makoion.mobileclaw.data.companionAppOpenTargetInbox
+import io.makoion.mobileclaw.data.companionAppOpenTargetLatestAction
 import io.makoion.mobileclaw.data.companionAppOpenTargetLatestTransfer
 import io.makoion.mobileclaw.data.companionCapabilityAppOpen
 import io.makoion.mobileclaw.data.companionCapabilitySessionNotify
@@ -269,8 +270,10 @@ fun MobileClawShellApp(
                 onProbeSelectedDeviceHealth = shellViewModel::probeSelectedDeviceHealth,
                 onSendSessionNotification = shellViewModel::sendSessionNotificationToSelectedDevice,
                 onOpenCompanionInbox = shellViewModel::openCompanionInboxOnSelectedDevice,
+                onOpenLatestActionFolder = shellViewModel::openLatestActionFolderOnSelectedDevice,
                 onOpenLatestTransferFolder = shellViewModel::openLatestTransferFolderOnSelectedDevice,
                 onOpenActionsFolder = shellViewModel::openActionsFolderOnSelectedDevice,
+                onRunOpenLatestActionWorkflow = shellViewModel::runOpenLatestActionWorkflowOnSelectedDevice,
                 onRunOpenLatestTransferWorkflow = shellViewModel::runOpenLatestTransferWorkflowOnSelectedDevice,
                 onRunOpenActionsFolderWorkflow = shellViewModel::runOpenActionsFolderWorkflowOnSelectedDevice,
                 onDrainTransferOutboxNow = shellViewModel::drainTransferOutboxNow,
@@ -484,6 +487,12 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
             )
             add(
                 ChatQuickPrompt(
+                    label = "Run latest action workflow",
+                    prompt = promptRunOpenLatestActionWorkflow,
+                ),
+            )
+            add(
+                ChatQuickPrompt(
                     label = "Run latest workflow",
                     prompt = promptRunOpenLatestTransferWorkflow,
                 ),
@@ -492,6 +501,12 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
                 ChatQuickPrompt(
                     label = "Run actions workflow",
                     prompt = promptRunOpenActionsFolderWorkflow,
+                ),
+            )
+            add(
+                ChatQuickPrompt(
+                    label = "Open latest action",
+                    prompt = promptOpenLatestActionFolder,
                 ),
             )
             add(
@@ -1221,8 +1236,10 @@ private fun SettingsScreen(
     onProbeSelectedDeviceHealth: () -> Unit,
     onSendSessionNotification: () -> Unit,
     onOpenCompanionInbox: () -> Unit,
+    onOpenLatestActionFolder: () -> Unit,
     onOpenLatestTransferFolder: () -> Unit,
     onOpenActionsFolder: () -> Unit,
+    onRunOpenLatestActionWorkflow: () -> Unit,
     onRunOpenLatestTransferWorkflow: () -> Unit,
     onRunOpenActionsFolderWorkflow: () -> Unit,
     onDrainTransferOutboxNow: () -> Unit,
@@ -1429,8 +1446,10 @@ private fun SettingsScreen(
                     onProbeSelectedDeviceHealth = onProbeSelectedDeviceHealth,
                     onSendSessionNotification = onSendSessionNotification,
                     onOpenCompanionInbox = onOpenCompanionInbox,
+                    onOpenLatestActionFolder = onOpenLatestActionFolder,
                     onOpenLatestTransferFolder = onOpenLatestTransferFolder,
                     onOpenActionsFolder = onOpenActionsFolder,
+                    onRunOpenLatestActionWorkflow = onRunOpenLatestActionWorkflow,
                     onRunOpenLatestTransferWorkflow = onRunOpenLatestTransferWorkflow,
                     onRunOpenActionsFolderWorkflow = onRunOpenActionsFolderWorkflow,
                     onDrainTransferOutboxNow = onDrainTransferOutboxNow,
@@ -2265,8 +2284,10 @@ private fun DevicesScreen(
     onProbeSelectedDeviceHealth: () -> Unit,
     onSendSessionNotification: () -> Unit,
     onOpenCompanionInbox: () -> Unit,
+    onOpenLatestActionFolder: () -> Unit,
     onOpenLatestTransferFolder: () -> Unit,
     onOpenActionsFolder: () -> Unit,
+    onRunOpenLatestActionWorkflow: () -> Unit,
     onRunOpenLatestTransferWorkflow: () -> Unit,
     onRunOpenActionsFolderWorkflow: () -> Unit,
     onDrainTransferOutboxNow: () -> Unit,
@@ -2393,8 +2414,10 @@ private fun DevicesScreen(
                 onProbeSelectedDeviceHealth = onProbeSelectedDeviceHealth,
                 onSendSessionNotification = onSendSessionNotification,
                 onOpenCompanionInbox = onOpenCompanionInbox,
+                onOpenLatestActionFolder = onOpenLatestActionFolder,
                 onOpenLatestTransferFolder = onOpenLatestTransferFolder,
                 onOpenActionsFolder = onOpenActionsFolder,
+                onRunOpenLatestActionWorkflow = onRunOpenLatestActionWorkflow,
                 onRunOpenLatestTransferWorkflow = onRunOpenLatestTransferWorkflow,
                 onRunOpenActionsFolderWorkflow = onRunOpenActionsFolderWorkflow,
                 onDrainTransferOutboxNow = onDrainTransferOutboxNow,
@@ -2476,8 +2499,10 @@ private fun BridgeDebugCard(
     onProbeSelectedDeviceHealth: () -> Unit,
     onSendSessionNotification: () -> Unit,
     onOpenCompanionInbox: () -> Unit,
+    onOpenLatestActionFolder: () -> Unit,
     onOpenLatestTransferFolder: () -> Unit,
     onOpenActionsFolder: () -> Unit,
+    onRunOpenLatestActionWorkflow: () -> Unit,
     onRunOpenLatestTransferWorkflow: () -> Unit,
     onRunOpenActionsFolderWorkflow: () -> Unit,
     onDrainTransferOutboxNow: () -> Unit,
@@ -2739,6 +2764,22 @@ private fun BridgeDebugCard(
                     )
                 }
                 OutlinedButton(
+                    onClick = onOpenLatestActionFolder,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = canSendAppOpen,
+                ) {
+                    Text(
+                        if (
+                            companionAppOpen.isSending &&
+                            companionAppOpen.pendingTargetKind == companionAppOpenTargetLatestAction
+                        ) {
+                            "Opening latest action..."
+                        } else {
+                            "Open latest action folder"
+                        },
+                    )
+                }
+                OutlinedButton(
                     onClick = onOpenLatestTransferFolder,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = canSendAppOpen,
@@ -2767,6 +2808,19 @@ private fun BridgeDebugCard(
                             "Opening actions folder..."
                         } else {
                             "Open actions folder"
+                        },
+                    )
+                }
+                FilledTonalButton(
+                    onClick = onRunOpenLatestActionWorkflow,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = canRunWorkflow,
+                ) {
+                    Text(
+                        if (companionWorkflowRun.isSending) {
+                            "Running workflow..."
+                        } else {
+                            "Run workflow: open latest action"
                         },
                     )
                 }
@@ -4994,8 +5048,10 @@ private const val promptShowDashboardAndApprovals = "Show my dashboard and pendi
 private const val promptShowDashboard = "Show my dashboard"
 private const val promptCheckCompanionHealth = "Check companion health"
 private const val promptSendDesktopNotification = "Send a desktop notification"
+private const val promptRunOpenLatestActionWorkflow = "Run the open latest action workflow"
 private const val promptRunOpenLatestTransferWorkflow = "Run the open latest transfer workflow"
 private const val promptRunOpenActionsFolderWorkflow = "Run the open actions folder workflow"
+private const val promptOpenLatestActionFolder = "Open the latest action folder"
 private const val promptOpenLatestTransferFolder = "Open the latest transfer folder"
 private const val promptOpenCompanionInbox = "Open the companion inbox"
 private const val promptOpenActionsFolder = "Open the actions folder"

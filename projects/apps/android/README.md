@@ -9,7 +9,7 @@ Current scope:
 - Chat now exposes quick-start prompts that submit real agent turns for refresh, summarize, organize, dashboard routing, companion health/notification/workflow probes, and companion-opening flows
 - Companion target selection now defaults to the newest Direct HTTP device, while tapping a device in Settings pins it until the same card is tapped again to return to auto-select
 - Assistant messages in Chat now link the current turn task back into the conversation so linked task/approval context, follow-up guidance, and inline approve/deny/retry actions stay visible after each turn
-- Transfer and companion chat contexts now route follow-up actions such as `health`, `session.notify`, `workflow.run`, `latest transfer`, `companion inbox`, and `actions folder` back through real chat turns instead of bypassing the task runtime
+- Transfer and companion chat contexts now route follow-up actions such as `health`, `session.notify`, `workflow.run`, `latest action`, `latest transfer`, `companion inbox`, and `actions folder` back through real chat turns instead of bypassing the task runtime
 - Settings bridge controls still keep direct remote-action buttons for diagnostics, but those actions now sit behind an extra collapsed toggle so Chat remains the primary surface
 - MediaStore-backed local file indexing entry point with runtime permission flow
 - SAF document-root attachment and document tree indexing
@@ -33,7 +33,8 @@ Current scope:
 - Settings advanced tools can now probe the selected Direct HTTP companion health endpoint and surface the latest result alongside bridge diagnostics
 - Direct HTTP companion health probes now refresh the paired device's advertised capability snapshot from `/health`
 - Chat and Settings advanced tools can now trigger companion `health`, `session.notify`, `app.open`, and allowlisted `workflow.run` desktop companion probes from the phone
-- `app.open` now supports `inbox`, `latest_transfer`, and `actions_folder` targets from Settings advanced tools
+- `app.open` now supports `inbox`, `latest_transfer`, `actions_folder`, and `latest_action` targets from Settings advanced tools
+- Allowlisted `workflow.run` now covers `open_latest_transfer`, `open_actions_folder`, and `open_latest_action`
 - Settings advanced tools now gate remote companion actions on the latest advertised capability snapshot and prompt a health check when the snapshot is empty
 - App foreground entry now re-runs a shell recovery coordinator that refreshes approvals, devices, organize executions, and audit state while re-arming transfer recovery
 - Settings advanced tools now surface the latest shell recovery result so foreground/manual recovery can be validated without leaving the app
@@ -49,7 +50,8 @@ Current scope:
 - Debug builds now expose `scripts\validate-direct-http-companion-actions.ps1` for repeatable `session.notify`, `app.open`, and allowlisted `workflow.run` validation against the desktop companion
 - Debug builds now expose `scripts\validate-shell-recovery.ps1` for repeatable stale sending, due retry, and delayed retry shell-recovery validation against the desktop companion
 - Debug builds now expose `scripts\validate-shell-lifecycle-recovery.ps1` for repeatable process-death and background/foreground lifecycle recovery validation against the desktop companion
-- Debug builds now expose `scripts\validate-shell-recovery-soak.ps1` for repeatable multi-iteration smoke/soak validation across manual shell recovery and lifecycle recovery paths
+- Debug builds now expose `scripts\validate-shell-recovery-soak.ps1` for repeatable multi-iteration or duration-based smoke/soak validation across manual shell recovery and lifecycle recovery paths, with per-check timeouts plus persisted artifacts/summary output
+- Debug validation cleanup now removes the temporary paired device, pairing session, and transfer drafts created by recovery validation runs so repeated soak passes do not keep inflating local shell state
 - Debug builds now also ship a debug-only cleartext network security config so `127.0.0.1` and `10.0.2.2` Direct HTTP companion probes work during adb reverse / emulator validation
 - Debug builds now expose a debug-only FileProvider-backed archive payload generator so archive transport can be validated without depending on MediaStore fixtures
 - Physical-device `adb reverse -> bootstrap -> Devices health probe` validation was confirmed on 2026-03-10 against a Samsung Android handset
@@ -76,6 +78,7 @@ Current scope:
 - Physical-device `validate-shell-recovery.ps1` validation was confirmed on 2026-03-12 for stale `Sending`, due retry, and delayed retry recovery against the desktop companion over `adb reverse`
 - Physical-device `validate-shell-lifecycle-recovery.ps1` validation was confirmed on 2026-03-12 for process-death stale sending recovery, background/foreground due retry resilience, and process-death delayed retry recovery over `adb reverse`
 - Physical-device `validate-shell-recovery-soak.ps1` smoke validation was confirmed on 2026-03-12 for 2 combined iterations of manual shell recovery plus lifecycle recovery over `adb reverse`
+- Physical-device `validate-shell-recovery-soak.ps1` post-cleanup validation was confirmed on 2026-03-14 for 8 combined iterations of manual shell recovery plus lifecycle recovery over `adb reverse`, while paired-device / pairing-session / transfer-outbox counts remained flat after each cleanup
 - Physical-device USB reconnect can clear `adb reverse`; if chat-triggered `Check companion health`, `Send notification`, or `workflow.run` suddenly fail with `127.0.0.1:8787` connection errors, rerun `adb reverse tcp:8787 tcp:8787` or `scripts\bootstrap-transport-validation.ps1 -EndpointPreset adb_reverse`
 - The foreground due-retry smoke path now backgrounds the app before queueing the draft so the `Queued -> foreground -> Delivered` transition stays stable across repeated runs
 - Transfer drafts now recover stale `Sending` states, apply per-draft backoff, and schedule delayed retries for retryable HTTP/network failures
@@ -83,7 +86,23 @@ Current scope:
 - When the repo lives under OneDrive on Windows, Gradle build outputs are redirected to `%LOCALAPPDATA%\\Makoion\\android-gradle-build` by default to avoid sync-lock failures; set `MAKOION_ANDROID_BUILD_ROOT` to override that location
 
 Planned next:
-- multi-hour physical-device soak validation of foreground recovery and retry/task restoration using `scripts\validate-shell-recovery-soak.ps1`
-- `workflow.run` allowlist expansion and follow-up `app.open` target polish
+- multi-hour physical-device soak validation of foreground recovery and retry/task restoration using the duration-based `scripts\validate-shell-recovery-soak.ps1` harness
+- additional `workflow.run` allowlist expansion and follow-up `app.open` target polish beyond `open_latest_action`
 - pull-based companion recovery for transfers that still cannot stream binary payloads
 - delete-consent/source-delete edge-case coverage across MediaStore and SAF mixed-source batches
+
+Long-run soak example:
+
+```powershell
+pwsh -NoProfile -File projects/apps/android/scripts/validate-shell-recovery-soak.ps1 `
+  -Serial <adb-serial> `
+  -EndpointPreset adb_reverse `
+  -DurationMinutes 240 `
+  -Iterations 0 `
+  -StepTimeoutMinutes 20 `
+  -ArtifactDirectory results/shell-recovery-soak-20260314 `
+  -SummaryPath results/shell-recovery-soak-20260314/summary.json
+```
+
+- `Iterations 0` removes the iteration cap when a duration-based soak run is used.
+- If `SummaryPath` is omitted, the script now writes `summary.json` into the artifact directory automatically.

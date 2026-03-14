@@ -1061,6 +1061,16 @@ public final class Main {
             } else if ("actions_folder".equalsIgnoreCase(targetKind)) {
                 targetPath = ensureActionsDirectory(config.inboxDir());
                 targetSummary = "Companion actions directory";
+            } else if ("latest_action".equalsIgnoreCase(targetKind)) {
+                targetPath = findLatestActionDirectory(config.inboxDir());
+                if (targetPath == null) {
+                    return new DesktopOpenResult(
+                        false,
+                        "No materialized action directory was found for latest_action.",
+                        ""
+                    );
+                }
+                targetSummary = "Latest companion action directory";
             } else {
                 return new DesktopOpenResult(
                     false,
@@ -1164,6 +1174,47 @@ public final class Main {
                 );
             }
         }
+        if ("open_latest_action".equalsIgnoreCase(workflowId)) {
+            if ("record_only".equalsIgnoreCase(runMode)) {
+                return new WorkflowRunResult(
+                    false,
+                    "Workflow request was recorded without executing open_latest_action."
+                );
+            }
+            if (!Desktop.isDesktopSupported()) {
+                return new WorkflowRunResult(
+                    false,
+                    "Desktop actions are unavailable, so the workflow request was recorded only."
+                );
+            }
+            try {
+                Desktop desktop = Desktop.getDesktop();
+                if (!desktop.isSupported(Desktop.Action.OPEN)) {
+                    return new WorkflowRunResult(
+                        false,
+                        "Desktop OPEN action is unavailable, so the workflow request was recorded only."
+                    );
+                }
+                Path latestActionDir = findLatestActionDirectory(config.inboxDir());
+                if (latestActionDir == null) {
+                    return new WorkflowRunResult(
+                        false,
+                        "No materialized action directory was found for open_latest_action."
+                    );
+                }
+                desktop.open(latestActionDir.toFile());
+                return new WorkflowRunResult(
+                    true,
+                    "Latest companion action directory was opened through the desktop shell: "
+                        + latestActionDir.getFileName()
+                );
+            } catch (Exception exception) {
+                return new WorkflowRunResult(
+                    false,
+                    "Desktop workflow failed: " + exception.getMessage()
+                );
+            }
+        }
         return new WorkflowRunResult(
             false,
             "Unknown workflow id: " + workflowId
@@ -1187,6 +1238,19 @@ public final class Main {
         Path actionsDir = inboxDir.resolve("actions");
         Files.createDirectories(actionsDir);
         return actionsDir;
+    }
+
+    private static Path findLatestActionDirectory(Path inboxDir) throws IOException {
+        Path actionsDir = inboxDir.resolve("actions");
+        if (!Files.exists(actionsDir)) {
+            return null;
+        }
+        try (var paths = Files.list(actionsDir)) {
+            return paths
+                .filter(Files::isDirectory)
+                .max((left, right) -> left.getFileName().toString().compareTo(right.getFileName().toString()))
+                .orElse(null);
+        }
     }
 
     private static TrayIcon ensureTrayIcon() throws Exception {

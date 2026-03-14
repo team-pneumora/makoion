@@ -15,6 +15,7 @@ import io.makoion.mobileclaw.data.TransferDraftStatus
 import io.makoion.mobileclaw.data.TransportValidationMode
 import io.makoion.mobileclaw.data.companionAppOpenTargetActionsFolder
 import io.makoion.mobileclaw.data.companionAppOpenTargetInbox
+import io.makoion.mobileclaw.data.companionAppOpenTargetLatestAction
 import io.makoion.mobileclaw.data.companionAppOpenTargetLatestTransfer
 import io.makoion.mobileclaw.notifications.ShellNotificationCenter
 import io.makoion.mobileclaw.ui.ShellSection
@@ -317,6 +318,17 @@ class DebugTransportReceiver : BroadcastReceiver() {
                     details = "Requested an immediate transport drain from adb debug automation.",
                 )
             }
+            commandCleanupValidationDevice -> {
+                val deviceId = resolveTargetDeviceId(
+                    requestedDeviceId = intent.getStringExtra(extraDeviceId),
+                    application = application,
+                ) ?: return
+                cleanupValidationDevice(
+                    context = context,
+                    application = application,
+                    deviceId = deviceId,
+                )
+            }
             commandRequeueFailed -> {
                 deviceRepository.retryFailedTransfers(
                     intent.getStringExtra(extraDeviceId),
@@ -436,6 +448,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
 
     private fun defaultWorkflowLabelFor(workflowId: String): String {
         return when (workflowId) {
+            workflowIdOpenLatestAction -> "Open latest action"
             workflowIdOpenActionsFolder -> "Open actions folder"
             else -> "Open latest transfer"
         }
@@ -443,6 +456,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
 
     private fun defaultAppOpenLabelFor(targetKind: String): String {
         return when (targetKind) {
+            companionAppOpenTargetLatestAction -> "Latest action folder"
             companionAppOpenTargetLatestTransfer -> "Latest transfer folder"
             companionAppOpenTargetActionsFolder -> "Actions folder"
             else -> "Desktop companion inbox"
@@ -506,6 +520,61 @@ class DebugTransportReceiver : BroadcastReceiver() {
             },
             "id = ?",
             arrayOf(deviceId),
+        )
+    }
+
+    private suspend fun cleanupValidationDevice(
+        context: Context,
+        application: MobileClawApplication,
+        deviceId: String,
+    ) {
+        val databaseHelper = ShellDatabaseHelper(context)
+        val deviceName = application.appContainer.devicePairingRepository.pairedDevices.value
+            .firstOrNull { it.id == deviceId }
+            ?.name
+            ?: deviceId
+        val trustedSecret = databaseHelper.readableDatabase.query(
+            "paired_devices",
+            arrayOf("trusted_secret"),
+            "id = ?",
+            arrayOf(deviceId),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) {
+                null
+            } else {
+                cursor.getString(cursor.getColumnIndexOrThrow("trusted_secret"))
+            }
+        }
+        val removedDraftCount = databaseHelper.writableDatabase.delete(
+            "transfer_outbox",
+            "device_id = ?",
+            arrayOf(deviceId),
+        )
+        val removedDeviceCount = databaseHelper.writableDatabase.delete(
+            "paired_devices",
+            "id = ?",
+            arrayOf(deviceId),
+        )
+        val removedSessionCount = trustedSecret?.let { secret ->
+            databaseHelper.writableDatabase.delete(
+                "pairing_sessions",
+                "LOWER(qr_secret) = ?",
+                arrayOf(secret.lowercase()),
+            )
+        } ?: 0
+        application.appContainer.devicePairingRepository.refresh()
+        application.appContainer.auditTrailRepository.logAction(
+            action = "devices.debug_transport",
+            result = if (removedDeviceCount > 0) "validation_device_cleaned" else "validation_device_cleanup_skipped",
+            details = if (removedDeviceCount > 0) {
+                "Cleaned validation device $deviceName and removed $removedDraftCount draft(s), $removedSessionCount pairing session(s)."
+            } else {
+                "No validation device matched $deviceId for cleanup."
+            },
         )
     }
 
@@ -632,6 +701,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
         const val commandQueueDueRetryDraft = "queue_due_retry_draft"
         const val commandQueueDelayedRetryDraft = "queue_delayed_retry_draft"
         const val commandDrainOutbox = "drain_outbox"
+        const val commandCleanupValidationDevice = "cleanup_validation_device"
         const val commandRequeueFailed = "requeue_failed"
         const val commandQueueDebugTransfer = "queue_debug_transfer"
         const val commandQueueDebugArchiveTransfer = "queue_debug_archive_transfer"
@@ -646,6 +716,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
         private const val defaultSessionNotificationTitle = "Makoion session ping"
         private const val defaultSessionNotificationBody = "Android debug automation delivered a session.notify probe."
         private const val defaultWorkflowId = "open_latest_transfer"
+        private const val workflowIdOpenLatestAction = "open_latest_action"
         private const val workflowIdOpenLatestTransfer = "open_latest_transfer"
         private const val workflowIdOpenActionsFolder = "open_actions_folder"
         private const val staleRecoveryDraftAgeMs = 2 * 60 * 1000L

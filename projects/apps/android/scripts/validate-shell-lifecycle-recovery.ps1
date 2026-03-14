@@ -631,6 +631,7 @@ function Validate-ProcessDeathDelayedRetry {
 
 $script:ResolvedSerial = Resolve-TargetSerial -RequestedSerial $Serial
 $companion = $null
+$cleanupDeviceId = $null
 
 try {
     Write-ValidationStep "Starting desktop companion on port $Port"
@@ -648,6 +649,7 @@ try {
     if (-not $deviceId) {
         throw "No paired Direct HTTP device was found after bootstrap."
     }
+    $cleanupDeviceId = $deviceId
     Write-ValidationStep "Bootstrapped device $deviceId at endpoint $($bootstrap.endpoint)"
 
     $beforeBootstrapRecoveryAudit = Get-LatestAuditTimestamp -State $bootstrappedState -Action "shell.recovery"
@@ -680,6 +682,15 @@ try {
     Write-ValidationStep "ERROR: $($_.Exception.Message)"
     throw
 } finally {
+    if ($cleanupDeviceId) {
+        try {
+            Invoke-DebugTransportCommand -Command "cleanup_validation_device" -StringExtras @{
+                device_id = $cleanupDeviceId
+            }
+        } catch {
+            Write-ValidationStep "Cleanup skipped for ${cleanupDeviceId}: $($_.Exception.Message)"
+        }
+    }
     if ($companion -and $companion.Process -and -not $LeaveCompanionRunning) {
         Stop-ValidationCompanion -Process $companion.Process
     }

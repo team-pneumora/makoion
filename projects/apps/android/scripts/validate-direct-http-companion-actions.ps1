@@ -2,18 +2,20 @@ param(
     [string]$Serial,
     [ValidateSet("adb_reverse", "emulator_host")]
     [string]$EndpointPreset = "adb_reverse",
-    [ValidateSet("inbox", "latest_transfer", "actions_folder")]
+    [ValidateSet("inbox", "latest_transfer", "actions_folder", "latest_action")]
     [string[]]$AppOpenTargetKinds = @(
         "inbox",
         "latest_transfer",
-        "actions_folder"
+        "actions_folder",
+        "latest_action"
     ),
     [ValidateSet("record_only", "best_effort")]
     [string]$AppOpenMode = "record_only",
-    [ValidateSet("open_latest_transfer", "open_actions_folder")]
+    [ValidateSet("open_latest_transfer", "open_actions_folder", "open_latest_action")]
     [string[]]$WorkflowIds = @(
         "open_latest_transfer",
-        "open_actions_folder"
+        "open_actions_folder",
+        "open_latest_action"
     ),
     [ValidateSet("record_only", "best_effort")]
     [string]$WorkflowRunMode = "record_only",
@@ -272,6 +274,11 @@ function Initialize-AppOpenTarget {
         Set-Content -Path (Join-Path $seedTransferDir "summary.txt") -Value "Seed transfer for app.open validation."
     } elseif ($TargetKind -eq "actions_folder") {
         New-Item -ItemType Directory -Force -Path (Join-Path $inboxPath $actionsDirName) | Out-Null
+    } elseif ($TargetKind -eq "latest_action") {
+        $seedActionDir = Join-Path $inboxPath "$actionsDirName\99991231-235959-notify-seed"
+        New-Item -ItemType Directory -Force -Path $seedActionDir | Out-Null
+        Set-Content -Path (Join-Path $seedActionDir "request.json") -Value '{"request_id":"seed-app-open"}'
+        Set-Content -Path (Join-Path $seedActionDir "summary.txt") -Value "Seed action for app.open validation."
     }
 }
 
@@ -284,6 +291,11 @@ function Initialize-WorkflowTarget {
         Set-Content -Path (Join-Path $seedTransferDir "summary.txt") -Value "Seed transfer for workflow.run validation."
     } elseif ($WorkflowId -eq "open_actions_folder") {
         New-Item -ItemType Directory -Force -Path (Join-Path $inboxPath $actionsDirName) | Out-Null
+    } elseif ($WorkflowId -eq "open_latest_action") {
+        $seedActionDir = Join-Path $inboxPath "$actionsDirName\99991231-235959-notify-seed"
+        New-Item -ItemType Directory -Force -Path $seedActionDir | Out-Null
+        Set-Content -Path (Join-Path $seedActionDir "request.json") -Value '{"request_id":"seed-workflow-run"}'
+        Set-Content -Path (Join-Path $seedActionDir "summary.txt") -Value "Seed action for workflow.run validation."
     }
 }
 
@@ -466,10 +478,10 @@ function Invoke-WorkflowValidation {
         [string]$WorkflowId
     )
 
-    $workflowLabel = if ($WorkflowId -eq "open_actions_folder") {
-        "Open actions folder"
-    } else {
-        "Open latest transfer"
+    $workflowLabel = switch ($WorkflowId) {
+        "open_actions_folder" { "Open actions folder" }
+        "open_latest_action" { "Open latest action" }
+        default { "Open latest transfer" }
     }
 
     $initialState = Read-ValidationState

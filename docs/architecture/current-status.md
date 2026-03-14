@@ -80,8 +80,11 @@
   - Settings 고급 도구와 Chat turn에서 companion `health` probe 실행 가능
   - Settings 고급 도구와 Chat turn에서 `session.notify` probe 전송 가능
   - Settings 고급 도구와 Chat turn에서 `app.open` probe 전송 가능
-  - Devices 탭에서 `app.open` target을 `inbox`, `latest_transfer`, `actions_folder`까지 확장
+  - Devices 탭에서 `app.open` target을 `inbox`, `latest_transfer`, `actions_folder`, `latest_action`까지 확장
   - Settings 고급 도구와 Chat turn에서 allowlisted `workflow.run` seed 전송 가능
+    - `open_latest_transfer`
+    - `open_actions_folder`
+    - `open_latest_action`
   - Devices 탭 remote action 버튼을 advertised capability snapshot 기준으로 gating
   - foreground 진입 시 approval/device/organize/audit refresh와 transfer recovery를 다시 거는 shell recovery coordinator 추가
   - Devices 탭 Bridge controls에서 shell recovery 상태, trigger, 최근 성공/실패 요약을 바로 볼 수 있게 보강
@@ -104,8 +107,8 @@
   - `app.open` request materialization (`request.json`, `summary.txt`)
   - `workflow.run` request materialization (`request.json`, `summary.txt`)
   - system tray 기반 best-effort desktop notification 표시
-  - desktop shell 기반 best-effort `inbox` / `latest_transfer` / `actions_folder` open
-  - allowlisted desktop workflow `open_latest_transfer`, `open_actions_folder` seed 실행
+  - desktop shell 기반 best-effort `inbox` / `latest_transfer` / `actions_folder` / `latest_action` open
+  - allowlisted desktop workflow `open_latest_transfer`, `open_actions_folder`, `open_latest_action` seed 실행
 
 ---
 
@@ -192,6 +195,9 @@
   - `scripts/validate-shell-recovery-soak.ps1` 로 실기기 short soak smoke 검증 완료
     - manual recovery + lifecycle recovery combined 2 iterations -> 모두 `통과`
     - foreground due retry 시나리오는 background-first queue + foreground resume 으로 race 없이 고정
+  - 2026-03-14 build에서 validation cleanup 경로 추가 후 `scripts/validate-shell-recovery-soak.ps1` 8 iterations 재검증 통과
+    - validation device / pairing session / transfer draft cleanup가 각 run 종료 후 수행됨
+    - paired device / pairing session / transfer outbox count가 더 이상 증가하지 않음
 - `projects/apps/desktop-companion`
   - `javac` 컴파일
   - `/health` 응답 확인
@@ -213,6 +219,8 @@
   - `scripts/validate-shell-recovery.ps1` 기준 stale/due/delayed retry 복구는 실기기 통과
   - `scripts/validate-shell-lifecycle-recovery.ps1` 기준 process death / background-resume baseline은 실기기 통과
   - `scripts/validate-shell-recovery-soak.ps1` 기준 short combined smoke loop 2회도 실기기 통과
+  - validation cleanup 추가 후 8-iteration short soak 재검증도 실기기 통과
+  - 2026-03-14 기준 `validate-shell-recovery-soak.ps1` 는 `DurationMinutes`, `StepTimeoutMinutes`, artifact directory, default `summary.json` output을 지원하도록 확장되어 장시간 unattended run 준비는 끝남
   - Devices 탭 shell recovery 상태 노출은 반영 완료
   - manual shell recovery audit trail 기록은 반영 완료
   - Approvals 탭 상단 `Jump to audit trail` 바로가기로 recovery/audit 확인 동선 보강 완료
@@ -235,13 +243,13 @@ background refresh / task recovery 고도화
 
 - foreground 진입 시 refresh/recovery coordinator를 기준으로 stale state 자동 회복 강화
 - 앱 재시작 후 in-flight task 복원과 approval / transfer / organize 최신 상태 동기화 검증
-- 장시간 대기 후 foreground 복귀 시 transfer retry / audit / organize pending state가 정상 재표면화되는지 확인
+- duration-based soak harness로 장시간 대기 후 foreground 복귀 시 transfer retry / audit / organize pending state가 정상 재표면화되는지 확인
 
 ### 우선순위 2
 
 Phase 2 원격 세션 액션 확장 및 하드닝
 
-- `workflow.run` allowlist 확장과 `app.open` 후속 target 유형 정리
+- `workflow.run` 추가 allowlist 확장과 `app.open` 후속 target 유형 정리
 - action materialization / audit trail / capability surface를 `files.transfer`와 같은 기준으로 정리
 
 ### 우선순위 3

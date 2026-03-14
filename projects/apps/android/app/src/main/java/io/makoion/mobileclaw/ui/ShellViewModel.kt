@@ -39,6 +39,7 @@ import io.makoion.mobileclaw.data.VoiceEntryState
 import io.makoion.mobileclaw.data.OrganizeExecutionResult
 import io.makoion.mobileclaw.data.companionAppOpenTargetActionsFolder
 import io.makoion.mobileclaw.data.companionAppOpenTargetInbox
+import io.makoion.mobileclaw.data.companionAppOpenTargetLatestAction
 import io.makoion.mobileclaw.data.companionAppOpenTargetLatestTransfer
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -207,11 +208,14 @@ private val defaultOverviewCards = listOf(
 
 private const val adbReverseEndpoint = "http://127.0.0.1:8787/api/v1/transfers"
 private const val emulatorHostEndpoint = "http://10.0.2.2:8787/api/v1/transfers"
+private const val desktopWorkflowIdOpenLatestAction = "open_latest_action"
+private const val desktopWorkflowLabelOpenLatestAction = "Open latest action"
 private const val desktopWorkflowIdOpenLatestTransfer = "open_latest_transfer"
 private const val desktopWorkflowLabelOpenLatestTransfer = "Open latest transfer"
 private const val desktopWorkflowIdOpenActionsFolder = "open_actions_folder"
 private const val desktopWorkflowLabelOpenActionsFolder = "Open actions folder"
 private const val desktopAppOpenLabelInbox = "Desktop companion inbox"
+private const val desktopAppOpenLabelLatestAction = "Latest action folder"
 private const val desktopAppOpenLabelLatestTransfer = "Latest transfer folder"
 private const val desktopAppOpenLabelActionsFolder = "Actions folder"
 
@@ -1106,6 +1110,13 @@ class ShellViewModel(
         )
     }
 
+    fun openLatestActionFolderOnSelectedDevice() {
+        sendAppOpenToSelectedDevice(
+            targetKind = companionAppOpenTargetLatestAction,
+            targetLabel = desktopAppOpenLabelLatestAction,
+        )
+    }
+
     fun openActionsFolderOnSelectedDevice() {
         sendAppOpenToSelectedDevice(
             targetKind = companionAppOpenTargetActionsFolder,
@@ -1146,6 +1157,13 @@ class ShellViewModel(
         runWorkflowOnSelectedDevice(
             workflowId = desktopWorkflowIdOpenLatestTransfer,
             workflowLabel = desktopWorkflowLabelOpenLatestTransfer,
+        )
+    }
+
+    fun runOpenLatestActionWorkflowOnSelectedDevice() {
+        runWorkflowOnSelectedDevice(
+            workflowId = desktopWorkflowIdOpenLatestAction,
+            workflowLabel = desktopWorkflowLabelOpenLatestAction,
         )
     }
 

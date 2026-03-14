@@ -1,7 +1,7 @@
 param(
     [int]$Port = 8793,
     [string]$InboxDir = "inbox-validate-app-open",
-    [ValidateSet("inbox", "latest_transfer", "actions_folder")]
+    [ValidateSet("inbox", "latest_transfer", "actions_folder", "latest_action")]
     [string]$TargetKind = "inbox",
     [ValidateSet("record_only", "best_effort")]
     [string]$OpenMode = "record_only"
@@ -25,6 +25,7 @@ function Get-TargetLabel {
     switch ($Kind) {
         "latest_transfer" { return "Latest transfer folder" }
         "actions_folder" { return "Actions folder" }
+        "latest_action" { return "Latest action folder" }
         default { return "Desktop companion inbox" }
     }
 }
@@ -72,6 +73,11 @@ try {
         $seedTransferDir = Join-Path $inboxPath "99991231-235959-transfer-seed"
         New-Item -ItemType Directory -Force -Path $seedTransferDir | Out-Null
         Set-Content -Path (Join-Path $seedTransferDir "summary.txt") -Value "Seed transfer for app.open validation."
+    } elseif ($TargetKind -eq "latest_action") {
+        $seedActionDir = Join-Path $inboxPath "actions\99991231-235959-notify-seed"
+        New-Item -ItemType Directory -Force -Path $seedActionDir | Out-Null
+        Set-Content -Path (Join-Path $seedActionDir "request.json") -Value '{"request_id":"seed-app-open"}'
+        Set-Content -Path (Join-Path $seedActionDir "summary.txt") -Value "Seed action for app.open validation."
     }
 
     $requestId = "app-open-test-$sessionTag"

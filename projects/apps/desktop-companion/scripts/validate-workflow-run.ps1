@@ -1,7 +1,7 @@
 param(
     [int]$Port = 8794,
     [string]$InboxDir = "inbox-validate-workflow-run",
-    [ValidateSet("open_latest_transfer", "open_actions_folder")]
+    [ValidateSet("open_latest_transfer", "open_actions_folder", "open_latest_action")]
     [string]$WorkflowId = "open_latest_transfer",
     [ValidateSet("record_only", "best_effort")]
     [string]$RunMode = "record_only"
@@ -48,6 +48,12 @@ function Initialize-WorkflowTarget {
         "open_actions_folder" {
             New-Item -ItemType Directory -Force -Path (Join-Path $inboxPath "actions") | Out-Null
         }
+        "open_latest_action" {
+            $seedActionDir = Join-Path $inboxPath "actions\99991231-235959-notify-seed"
+            New-Item -ItemType Directory -Force -Path $seedActionDir | Out-Null
+            Set-Content -Path (Join-Path $seedActionDir "request.json") -Value '{"request_id":"seed-workflow-run"}'
+            Set-Content -Path (Join-Path $seedActionDir "summary.txt") -Value "Seed action for workflow.run validation."
+        }
     }
 }
 
@@ -75,10 +81,10 @@ try {
     Initialize-WorkflowTarget -SelectedWorkflowId $WorkflowId
 
     $requestId = "workflow-run-test-$sessionTag"
-    $workflowLabel = if ($WorkflowId -eq "open_actions_folder") {
-        "Open actions folder"
-    } else {
-        "Open latest transfer"
+    $workflowLabel = switch ($WorkflowId) {
+        "open_actions_folder" { "Open actions folder" }
+        "open_latest_action" { "Open latest action" }
+        default { "Open latest transfer" }
     }
     $body = @{
         request_id = $requestId

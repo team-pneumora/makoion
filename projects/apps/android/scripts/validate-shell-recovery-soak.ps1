@@ -4,10 +4,13 @@ param(
     [string]$EndpointPreset = "adb_reverse",
     [int]$BasePort = 8820,
     [int]$Iterations = 2,
+    [int]$DurationMinutes = 0,
     [int]$PauseBetweenIterationsSeconds = 5,
     [int]$PollIntervalSeconds = 2,
     [int]$RecoveryDelaySeconds = 15,
     [int]$BackgroundPauseSeconds = 4,
+    [int]$StepTimeoutMinutes = 15,
+    [string]$ArtifactDirectory,
     [string]$SummaryPath,
     [switch]$SkipManualRecovery,
     [switch]$SkipLifecycleRecovery,
@@ -17,6 +20,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$androidProjectDir = Split-Path -Parent $scriptDir
 $manualRecoveryScript = Join-Path $scriptDir "validate-shell-recovery.ps1"
 $lifecycleRecoveryScript = Join-Path $scriptDir "validate-shell-lifecycle-recovery.ps1"
 $sessionTag = Get-Date -Format "yyyyMMdd-HHmmss-fff"
@@ -30,6 +34,18 @@ if (-not (Test-Path $lifecycleRecoveryScript)) {
 if ($SkipManualRecovery -and $SkipLifecycleRecovery) {
     throw "At least one validation path must remain enabled."
 }
+if ($Iterations -lt 0) {
+    throw "Iterations must be zero or greater."
+}
+if ($DurationMinutes -lt 0) {
+    throw "DurationMinutes must be zero or greater."
+}
+if ($StepTimeoutMinutes -lt 1) {
+    throw "StepTimeoutMinutes must be at least 1."
+}
+if ($Iterations -eq 0 -and $DurationMinutes -eq 0) {
+    throw "Specify Iterations greater than zero or set DurationMinutes for a duration-based soak run."
+}
 
 function Write-SoakStep {
     param([string]$Message)
@@ -37,8 +53,104 @@ function Write-SoakStep {
     Write-Host "[validate-shell-recovery-soak] $Message"
 }
 
+function Stop-ValidationProcess {
+    param([System.Diagnostics.Process]$Process)
+
+    if (-not $Process) {
+        return
+    }
+
+    if ($Process.HasExited) {
+        return
+    }
+
+    $null = & taskkill.exe /PID $Process.Id /T /F 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 300
+}
+
+function Get-OutputPreview {
+    param(
+        [string]$Text,
+        [int]$MaxLength = 240
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    $singleLine = ($Text -replace "\s+", " ").Trim()
+    if ($singleLine.Length -le $MaxLength) {
+        return $singleLine
+    }
+    return $singleLine.Substring(0, $MaxLength) + "..."
+}
+
+function Get-ValidationOutputSummary {
+    param([string]$OutputPath)
+
+    if (-not (Test-Path $OutputPath)) {
+        return $null
+    }
+
+    $raw = Get-Content -Raw $OutputPath
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $null
+    }
+
+    $jsonStart = $null
+    $rawLines = $raw -split "\r?\n"
+    for ($index = 0; $index -lt $rawLines.Count; $index++) {
+        if ($rawLines[$index].TrimStart().StartsWith("{")) {
+            $jsonStart = $index
+            break
+        }
+    }
+
+    $candidateJson = if ($null -ne $jsonStart) {
+        ($rawLines[$jsonStart..($rawLines.Count - 1)] -join [Environment]::NewLine).Trim()
+    } else {
+        $raw.Trim()
+    }
+
+    try {
+        $payload = $candidateJson | ConvertFrom-Json -Depth 12
+        $scenarios = @()
+        if ($payload.PSObject.Properties.Name -contains "validations") {
+            $scenarios = @(
+                $payload.validations |
+                    ForEach-Object { $_.scenario } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        }
+
+        return [pscustomobject]@{
+            validation_count = $scenarios.Count
+            scenarios = $scenarios
+            bootstrap_endpoint = if ($payload.bootstrap) { $payload.bootstrap.endpoint } else { $null }
+            companion_endpoint = if ($payload.companion_health) { $payload.companion_health.endpoint } else { $null }
+        }
+    } catch {
+        return [pscustomobject]@{
+            parse_error = $_.Exception.Message
+            output_preview = Get-OutputPreview -Text $raw
+        }
+    }
+}
+
+function Test-DurationExpired {
+    if (-not $script:DeadlineAt) {
+        return $false
+    }
+
+    return (Get-Date) -ge $script:DeadlineAt
+}
+
 function Invoke-RecoveryValidation {
     param(
+        [int]$Iteration,
         [string]$Name,
         [string]$ScriptPath,
         [int]$Port,
@@ -47,6 +159,9 @@ function Invoke-RecoveryValidation {
 
     $startedAt = Get-Date
     Write-SoakStep "Starting $Name on port $Port"
+    $artifactBase = "{0:d3}-{1}-{2}" -f $Iteration, $Name, $Port
+    $stdoutPath = Join-Path $script:ResolvedArtifactDirectory "$artifactBase.stdout.log"
+    $stderrPath = Join-Path $script:ResolvedArtifactDirectory "$artifactBase.stderr.log"
     try {
         $arguments = @(
             "-NoProfile",
@@ -64,8 +179,6 @@ function Invoke-RecoveryValidation {
         foreach ($entry in $ExtraParameters.GetEnumerator()) {
             $arguments += @("-$($entry.Key)", [string]$entry.Value)
         }
-        $stdoutPath = Join-Path $env:TEMP ("makoion-soak-{0}-{1}.stdout.log" -f $sessionTag, $Port)
-        $stderrPath = Join-Path $env:TEMP ("makoion-soak-{0}-{1}.stderr.log" -f $sessionTag, $Port)
         if (Test-Path $stdoutPath) {
             Remove-Item $stdoutPath -Force
         }
@@ -76,11 +189,16 @@ function Invoke-RecoveryValidation {
             -ArgumentList $arguments `
             -RedirectStandardOutput $stdoutPath `
             -RedirectStandardError $stderrPath `
-            -Wait `
-            -PassThru `
-            -NoNewWindow
+            -PassThru
+        $completed = $process.WaitForExit($StepTimeoutMinutes * 60 * 1000)
+        if (-not $completed) {
+            Stop-ValidationProcess -Process $process
+            throw "$Name timed out after $StepTimeoutMinutes minute(s)."
+        }
+        $process.WaitForExit()
         $stdout = if (Test-Path $stdoutPath) { Get-Content -Raw $stdoutPath } else { "" }
         $stderr = if (Test-Path $stderrPath) { Get-Content -Raw $stderrPath } else { "" }
+        $outputSummary = Get-ValidationOutputSummary -OutputPath $stdoutPath
         if ($process.ExitCode -ne 0) {
             $message = ($stderr.Trim(), $stdout.Trim() | Where-Object { $_ }) -join " "
             if ([string]::IsNullOrWhiteSpace($message)) {
@@ -91,6 +209,7 @@ function Invoke-RecoveryValidation {
         $completedAt = Get-Date
         Write-SoakStep "Completed $Name in $([math]::Round(($completedAt - $startedAt).TotalSeconds, 1))s"
         return [pscustomobject]@{
+            iteration = $Iteration
             name = $Name
             script = $ScriptPath
             port = $Port
@@ -98,14 +217,21 @@ function Invoke-RecoveryValidation {
             completed_at = $completedAt.ToString("o")
             duration_seconds = [math]::Round(($completedAt - $startedAt).TotalSeconds, 3)
             succeeded = $true
-            output = $stdout.Trim()
+            output_path = $stdoutPath
+            error_path = if (Test-Path $stderrPath) { $stderrPath } else { $null }
+            output_preview = Get-OutputPreview -Text $stdout
+            result_summary = $outputSummary
             error = $null
         }
     } catch {
         $failedAt = Get-Date
         $message = $_.Exception.Message
+        $stdout = if (Test-Path $stdoutPath) { Get-Content -Raw $stdoutPath } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content -Raw $stderrPath } else { "" }
+        $outputSummary = Get-ValidationOutputSummary -OutputPath $stdoutPath
         Write-SoakStep "FAILED $Name in $([math]::Round(($failedAt - $startedAt).TotalSeconds, 1))s: $message"
         return [pscustomobject]@{
+            iteration = $Iteration
             name = $Name
             script = $ScriptPath
             port = $Port
@@ -113,7 +239,11 @@ function Invoke-RecoveryValidation {
             completed_at = $failedAt.ToString("o")
             duration_seconds = [math]::Round(($failedAt - $startedAt).TotalSeconds, 3)
             succeeded = $false
-            output = $null
+            output_path = if (Test-Path $stdoutPath) { $stdoutPath } else { $null }
+            error_path = if (Test-Path $stderrPath) { $stderrPath } else { $null }
+            output_preview = Get-OutputPreview -Text $stdout
+            error_preview = Get-OutputPreview -Text $stderr
+            result_summary = $outputSummary
             error = $message
         }
     }
@@ -141,88 +271,174 @@ function Resolve-TargetSerial {
 }
 
 $script:ResolvedSerial = Resolve-TargetSerial -RequestedSerial $Serial
+$script:ResolvedArtifactDirectory = if ($ArtifactDirectory) {
+    $ArtifactDirectory
+} else {
+    Join-Path $env:TEMP "makoion-shell-recovery-soak-$sessionTag"
+}
+New-Item -ItemType Directory -Force -Path $script:ResolvedArtifactDirectory | Out-Null
+$resolvedSummaryPath = if ($SummaryPath) {
+    $SummaryPath
+} else {
+    Join-Path $script:ResolvedArtifactDirectory "summary.json"
+}
+$effectiveIterationLimit = $Iterations
+if ($DurationMinutes -gt 0 -and ((-not $PSBoundParameters.ContainsKey("Iterations")) -or $Iterations -eq 0)) {
+    $effectiveIterationLimit = [int]::MaxValue
+}
+$script:DeadlineAt = if ($DurationMinutes -gt 0) {
+    (Get-Date).AddMinutes($DurationMinutes)
+} else {
+    $null
+}
 $startedAt = Get-Date
 $iterationResults = [System.Collections.Generic.List[object]]::new()
 $haltedEarly = $false
 $haltReason = $null
+$completionReason = $null
 $portCursor = $BasePort
 
-for ($iteration = 1; $iteration -le $Iterations; $iteration++) {
-    Write-SoakStep "Iteration $iteration / $Iterations"
+for ($iteration = 1; $iteration -le $effectiveIterationLimit; $iteration++) {
+    if (Test-DurationExpired) {
+        $completionReason = "duration_elapsed"
+        break
+    }
+
+    $iterationLabel = if ($effectiveIterationLimit -eq [int]::MaxValue) {
+        "Iteration $iteration"
+    } else {
+        "Iteration $iteration / $effectiveIterationLimit"
+    }
+    if ($script:DeadlineAt) {
+        $remainingSeconds = [math]::Max([math]::Round(($script:DeadlineAt - (Get-Date)).TotalSeconds, 1), 0)
+        Write-SoakStep "$iterationLabel (remaining budget ${remainingSeconds}s)"
+    } else {
+        Write-SoakStep $iterationLabel
+    }
     $checks = [System.Collections.Generic.List[object]]::new()
+    $stoppedForDuration = $false
 
     if (-not $SkipManualRecovery) {
-        $manualResult = Invoke-RecoveryValidation `
-            -Name "manual_recovery" `
-            -ScriptPath $manualRecoveryScript `
-            -Port $portCursor
-        $checks.Add($manualResult) | Out-Null
-        $portCursor += 1
-        if (-not $manualResult.succeeded -and -not $ContinueOnFailure) {
-            $haltedEarly = $true
-            $haltReason = "manual_recovery failed during iteration $iteration"
+        if (Test-DurationExpired) {
+            $stoppedForDuration = $true
+        } else {
+            $manualResult = Invoke-RecoveryValidation `
+                -Iteration $iteration `
+                -Name "manual_recovery" `
+                -ScriptPath $manualRecoveryScript `
+                -Port $portCursor
+            $checks.Add($manualResult) | Out-Null
+            $portCursor += 1
+            if (-not $manualResult.succeeded -and -not $ContinueOnFailure) {
+                $haltedEarly = $true
+                $haltReason = "manual_recovery failed during iteration $iteration"
+            }
         }
     }
 
-    if (-not $haltedEarly -and -not $SkipLifecycleRecovery) {
-        $lifecycleResult = Invoke-RecoveryValidation `
-            -Name "lifecycle_recovery" `
-            -ScriptPath $lifecycleRecoveryScript `
-            -Port $portCursor `
-            -ExtraParameters @{
-                RecoveryDelaySeconds = $RecoveryDelaySeconds
-                BackgroundPauseSeconds = $BackgroundPauseSeconds
+    if (-not $haltedEarly -and -not $stoppedForDuration -and -not $SkipLifecycleRecovery) {
+        if (Test-DurationExpired) {
+            $stoppedForDuration = $true
+        } else {
+            $lifecycleResult = Invoke-RecoveryValidation `
+                -Iteration $iteration `
+                -Name "lifecycle_recovery" `
+                -ScriptPath $lifecycleRecoveryScript `
+                -Port $portCursor `
+                -ExtraParameters @{
+                    RecoveryDelaySeconds = $RecoveryDelaySeconds
+                    BackgroundPauseSeconds = $BackgroundPauseSeconds
+                }
+            $checks.Add($lifecycleResult) | Out-Null
+            $portCursor += 1
+            if (-not $lifecycleResult.succeeded -and -not $ContinueOnFailure) {
+                $haltedEarly = $true
+                $haltReason = "lifecycle_recovery failed during iteration $iteration"
             }
-        $checks.Add($lifecycleResult) | Out-Null
-        $portCursor += 1
-        if (-not $lifecycleResult.succeeded -and -not $ContinueOnFailure) {
-            $haltedEarly = $true
-            $haltReason = "lifecycle_recovery failed during iteration $iteration"
         }
+    }
+
+    if ($checks.Count -eq 0 -and $stoppedForDuration) {
+        $completionReason = "duration_elapsed"
+        break
     }
 
     $iterationResults.Add([pscustomobject]@{
         iteration = $iteration
         started_at = ($checks | Select-Object -First 1).started_at
         completed_at = ($checks | Select-Object -Last 1).completed_at
+        check_count = $checks.Count
+        successful_checks = @($checks | Where-Object { $_.succeeded }).Count
+        failed_checks = @($checks | Where-Object { -not $_.succeeded }).Count
         all_succeeded = -not ($checks.succeeded -contains $false)
+        stopped_for_duration = $stoppedForDuration
         checks = $checks
     }) | Out-Null
 
     if ($haltedEarly) {
+        $completionReason = "failure"
+        break
+    }
+    if ($stoppedForDuration -or (Test-DurationExpired)) {
+        $completionReason = "duration_elapsed"
         break
     }
 
-    if ($iteration -lt $Iterations -and $PauseBetweenIterationsSeconds -gt 0) {
+    if ($iteration -lt $effectiveIterationLimit -and $PauseBetweenIterationsSeconds -gt 0) {
         Write-SoakStep "Sleeping $PauseBetweenIterationsSeconds second(s) before the next iteration"
         Start-Sleep -Seconds $PauseBetweenIterationsSeconds
     }
 }
 
 $completedAt = Get-Date
+$allChecks = @($iterationResults | ForEach-Object { $_.checks })
+if (-not $completionReason) {
+    if ($haltedEarly) {
+        $completionReason = "failure"
+    } elseif ($script:DeadlineAt -and (Test-DurationExpired)) {
+        $completionReason = "duration_elapsed"
+    } else {
+        $completionReason = "iteration_limit_reached"
+    }
+}
 $summary = [pscustomobject]@{
     serial = $script:ResolvedSerial
     endpoint_preset = $EndpointPreset
     base_port = $BasePort
     iterations_requested = $Iterations
+    iteration_limit = if ($effectiveIterationLimit -eq [int]::MaxValue) { $null } else { $effectiveIterationLimit }
+    duration_minutes = $DurationMinutes
     iterations_completed = $iterationResults.Count
     started_at = $startedAt.ToString("o")
     completed_at = $completedAt.ToString("o")
     duration_seconds = [math]::Round(($completedAt - $startedAt).TotalSeconds, 3)
+    deadline_at = if ($script:DeadlineAt) { $script:DeadlineAt.ToString("o") } else { $null }
+    step_timeout_minutes = $StepTimeoutMinutes
+    artifact_directory = $script:ResolvedArtifactDirectory
+    summary_path = $resolvedSummaryPath
+    total_checks = $allChecks.Count
+    succeeded_checks = @($allChecks | Where-Object { $_.succeeded }).Count
+    failed_checks = @($allChecks | Where-Object { -not $_.succeeded }).Count
+    average_check_duration_seconds = if ($allChecks.Count -gt 0) {
+        [math]::Round((($allChecks | Measure-Object -Property duration_seconds -Average).Average), 3)
+    } else {
+        0
+    }
     all_succeeded = -not ($iterationResults.all_succeeded -contains $false)
     halted_early = $haltedEarly
     halt_reason = $haltReason
+    completion_reason = $completionReason
     results = $iterationResults
 }
 
 $summaryJson = $summary | ConvertTo-Json -Depth 8
-if ($SummaryPath) {
-    $summaryDir = Split-Path -Parent $SummaryPath
+if ($resolvedSummaryPath) {
+    $summaryDir = Split-Path -Parent $resolvedSummaryPath
     if ($summaryDir) {
         New-Item -ItemType Directory -Force -Path $summaryDir | Out-Null
     }
-    Set-Content -Path $SummaryPath -Value $summaryJson
-    Write-SoakStep "Wrote soak summary to $SummaryPath"
+    Set-Content -Path $resolvedSummaryPath -Value $summaryJson
+    Write-SoakStep "Wrote soak summary to $resolvedSummaryPath"
 }
 
 if (-not $summary.all_succeeded -and -not $ContinueOnFailure) {
@@ -232,5 +448,9 @@ if (-not $summary.all_succeeded -and -not $ContinueOnFailure) {
     throw "Shell recovery soak failed."
 }
 
-Write-SoakStep "Shell recovery soak completed successfully"
+if ($summary.all_succeeded) {
+    Write-SoakStep "Shell recovery soak completed successfully"
+} else {
+    Write-SoakStep "Shell recovery soak completed with one or more failed checks"
+}
 Write-Output $summaryJson

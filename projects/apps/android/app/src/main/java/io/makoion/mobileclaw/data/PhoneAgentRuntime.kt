@@ -1258,6 +1258,7 @@ class LocalPhoneAgentRuntime(
             companionAppOpenTargetInbox -> "Desktop companion inbox"
             companionAppOpenTargetLatestTransfer -> "Latest transfer folder"
             companionAppOpenTargetActionsFolder -> "Actions folder"
+            companionAppOpenTargetLatestAction -> "Latest action folder"
             else -> targetKind
         }
     }
@@ -1271,6 +1272,7 @@ class LocalPhoneAgentRuntime(
                 companionAppOpenTargetInbox -> "companion inbox"
                 companionAppOpenTargetLatestTransfer -> "최근 전송 폴더"
                 companionAppOpenTargetActionsFolder -> "actions 폴더"
+                companionAppOpenTargetLatestAction -> "최근 액션 폴더"
                 else -> targetKind
             }
         } else {
@@ -1282,6 +1284,7 @@ class LocalPhoneAgentRuntime(
         return when (workflowId) {
             desktopWorkflowIdOpenLatestTransfer -> "Open latest transfer"
             desktopWorkflowIdOpenActionsFolder -> "Open actions folder"
+            desktopWorkflowIdOpenLatestAction -> "Open latest action"
             else -> workflowId
         }
     }
@@ -1294,6 +1297,7 @@ class LocalPhoneAgentRuntime(
             when (workflowId) {
                 desktopWorkflowIdOpenLatestTransfer -> "최근 전송 열기"
                 desktopWorkflowIdOpenActionsFolder -> "actions 폴더 열기"
+                desktopWorkflowIdOpenLatestAction -> "최근 액션 열기"
                 else -> workflowId
             }
         } else {
@@ -1394,6 +1398,12 @@ class LocalPhoneAgentRuntime(
                     auditResult = "companion_session_notified",
                 )
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
+                containsAny(normalized, "latest action", "recent action", "last action", "최근 액션", "방금 액션") ->
+                AgentPlannerOutput(
+                    intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenLatestAction),
+                    auditResult = "companion_latest_action_workflow_run",
+                )
+            containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "latest transfer", "recent transfer", "최근 전송", "전송 폴더") ->
                 AgentPlannerOutput(
                     intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenLatestTransfer),
@@ -1409,6 +1419,12 @@ class LocalPhoneAgentRuntime(
                 AgentPlannerOutput(
                     intent = AgentIntent.OpenCompanionTarget(companionAppOpenTargetInbox),
                     auditResult = "companion_inbox_open",
+                )
+            wantsOpen &&
+                containsAny(normalized, "latest action", "recent action", "last action", "최근 액션", "방금 액션") ->
+                AgentPlannerOutput(
+                    intent = AgentIntent.OpenCompanionTarget(companionAppOpenTargetLatestAction),
+                    auditResult = "companion_latest_action_open",
                 )
             wantsOpen && containsAny(normalized, "latest transfer", "recent transfer", "최근 전송", "전송 폴더") ->
                 AgentPlannerOutput(
@@ -1673,6 +1689,7 @@ class LocalPhoneAgentRuntime(
         private const val companionSessionNotifyActionKey = "devices.session_notify"
         private const val companionAppOpenActionKey = "devices.app_open"
         private const val companionWorkflowRunActionKey = "devices.workflow_run"
+        private const val desktopWorkflowIdOpenLatestAction = "open_latest_action"
         private const val desktopWorkflowIdOpenLatestTransfer = "open_latest_transfer"
         private const val desktopWorkflowIdOpenActionsFolder = "open_actions_folder"
         private const val explainCapabilitiesActionKey = "agent.capabilities.explain"
