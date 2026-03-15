@@ -17,6 +17,7 @@
 | 2026-03-16 | Step 2 | 완료 | Android planner contract에 `Answer / Question / Plan / ActionIntent / Escalation` 메타데이터를 도입하고, turn planner 결과를 audit log, task DB, chat/history UI에 구조적으로 남기도록 확장함 | `projects/apps/android`: `.\gradlew.bat :app:compileDebugKotlin` 통과 | 커밋 `96ce8b9`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 | 2026-03-16 | Step 3 | 완료 | Android 셸에 provider profile 저장 구조를 추가하고, `OpenAI / Anthropic / Google Gemini` seed, default/model 선택, Settings UI, turn context model preference, unit test를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `e63bf7f`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 | 2026-03-16 | Step 4 | 완료 | `resource_registry_entries` 저장 구조를 추가하고, phone storage / document roots / cloud drives / companions / AI model providers / MCP/API endpoints를 공통 레코드로 스냅샷 저장하도록 확장함. Settings는 더 이상 즉석 계산 대신 registry DB 스냅샷을 읽는다. | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `373aa4c`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
+| 2026-03-16 | Step 5 | 완료 | cloud drive connector skeleton을 추가하고, `Google Drive / OneDrive / Dropbox` seed, staged/mock-ready/reset 상태, Settings 카드, resource registry Priority 2 연동, turn context cloud summary를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `a2f7b66`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 
 ## 현재 메모
 
@@ -25,4 +26,5 @@
 - Step 2 구현 중 첫 컴파일에서는 `AgentTaskRepository.updateTask()`의 인터페이스/구현체 기본값 불일치로 Kotlin 컴파일이 실패했다. 인터페이스에만 기본값을 남기고 구현체에서 제거한 뒤 재컴파일해 해결했다.
 - Step 3에서는 credential secret 자체는 저장하지 않고, `provider profile / default route / selected model / credential metadata placeholder`까지만 넣었다. Android secure storage 연동은 후속 단계로 남긴다.
 - Step 4에서는 ViewModel이 file/device/provider 변화를 감지해 resource registry snapshot을 DB에 다시 쓰는 구조로 잡았다. 아직 cloud drive 개별 연결 레코드는 없고, Priority 2는 planned placeholder 상태다.
-- 다음 구현 후보는 `cloud drive connector skeleton`과 `provider credential vault 연동`이다.
+- Step 5에서는 실제 OAuth 대신 `Needs setup -> Staged -> Mock ready` placeholder state만 기록한다. token vault와 실제 cloud file graph 연결은 후속 단계다.
+- 다음 구현 후보는 `browser research task skeleton`과 `provider credential vault 연동`이다.
