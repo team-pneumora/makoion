@@ -225,6 +225,10 @@ Makoion은 아래 순서로 자원을 확장한다.
 | 5 | cloud drive connector skeleton | Priority 2 착수 | gdrive/onedrive | Settings | mock/integration | 8.1 |
 | 6 | browser research task skeleton | 정보 수집 capability 시작 | browser | chat task | compile + task tests | 4, 11 Track 4 |
 | 7 | scheduled automation task skeleton | 뉴스 수집/알림 같은 흐름 시작 | scheduler, notification | Dashboard/History | worker tests | 11 Track 6 |
+| 8 | provider credential vault skeleton | 실제 모델 사용 준비 시작 | provider credential, secure settings | Settings | unit + compile | 14.3, Track E |
+| 9 | MCP/API registry skeleton | Priority 4 외부 연동의 표준화 시작 | MCP, external API | Settings | unit + compile | 8.4, Track C/E |
+| 10 | delivery channel registry skeleton | automation 결과 전달 기반 시작 | notification, telegram, email | Settings/Dashboard | unit + compile | 4, Track D/F |
+| 11 | code generation task skeleton | 코드/앱 생성 시나리오의 첫 작업선 추가 | codegen, workspace draft | chat task | compile + task tests | 4, Track D |
 
 ## 9. 작업 수주 템플릿
 
@@ -251,9 +255,11 @@ Makoion은 아래 순서로 자원을 확장한다.
 - 커밋 후 `git push`를 시도하고 결과를 진행 기록에 남긴다.
 - 푸시 실패 시 원인과 다음 조치도 기록한다.
 
-## 12. 이번 턴의 실제 착수 범위
+## 12. 다음 연속 착수 범위
 
-이번 턴에서는 아래 두 가지를 완료 대상으로 둔다.
+Step 7 이후에는 아래 순서로 이어간다.
 
-1. 계획 문서와 진행 기록 문서 추가
-2. Android Settings에 resource stack을 표면화해 자원 우선순위와 현재 연결 상태를 드러내기
+1. provider credential을 단순 metadata가 아니라 폰 내부 vault abstraction으로 저장하고 Settings에서 입력/갱신 경로를 만든다.
+2. MCP/API endpoint를 resource registry와 같은 연결 모델로 seed해 Priority 4 자원을 제품 UI에서 드러낸다.
+3. automation이 notification/telegram/email 같은 delivery channel과 연결될 수 있도록 channel registry placeholder를 만든다.
+4. 대표 시나리오 중 `코드 만들기` 요청을 별도 task skeleton으로 분리해 browser/automation 다음 capability line을 연다.
