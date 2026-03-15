@@ -12,8 +12,8 @@
 
 | 날짜 | 단계 | 상태 | 작업 내용 | 테스트 | 커밋/푸시 |
 |------|------|------|-----------|--------|-----------|
-| 2026-03-15 | Step 0 | 완료 | 사용자 핵심 요구를 바탕으로 agent runtime 확장 계획 문서와 진행 기록 문서를 추가함 | 문서 검토 완료 | 대기 |
-| 2026-03-15 | Step 1 | 완료 | Android Settings에 resource stack을 추가해 `phone -> cloud -> companion -> MCP/API` 우선순위를 제품 UI에 노출함 | `projects/apps/android`: `.\gradlew.bat :app:compileDebugKotlin` 통과 | 대기 |
+| 2026-03-15 | Step 0 | 완료 | 사용자 핵심 요구를 바탕으로 agent runtime 확장 계획 문서와 진행 기록 문서를 추가함 | 문서 검토 완료 | 커밋 및 푸시 완료 |
+| 2026-03-15 | Step 1 | 완료 | Android Settings에 resource stack을 추가해 `phone -> cloud -> companion -> MCP/API` 우선순위를 제품 UI에 노출함 | `projects/apps/android`: `.\gradlew.bat :app:compileDebugKotlin` 통과 | 커밋 `6c00f1f`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 
 ## 현재 메모
 
