@@ -51,6 +51,7 @@ class LocalPhoneAgentRuntime(
     private val auditTrailRepository: AuditTrailRepository,
     private val devicePairingRepository: DevicePairingRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
+    private val codeGenerationProjectRepository: CodeGenerationProjectRepository,
     private val phoneAgentActionCoordinator: PhoneAgentActionCoordinator,
 ) {
     suspend fun processTurn(
@@ -68,6 +69,7 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
             AgentIntent.PlanScheduledAutomation -> planScheduledAutomation(trimmedPrompt, context)
+            AgentIntent.PlanCodeGeneration -> planCodeGeneration(trimmedPrompt, context)
             AgentIntent.PlanBrowserResearch -> planBrowserResearch(trimmedPrompt, context)
             AgentIntent.SummarizeIndexedFiles -> summarizeIndexedFiles(trimmedPrompt, context)
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
@@ -503,6 +505,53 @@ class LocalPhoneAgentRuntime(
                 "${record.scheduleLabel} / ${record.deliveryLabel} automation skeleton을 기록했습니다."
             } else {
                 "Recorded a ${record.scheduleLabel} / ${record.deliveryLabel} automation skeleton."
+            },
+            taskStatus = AgentTaskStatus.WaitingResource,
+        )
+    }
+
+    private suspend fun planCodeGeneration(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val plan = buildCodeGenerationProjectPlan(
+            prompt = prompt,
+            companionAvailable = context.pairedDevices.isNotEmpty(),
+        )
+        val record = codeGenerationProjectRepository.createSkeleton(
+            prompt = prompt,
+            plan = plan,
+        )
+        val configuredProviderCount = context.modelPreference.configuredProviderIds.size
+        val connectedExternalEndpoints = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Connected
+        }
+        val connectedDeliveryChannels = context.deliveryChannels.count {
+            it.status == DeliveryChannelStatus.Connected
+        }
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append("code generation skeleton으로 요청을 기록했어요. ")
+                    append("대상은 ${record.targetLabel}, 작업 공간은 ${record.workspaceLabel}, 예상 출력은 ${record.outputLabel}로 해석했습니다. ")
+                    append("Dashboard에서 지속적으로 추적할 수 있고, 현재 구성된 provider credential은 ${configuredProviderCount}개, mock-ready MCP/API endpoint는 ${connectedExternalEndpoints}개, mock-ready delivery channel은 ${connectedDeliveryChannels}개입니다. ")
+                    append("실제 파일 생성, 편집, 실행까지 이어지는 build executor는 아직 후속 단계입니다.")
+                }
+            } else {
+                buildString {
+                    append("I recorded this as a code generation skeleton request. ")
+                    append("The target was interpreted as ${record.targetLabel}, the workspace as ${record.workspaceLabel}, and the expected output as ${record.outputLabel}. ")
+                    append("You can keep tracking it from Dashboard. Right now there are ${configuredProviderCount} configured provider credential(s), ${connectedExternalEndpoints} mock-ready MCP/API endpoint(s), and ${connectedDeliveryChannels} mock-ready delivery channel(s). ")
+                    append("The real build executor for file generation, editing, and run loops is still a follow-up step.")
+                }
+            },
+            destination = AgentDestination.Dashboard,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = codeGenerationPlanActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "code generation skeleton project를 기록했고 build executor 연결을 기다리는 상태로 남겼습니다."
+            } else {
+                "Recorded a code generation skeleton project and left it waiting for build executor wiring."
             },
             taskStatus = AgentTaskStatus.WaitingResource,
         )
@@ -1141,7 +1190,7 @@ class LocalPhoneAgentRuntime(
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열 가지예요.\n")
+                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열한 가지예요.\n")
                     append("1. 인덱싱된 파일 요약 (${indexedCount}개 감지)\n")
                     append("2. 파일 정리 dry-run 계획 생성 후 승인 요청\n")
                     append("3. companion 전송 approval 생성\n")
@@ -1152,6 +1201,7 @@ class LocalPhoneAgentRuntime(
                     append("8. companion health snapshot 새로고침\n")
                     append("9. desktop companion notification 보내기\n")
                     append("10. allowlisted desktop workflow 실행\n")
+                    append("11. code/app/automation build skeleton 기록\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
                     append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
@@ -1160,7 +1210,7 @@ class LocalPhoneAgentRuntime(
                 }
             } else {
                 buildString {
-                    append("This first chat loop can do ten things right now.\n")
+                    append("This first chat loop can do eleven things right now.\n")
                     append("1. Summarize indexed files ($indexedCount detected)\n")
                     append("2. Create an organize dry-run and submit it for approval\n")
                     append("3. Create a companion transfer approval\n")
@@ -1171,6 +1221,7 @@ class LocalPhoneAgentRuntime(
                     append("8. Refresh the companion health snapshot\n")
                     append("9. Send a desktop companion notification\n")
                     append("10. Run an allowlisted desktop workflow\n")
+                    append("11. Capture a code, app, or automation build skeleton\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
                     append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
@@ -1727,6 +1778,15 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("resources.refresh"),
                     resources = listOf("phone.local_storage", "approval.inbox", "external.companion"),
                 )
+            looksLikeCodeGenerationPrompt(normalized) ->
+                plannerOutput(
+                    intent = AgentIntent.PlanCodeGeneration,
+                    auditResult = "code_generation_planned",
+                    mode = AgentPlannerMode.Plan,
+                    summary = "Capture a code, app, or automation build request and persist it as a durable build skeleton until the executor is wired.",
+                    capabilities = listOf("code.generate.plan"),
+                    resources = listOf("phone.local_storage", "external.companion", "model.providers", "delivery.channels"),
+                )
             looksLikeScheduledAutomationPrompt(normalized) ->
                 plannerOutput(
                     intent = AgentIntent.PlanScheduledAutomation,
@@ -2050,6 +2110,7 @@ class LocalPhoneAgentRuntime(
         private const val manualTaskRetryActionKey = "agent.task.retry.manual"
         private const val shellRefreshActionKey = "shell.refresh"
         private const val scheduledAutomationPlanActionKey = "automation.schedule.plan"
+        private const val codeGenerationPlanActionKey = "code.generate.plan"
         private const val browserResearchPlanActionKey = "browser.research.plan"
         private const val routeDashboardActionKey = "ui.route.dashboard"
         private const val routeHistoryActionKey = "ui.route.history"
@@ -2088,6 +2149,7 @@ private sealed interface AgentIntent {
     data object ShowSettings : AgentIntent
     data object RefreshResources : AgentIntent
     data object PlanScheduledAutomation : AgentIntent
+    data object PlanCodeGeneration : AgentIntent
     data object PlanBrowserResearch : AgentIntent
     data object SummarizeIndexedFiles : AgentIntent
     data class OrganizeIndexedFiles(

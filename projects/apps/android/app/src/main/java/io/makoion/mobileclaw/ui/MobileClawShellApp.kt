@@ -77,6 +77,8 @@ import io.makoion.mobileclaw.data.ChatThreadRecord
 import io.makoion.mobileclaw.data.CloudDriveConnectionState
 import io.makoion.mobileclaw.data.CloudDriveConnectionStatus
 import io.makoion.mobileclaw.data.CloudDriveProviderKind
+import io.makoion.mobileclaw.data.CodeGenerationProjectRecord
+import io.makoion.mobileclaw.data.CodeGenerationProjectStatus
 import io.makoion.mobileclaw.data.CompanionAppOpenStatus
 import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionHealthStatus
@@ -241,6 +243,7 @@ fun MobileClawShellApp(
                 onDeny = shellViewModel::deny,
                 onActivateAutomation = shellViewModel::activateScheduledAutomation,
                 onPauseAutomation = shellViewModel::pauseScheduledAutomation,
+                onSetCodeGenerationProjectStatus = shellViewModel::setCodeGenerationProjectStatus,
                 onOpenHistory = { shellViewModel.openSection(ShellSection.History) },
                 onOpenSettings = { shellViewModel.openSection(ShellSection.Settings) },
             )
@@ -812,6 +815,7 @@ private fun DashboardScreen(
     onDeny: (String) -> Unit,
     onActivateAutomation: (String) -> Unit,
     onPauseAutomation: (String) -> Unit,
+    onSetCodeGenerationProjectStatus: (String, CodeGenerationProjectStatus) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -914,6 +918,25 @@ private fun DashboardScreen(
                     automation = automation,
                     onActivate = { onActivateAutomation(automation.id) },
                     onPause = { onPauseAutomation(automation.id) },
+                )
+            }
+        }
+        if (uiState.codeGenerationProjects.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Code generation projects",
+                    subtitle = "Build requests for apps, automations, and scripts stay visible here until the real code generation executor is wired.",
+                )
+            }
+            items(
+                items = uiState.codeGenerationProjects.take(4),
+                key = { it.id },
+            ) { project ->
+                CodeGenerationProjectCard(
+                    project = project,
+                    onUpdateStatus = { status ->
+                        onSetCodeGenerationProjectStatus(project.id, status)
+                    },
                 )
             }
         }
@@ -6215,6 +6238,124 @@ private fun ScheduledAutomationCard(
     }
 }
 
+@Composable
+private fun CodeGenerationProjectCard(
+    project: CodeGenerationProjectRecord,
+    onUpdateStatus: (CodeGenerationProjectStatus) -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = project.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = project.summary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = codeGenerationProjectStatusColor(project.status).copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        text = codeGenerationProjectStatusLabel(project.status),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = codeGenerationProjectStatusColor(project.status),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(project.targetLabel) },
+                )
+                AssistChip(
+                    onClick = {},
+                    label = { Text(project.workspaceLabel) },
+                )
+                AssistChip(
+                    onClick = {},
+                    label = { Text(project.outputLabel) },
+                )
+                AssistChip(
+                    onClick = {},
+                    label = { Text("Updated ${project.updatedAtLabel}") },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        onUpdateStatus(
+                            when (project.status) {
+                                CodeGenerationProjectStatus.Planned -> CodeGenerationProjectStatus.Scoped
+                                CodeGenerationProjectStatus.Scoped -> CodeGenerationProjectStatus.Ready
+                                CodeGenerationProjectStatus.Ready -> CodeGenerationProjectStatus.Blocked
+                                CodeGenerationProjectStatus.Blocked -> CodeGenerationProjectStatus.Planned
+                            },
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        when (project.status) {
+                            CodeGenerationProjectStatus.Planned -> "Mark scoped"
+                            CodeGenerationProjectStatus.Scoped -> "Mark ready"
+                            CodeGenerationProjectStatus.Ready -> "Mark blocked"
+                            CodeGenerationProjectStatus.Blocked -> "Reset planned"
+                        },
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        onUpdateStatus(
+                            when (project.status) {
+                                CodeGenerationProjectStatus.Blocked -> CodeGenerationProjectStatus.Scoped
+                                else -> CodeGenerationProjectStatus.Blocked
+                            },
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        when (project.status) {
+                            CodeGenerationProjectStatus.Blocked -> "Resume scoped"
+                            else -> "Block project"
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
 private fun cloudDriveStatusColor(status: CloudDriveConnectionStatus): Color {
     return when (status) {
         CloudDriveConnectionStatus.NeedsSetup -> ClawGold
@@ -6276,6 +6417,24 @@ private fun scheduledAutomationStatusLabel(status: ScheduledAutomationStatus): S
         ScheduledAutomationStatus.Planned -> "Planned"
         ScheduledAutomationStatus.Active -> "Placeholder active"
         ScheduledAutomationStatus.Paused -> "Paused"
+    }
+}
+
+private fun codeGenerationProjectStatusColor(status: CodeGenerationProjectStatus): Color {
+    return when (status) {
+        CodeGenerationProjectStatus.Planned -> ClawGold
+        CodeGenerationProjectStatus.Scoped -> Color(0xFF5D8CC9)
+        CodeGenerationProjectStatus.Ready -> ClawGreen
+        CodeGenerationProjectStatus.Blocked -> Color(0xFFC15B52)
+    }
+}
+
+private fun codeGenerationProjectStatusLabel(status: CodeGenerationProjectStatus): String {
+    return when (status) {
+        CodeGenerationProjectStatus.Planned -> "Planned"
+        CodeGenerationProjectStatus.Scoped -> "Scoped"
+        CodeGenerationProjectStatus.Ready -> "Ready"
+        CodeGenerationProjectStatus.Blocked -> "Blocked"
     }
 }
 

@@ -19,6 +19,8 @@ import io.makoion.mobileclaw.data.ChatMessageRole
 import io.makoion.mobileclaw.data.ChatThreadRecord
 import io.makoion.mobileclaw.data.CloudDriveConnectionState
 import io.makoion.mobileclaw.data.CloudDriveProviderKind
+import io.makoion.mobileclaw.data.CodeGenerationProjectRecord
+import io.makoion.mobileclaw.data.CodeGenerationProjectStatus
 import io.makoion.mobileclaw.data.CompanionAppOpenResult
 import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionSessionNotifyResult
@@ -145,6 +147,7 @@ data class ShellUiState(
     val chatThreads: List<ChatThreadRecord> = emptyList(),
     val agentTasks: List<AgentTaskRecord> = emptyList(),
     val scheduledAutomations: List<ScheduledAutomationRecord> = emptyList(),
+    val codeGenerationProjects: List<CodeGenerationProjectRecord> = emptyList(),
     val fileIndexState: FileIndexState = FileIndexState(),
     val approvals: List<ApprovalInboxItem> = emptyList(),
     val auditEvents: List<AuditTrailEvent> = emptyList(),
@@ -285,6 +288,7 @@ private data class ShellSupportSnapshot(
     val deliveryChannels: List<DeliveryChannelProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
+    val codeGenerationProjects: List<CodeGenerationProjectRecord>,
 )
 
 private data class SettingsSnapshot(
@@ -294,6 +298,7 @@ private data class SettingsSnapshot(
     val deliveryChannels: List<DeliveryChannelProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
+    val codeGenerationProjects: List<CodeGenerationProjectRecord>,
 )
 
 private data class ResourceSettingsSnapshot(
@@ -448,7 +453,8 @@ class ShellViewModel(
                 },
                 appContainer.resourceRegistryRepository.entries,
                 appContainer.scheduledAutomationRepository.automations,
-            ) { settingsInputs, resourceRegistryEntries, scheduledAutomations ->
+                appContainer.codeGenerationProjectRepository.projects,
+            ) { settingsInputs, resourceRegistryEntries, scheduledAutomations, codeGenerationProjects ->
                 SettingsSnapshot(
                     cloudDriveConnections = settingsInputs.cloudDriveConnections,
                     providerProfiles = settingsInputs.providerProfiles,
@@ -456,6 +462,7 @@ class ShellViewModel(
                     deliveryChannels = settingsInputs.deliveryChannels,
                     resourceRegistryEntries = resourceRegistryEntries,
                     scheduledAutomations = scheduledAutomations,
+                    codeGenerationProjects = codeGenerationProjects,
                 )
             },
         ) { chatThreads, approvals, voice, auditInputs, settingsInputs ->
@@ -470,6 +477,7 @@ class ShellViewModel(
                 deliveryChannels = settingsInputs.deliveryChannels,
                 resourceRegistryEntries = settingsInputs.resourceRegistryEntries,
                 scheduledAutomations = settingsInputs.scheduledAutomations,
+                codeGenerationProjects = settingsInputs.codeGenerationProjects,
             )
         },
     ) { shellInputs, deviceInputs, supportInputs ->
@@ -521,6 +529,7 @@ class ShellViewModel(
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
             scheduledAutomations = supportInputs.scheduledAutomations,
+            codeGenerationProjects = supportInputs.codeGenerationProjects,
             fileIndexState = shellInputs.files,
             approvals = supportInputs.approvals,
             auditEvents = auditEvents,
@@ -1005,6 +1014,18 @@ class ShellViewModel(
             appContainer.scheduledAutomationRepository.setStatus(
                 automationId = automationId,
                 status = ScheduledAutomationStatus.Paused,
+            )
+        }
+    }
+
+    fun setCodeGenerationProjectStatus(
+        projectId: String,
+        status: CodeGenerationProjectStatus,
+    ) {
+        viewModelScope.launch {
+            appContainer.codeGenerationProjectRepository.setStatus(
+                projectId = projectId,
+                status = status,
             )
         }
     }

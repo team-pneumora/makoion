@@ -8,6 +8,7 @@ import io.makoion.mobileclaw.data.AndroidKeystoreModelProviderCredentialVault
 import io.makoion.mobileclaw.data.PersistentDeliveryChannelRegistryRepository
 import io.makoion.mobileclaw.data.PersistentExternalEndpointRegistryRepository
 import io.makoion.mobileclaw.data.PersistentCloudDriveConnectionRepository
+import io.makoion.mobileclaw.data.PersistentCodeGenerationProjectRepository
 import io.makoion.mobileclaw.data.FileActionExecutor
 import io.makoion.mobileclaw.data.LocalFileGraphActionPlanner
 import io.makoion.mobileclaw.data.PersistentChatTranscriptRepository
@@ -59,6 +60,10 @@ class ShellAppContainer(
     )
     val deliveryChannelRepository = PersistentDeliveryChannelRegistryRepository(
         databaseHelper = databaseHelper,
+    )
+    val codeGenerationProjectRepository = PersistentCodeGenerationProjectRepository(
+        databaseHelper = databaseHelper,
+        auditTrailRepository = auditTrailRepository,
     )
     val resourceRegistryRepository = PersistentResourceRegistryRepository(
         databaseHelper = databaseHelper,
@@ -115,6 +120,7 @@ class ShellAppContainer(
         auditTrailRepository = auditTrailRepository,
         devicePairingRepository = devicePairingRepository,
         scheduledAutomationRepository = scheduledAutomationRepository,
+        codeGenerationProjectRepository = codeGenerationProjectRepository,
         phoneAgentActionCoordinator = phoneAgentActionCoordinator,
     )
     val agentTaskEngine = AgentTaskEngine(
