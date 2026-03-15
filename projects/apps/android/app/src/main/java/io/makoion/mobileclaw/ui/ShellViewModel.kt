@@ -105,11 +105,26 @@ data class ChatState(
     val isProcessing: Boolean = false,
 )
 
+enum class ResourceConnectionStatus {
+    Active,
+    NeedsSetup,
+    Planned,
+}
+
+data class ResourceConnectionSummary(
+    val id: String,
+    val title: String,
+    val priorityLabel: String,
+    val status: ResourceConnectionStatus,
+    val summary: String,
+)
+
 data class ShellUiState(
     val selectedSection: ShellSection = ShellSection.Chat,
     val phaseTitle: String = "Phone-hosted agent shell",
     val summary: String = "Makoion is converging on a chat-first product shell. Connected files, drives, companions, MCP endpoints, and APIs will sit behind the agent instead of leading the UI.",
     val overviewCards: List<ShellCard> = defaultOverviewCards,
+    val resourceConnections: List<ResourceConnectionSummary> = emptyList(),
     val chatState: ChatState = ChatState(),
     val activeChatThread: ChatThreadRecord? = null,
     val chatThreads: List<ChatThreadRecord> = emptyList(),
@@ -418,6 +433,11 @@ class ShellViewModel(
         ShellUiState(
             selectedSection = shellInputs.section,
             chatState = shellInputs.chat,
+            resourceConnections = buildResourceConnections(
+                fileIndexState = shellInputs.files,
+                pairedDevices = deviceInputs.pairedDevices,
+                selectedDeviceId = selectedDeviceId,
+            ),
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
@@ -1621,6 +1641,81 @@ class ShellViewModel(
                 lastOrganizeRecovered = recovered,
             )
         }
+    }
+
+    private fun buildResourceConnections(
+        fileIndexState: FileIndexState,
+        pairedDevices: List<PairedDeviceState>,
+        selectedDeviceId: String?,
+    ): List<ResourceConnectionSummary> {
+        val localStorage = ResourceConnectionSummary(
+            id = "phone-local-storage",
+            title = "Phone local storage",
+            priorityLabel = "Priority 1",
+            status = if (fileIndexState.permissionGranted || fileIndexState.indexedCount > 0) {
+                ResourceConnectionStatus.Active
+            } else {
+                ResourceConnectionStatus.NeedsSetup
+            },
+            summary = if (fileIndexState.permissionGranted || fileIndexState.indexedCount > 0) {
+                "${fileIndexState.indexedCount} indexed file(s) are currently available through ${fileIndexState.scanSource}."
+            } else {
+                "Grant media access so Makoion can search, summarize, and organize local files directly on the phone."
+            },
+        )
+        val documentRoots = ResourceConnectionSummary(
+            id = "attached-document-roots",
+            title = "Attached document roots",
+            priorityLabel = "Priority 1",
+            status = if (fileIndexState.documentTreeCount > 0) {
+                ResourceConnectionStatus.Active
+            } else {
+                ResourceConnectionStatus.NeedsSetup
+            },
+            summary = if (fileIndexState.documentTreeCount > 0) {
+                "${fileIndexState.documentTreeCount} SAF document root(s) are attached: ${fileIndexState.documentRoots.joinToString().ifBlank { "attached" }}."
+            } else {
+                "Attach SAF document roots for deeper folders that MediaStore does not cover."
+            },
+        )
+        val cloudDrives = ResourceConnectionSummary(
+            id = "cloud-drives",
+            title = "Cloud drives",
+            priorityLabel = "Priority 2",
+            status = ResourceConnectionStatus.Planned,
+            summary = "Google Drive, OneDrive, and Dropbox connectors are planned as the next resource tier after phone storage.",
+        )
+        val companions = ResourceConnectionSummary(
+            id = "external-companions",
+            title = "External companions",
+            priorityLabel = "Priority 3",
+            status = if (pairedDevices.isNotEmpty()) {
+                ResourceConnectionStatus.Active
+            } else {
+                ResourceConnectionStatus.NeedsSetup
+            },
+            summary = if (pairedDevices.isNotEmpty()) {
+                val selectedLabel = pairedDevices.firstOrNull { it.id == selectedDeviceId }?.name
+                buildString {
+                    append("${pairedDevices.size} companion device(s) are paired")
+                    selectedLabel?.let {
+                        append("; current target is ")
+                        append(it)
+                    }
+                    append(".")
+                }
+            } else {
+                "Pair a desktop or external computer so the phone agent can hand off remote actions and file transfers."
+            },
+        )
+        val mcpAndApis = ResourceConnectionSummary(
+            id = "mcp-and-api-profiles",
+            title = "MCP and API profiles",
+            priorityLabel = "Priority 4",
+            status = ResourceConnectionStatus.Planned,
+            summary = "MCP servers, third-party APIs, and model/provider credentials will surface here once the shared resource registry is wired in.",
+        )
+        return listOf(localStorage, documentRoots, cloudDrives, companions, mcpAndApis)
     }
 
     companion object {

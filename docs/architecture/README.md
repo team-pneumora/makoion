@@ -6,6 +6,8 @@
 - `decisions.md` — ADR
 - `phase0-checklist.md` — Phase 0 체크리스트
 - `phase1-checklist.md` — Phase 1 실기기 체크리스트 및 검증 기록
+- `../plans/agent-runtime-expansion-plan-20260315.md` — 사용자 핵심 요구를 반영한 상세 실행 계획
+- `../plans/agent-runtime-expansion-progress-20260315.md` — 단계별 진행 기록
 
 ---
 

@@ -236,6 +236,7 @@ fun MobileClawShellApp(
                 onOpenThread = shellViewModel::openChatThread,
             )
             ShellSection.Settings -> SettingsScreen(
+                resourceConnections = uiState.resourceConnections,
                 fileIndexState = uiState.fileIndexState,
                 fileActionState = uiState.fileActionState,
                 approvals = uiState.approvals,
@@ -1202,6 +1203,7 @@ private fun ChatTranscriptHistoryCard(
 
 @Composable
 private fun SettingsScreen(
+    resourceConnections: List<ResourceConnectionSummary>,
     fileIndexState: FileIndexState,
     fileActionState: FileActionState,
     approvals: List<ApprovalInboxItem>,
@@ -1264,6 +1266,18 @@ private fun SettingsScreen(
                 title = "Settings and connections",
                 subtitle = "Connected resources, permissions, and companion registrations live here. Core usage should stay in Chat, Dashboard, and History.",
             )
+        }
+        item {
+            SectionHeader(
+                title = "Resource stack",
+                subtitle = "Makoion should understand resources in priority order: phone storage first, then cloud drives, then external companions, then MCP/API connections.",
+            )
+        }
+        items(
+            items = resourceConnections,
+            key = { it.id },
+        ) { resource ->
+            ResourceConnectionCard(resource = resource)
         }
         item {
             FileIndexControlCard(
@@ -2482,6 +2496,59 @@ private fun NotificationQuickActionCard(event: AuditTrailEvent?) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ResourceConnectionCard(resource: ResourceConnectionSummary) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = resource.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = resource.priorityLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = resourceConnectionStatusColor(resource.status).copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        text = resourceConnectionStatusLabel(resource.status),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = resourceConnectionStatusColor(resource.status),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            Text(
+                text = resource.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -5283,6 +5350,22 @@ private fun transportValidationModeLabel(mode: TransportValidationMode): String 
         TransportValidationMode.DelayedAck -> "Delayed ack"
         TransportValidationMode.TimeoutOnce -> "Timeout once"
         TransportValidationMode.DisconnectOnce -> "Disconnect once"
+    }
+}
+
+private fun resourceConnectionStatusColor(status: ResourceConnectionStatus): Color {
+    return when (status) {
+        ResourceConnectionStatus.Active -> ClawGreen
+        ResourceConnectionStatus.NeedsSetup -> ClawGold
+        ResourceConnectionStatus.Planned -> Color(0xFF5D8CC9)
+    }
+}
+
+private fun resourceConnectionStatusLabel(status: ResourceConnectionStatus): String {
+    return when (status) {
+        ResourceConnectionStatus.Active -> "Active"
+        ResourceConnectionStatus.NeedsSetup -> "Needs setup"
+        ResourceConnectionStatus.Planned -> "Planned"
     }
 }
 
