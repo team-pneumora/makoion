@@ -890,6 +890,24 @@ class ShellViewModel(
         }
     }
 
+    fun storeModelProviderCredential(
+        providerId: String,
+        secret: String,
+    ) {
+        viewModelScope.launch {
+            appContainer.modelProviderSettingsRepository.storeCredential(
+                providerId = providerId,
+                secret = secret,
+            )
+        }
+    }
+
+    fun clearModelProviderCredential(providerId: String) {
+        viewModelScope.launch {
+            appContainer.modelProviderSettingsRepository.clearCredential(providerId)
+        }
+    }
+
     fun activateScheduledAutomation(automationId: String) {
         viewModelScope.launch {
             appContainer.scheduledAutomationRepository.setStatus(

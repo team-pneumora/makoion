@@ -56,6 +56,13 @@ interface ModelProviderSettingsRepository {
         model: String,
     )
 
+    suspend fun storeCredential(
+        providerId: String,
+        secret: String,
+    )
+
+    suspend fun clearCredential(providerId: String)
+
     suspend fun refresh()
 }
 
@@ -127,6 +134,7 @@ internal fun resolveAgentModelPreference(
 
 class PersistentModelProviderSettingsRepository(
     private val databaseHelper: ShellDatabaseHelper,
+    private val credentialVault: ModelProviderCredentialVault,
 ) : ModelProviderSettingsRepository {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _profiles = MutableStateFlow<List<ModelProviderProfileState>>(emptyList())
@@ -228,10 +236,58 @@ class PersistentModelProviderSettingsRepository(
         refresh()
     }
 
+    override suspend fun storeCredential(
+        providerId: String,
+        secret: String,
+    ) {
+        val normalizedSecret = secret.trim()
+        if (normalizedSecret.isBlank()) {
+            return
+        }
+        withContext(Dispatchers.IO) {
+            val db = databaseHelper.writableDatabase
+            ensureSeedData(db)
+            queryProfileRow(db, providerId) ?: return@withContext
+            credentialVault.store(providerId, normalizedSecret)
+            db.update(
+                modelProviderProfilesTable,
+                ContentValues().apply {
+                    put("credential_status", ModelProviderCredentialStatus.Stored.name)
+                    put("credential_label", maskProviderCredential(normalizedSecret))
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "provider_id = ?",
+                arrayOf(providerId),
+            )
+        }
+        refresh()
+    }
+
+    override suspend fun clearCredential(providerId: String) {
+        withContext(Dispatchers.IO) {
+            val db = databaseHelper.writableDatabase
+            ensureSeedData(db)
+            queryProfileRow(db, providerId) ?: return@withContext
+            credentialVault.clear(providerId)
+            db.update(
+                modelProviderProfilesTable,
+                ContentValues().apply {
+                    put("credential_status", ModelProviderCredentialStatus.Missing.name)
+                    putNull("credential_label")
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "provider_id = ?",
+                arrayOf(providerId),
+            )
+        }
+        refresh()
+    }
+
     override suspend fun refresh() {
         withContext(Dispatchers.IO) {
             val db = databaseHelper.writableDatabase
             ensureSeedData(db)
+            reconcileCredentialStatuses(db)
             _profiles.value = queryProfiles(db)
         }
     }
@@ -290,6 +346,38 @@ class PersistentModelProviderSettingsRepository(
             "provider_id = ?",
             arrayOf(preferred.providerId),
         )
+    }
+
+    private suspend fun reconcileCredentialStatuses(db: SQLiteDatabase) {
+        val now = System.currentTimeMillis()
+        queryProfileRows(db).forEach { row ->
+            val hasCredential = credentialVault.hasCredential(row.providerId)
+            val targetStatus = if (hasCredential) {
+                ModelProviderCredentialStatus.Stored
+            } else {
+                ModelProviderCredentialStatus.Missing
+            }
+            val needsUpdate =
+                row.credentialStatus != targetStatus ||
+                    (!hasCredential && row.credentialLabel != null)
+            if (!needsUpdate) {
+                return@forEach
+            }
+            db.update(
+                modelProviderProfilesTable,
+                ContentValues().apply {
+                    put("credential_status", targetStatus.name)
+                    if (hasCredential) {
+                        put("credential_label", row.credentialLabel)
+                    } else {
+                        putNull("credential_label")
+                    }
+                    put("updated_at", now)
+                },
+                "provider_id = ?",
+                arrayOf(row.providerId),
+            )
+        }
     }
 
     private fun queryProfiles(db: SQLiteDatabase): List<ModelProviderProfileState> {

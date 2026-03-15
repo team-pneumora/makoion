@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -269,6 +270,8 @@ fun MobileClawShellApp(
                 onSetModelProviderEnabled = shellViewModel::setModelProviderEnabled,
                 onSetDefaultModelProvider = shellViewModel::setDefaultModelProvider,
                 onSelectProviderModel = shellViewModel::selectProviderModel,
+                onStoreProviderCredential = shellViewModel::storeModelProviderCredential,
+                onClearProviderCredential = shellViewModel::clearModelProviderCredential,
                 onToggleVoiceCapture = toggleVoiceCapture,
                 onShowQuickActions = showQuickActions,
                 onSelectFile = shellViewModel::selectFile,
@@ -1271,6 +1274,8 @@ private fun SettingsScreen(
     onSetModelProviderEnabled: (String, Boolean) -> Unit,
     onSetDefaultModelProvider: (String) -> Unit,
     onSelectProviderModel: (String, String) -> Unit,
+    onStoreProviderCredential: (String, String) -> Unit,
+    onClearProviderCredential: (String) -> Unit,
     onToggleVoiceCapture: () -> Unit,
     onShowQuickActions: () -> Unit,
     onSelectFile: (String) -> Unit,
@@ -1359,7 +1364,7 @@ private fun SettingsScreen(
             item {
                 SectionHeader(
                     title = "AI model providers",
-                    subtitle = "Choose the default provider and model that the phone agent should carry into future routed turns. Secret storage follows in the next settings step.",
+                    subtitle = "Choose the default provider and model that the phone agent should carry into future routed turns, and store provider secrets in the phone vault.",
                 )
             }
             items(
@@ -1376,6 +1381,12 @@ private fun SettingsScreen(
                     },
                     onSelectModel = { model ->
                         onSelectProviderModel(profile.providerId, model)
+                    },
+                    onStoreCredential = { secret ->
+                        onStoreProviderCredential(profile.providerId, secret)
+                    },
+                    onClearCredential = {
+                        onClearProviderCredential(profile.providerId)
                     },
                 )
             }
@@ -2691,7 +2702,10 @@ private fun ModelProviderProfileCard(
     onSetEnabled: (Boolean) -> Unit,
     onSetDefault: () -> Unit,
     onSelectModel: (String) -> Unit,
+    onStoreCredential: (String) -> Unit,
+    onClearCredential: () -> Unit,
 ) {
+    var credentialDraft by rememberSaveable(profile.providerId) { mutableStateOf("") }
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -2788,11 +2802,51 @@ private fun ModelProviderProfileCard(
                     profile.credentialLabel?.let { "Credential label $it" }
                         ?: "Credential storage is configured for this provider."
                 } else {
-                    "Credential storage is not configured yet. This step only establishes the provider profile and routing preference."
+                    "Credential storage is not configured yet. Add the API key or token here and it will be stored in the phone vault."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            OutlinedTextField(
+                value = credentialDraft,
+                onValueChange = { credentialDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("API key or token") },
+                placeholder = { Text("Stored in phone vault") },
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        onStoreCredential(credentialDraft)
+                        credentialDraft = ""
+                    },
+                    enabled = credentialDraft.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        if (profile.credentialStatus == ModelProviderCredentialStatus.Stored) {
+                            "Update credential"
+                        } else {
+                            "Save credential"
+                        },
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        onClearCredential()
+                        credentialDraft = ""
+                    },
+                    enabled = profile.credentialStatus == ModelProviderCredentialStatus.Stored,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Clear credential")
+                }
+            }
             if (!profile.isDefault) {
                 OutlinedButton(
                     onClick = onSetDefault,

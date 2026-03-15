@@ -65,4 +65,10 @@ class ModelProviderSettingsRepositoryTest {
         assertEquals(listOf("anthropic", "google-gemini"), preference.enabledProviderIds)
         assertEquals(listOf("openai", "google-gemini"), preference.configuredProviderIds)
     }
+
+    @Test
+    fun `credential mask keeps prefix and suffix only`() {
+        assertEquals("sk-t...7890", maskProviderCredential("sk-test-1234567890"))
+        assertEquals("a...f", maskProviderCredential("abcdef"))
+    }
 }
