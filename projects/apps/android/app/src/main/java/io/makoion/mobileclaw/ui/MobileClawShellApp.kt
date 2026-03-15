@@ -10,7 +10,9 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -29,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +41,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,6 +85,8 @@ import io.makoion.mobileclaw.data.FilePreviewDetail
 import io.makoion.mobileclaw.data.FileSummaryDetail
 import io.makoion.mobileclaw.data.IndexedFileItem
 import io.makoion.mobileclaw.data.MediaAccessPermissions
+import io.makoion.mobileclaw.data.ModelProviderCredentialStatus
+import io.makoion.mobileclaw.data.ModelProviderProfileState
 import io.makoion.mobileclaw.data.OrganizeExecutionEntry
 import io.makoion.mobileclaw.data.OrganizeExecutionResult
 import io.makoion.mobileclaw.data.OrganizeExecutionStatus
@@ -238,6 +244,7 @@ fun MobileClawShellApp(
             )
             ShellSection.Settings -> SettingsScreen(
                 resourceConnections = uiState.resourceConnections,
+                providerProfiles = uiState.providerProfiles,
                 fileIndexState = uiState.fileIndexState,
                 fileActionState = uiState.fileActionState,
                 approvals = uiState.approvals,
@@ -248,6 +255,9 @@ fun MobileClawShellApp(
                 onRequestMediaAccess = requestMediaAccess,
                 onOpenDocumentTree = openDocumentTree,
                 onRefreshFiles = shellViewModel::refreshFiles,
+                onSetModelProviderEnabled = shellViewModel::setModelProviderEnabled,
+                onSetDefaultModelProvider = shellViewModel::setDefaultModelProvider,
+                onSelectProviderModel = shellViewModel::selectProviderModel,
                 onToggleVoiceCapture = toggleVoiceCapture,
                 onShowQuickActions = showQuickActions,
                 onSelectFile = shellViewModel::selectFile,
@@ -1205,6 +1215,7 @@ private fun ChatTranscriptHistoryCard(
 @Composable
 private fun SettingsScreen(
     resourceConnections: List<ResourceConnectionSummary>,
+    providerProfiles: List<ModelProviderProfileState>,
     fileIndexState: FileIndexState,
     fileActionState: FileActionState,
     approvals: List<ApprovalInboxItem>,
@@ -1215,6 +1226,9 @@ private fun SettingsScreen(
     onRequestMediaAccess: () -> Unit,
     onOpenDocumentTree: () -> Unit,
     onRefreshFiles: () -> Unit,
+    onSetModelProviderEnabled: (String, Boolean) -> Unit,
+    onSetDefaultModelProvider: (String) -> Unit,
+    onSelectProviderModel: (String, String) -> Unit,
     onToggleVoiceCapture: () -> Unit,
     onShowQuickActions: () -> Unit,
     onSelectFile: (String) -> Unit,
@@ -1279,6 +1293,31 @@ private fun SettingsScreen(
             key = { it.id },
         ) { resource ->
             ResourceConnectionCard(resource = resource)
+        }
+        if (providerProfiles.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "AI model providers",
+                    subtitle = "Choose the default provider and model that the phone agent should carry into future routed turns. Secret storage follows in the next settings step.",
+                )
+            }
+            items(
+                items = providerProfiles,
+                key = { it.providerId },
+            ) { profile ->
+                ModelProviderProfileCard(
+                    profile = profile,
+                    onSetEnabled = { enabled ->
+                        onSetModelProviderEnabled(profile.providerId, enabled)
+                    },
+                    onSetDefault = {
+                        onSetDefaultModelProvider(profile.providerId)
+                    },
+                    onSelectModel = { model ->
+                        onSelectProviderModel(profile.providerId, model)
+                    },
+                )
+            }
         }
         item {
             FileIndexControlCard(
@@ -2579,6 +2618,157 @@ private fun ResourceConnectionCard(resource: ResourceConnectionSummary) {
             Text(
                 text = resource.summary,
                 style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelProviderProfileCard(
+    profile: ModelProviderProfileState,
+    onSetEnabled: (Boolean) -> Unit,
+    onSetDefault: () -> Unit,
+    onSelectModel: (String) -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = profile.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Selected model ${profile.selectedModel}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = if (profile.enabled) "On" else "Off",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (profile.enabled) ClawGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Switch(
+                        checked = profile.enabled,
+                        onCheckedChange = onSetEnabled,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = {
+                        Text(
+                            if (profile.isDefault) {
+                                "Default route"
+                            } else {
+                                "Optional route"
+                            },
+                        )
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = if (profile.isDefault) {
+                            ClawGreen.copy(alpha = 0.16f)
+                        } else {
+                            ClawInk.copy(alpha = 0.08f)
+                        },
+                        labelColor = ClawInk,
+                    ),
+                )
+                AssistChip(
+                    onClick = {},
+                    label = { Text("Credential ${providerCredentialStatusLabel(profile.credentialStatus)}") },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = providerCredentialStatusColor(profile.credentialStatus).copy(alpha = 0.16f),
+                        labelColor = ClawInk,
+                    ),
+                )
+                AssistChip(
+                    onClick = {},
+                    label = {
+                        Text(
+                            profile.baseUrl?.takeIf { it.isNotBlank() } ?: "Provider default endpoint",
+                        )
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = ClawGold.copy(alpha = 0.12f),
+                        labelColor = ClawInk,
+                    ),
+                )
+            }
+            Text(
+                text = if (profile.credentialStatus == ModelProviderCredentialStatus.Stored) {
+                    profile.credentialLabel?.let { "Credential label $it" }
+                        ?: "Credential storage is configured for this provider."
+                } else {
+                    "Credential storage is not configured yet. This step only establishes the provider profile and routing preference."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!profile.isDefault) {
+                OutlinedButton(
+                    onClick = onSetDefault,
+                    enabled = profile.enabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Make default provider")
+                }
+            }
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Supported models",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ClawInk,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    profile.supportedModels.forEach { model ->
+                        FilterChip(
+                            selected = model == profile.selectedModel,
+                            onClick = { onSelectModel(model) },
+                            enabled = profile.enabled,
+                            label = { Text(model) },
+                        )
+                    }
+                }
+            }
+            Text(
+                text = "Updated ${profile.updatedAtLabel}",
+                style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -5419,6 +5609,20 @@ private fun resourceConnectionStatusLabel(status: ResourceConnectionStatus): Str
         ResourceConnectionStatus.Active -> "Active"
         ResourceConnectionStatus.NeedsSetup -> "Needs setup"
         ResourceConnectionStatus.Planned -> "Planned"
+    }
+}
+
+private fun providerCredentialStatusColor(status: ModelProviderCredentialStatus): Color {
+    return when (status) {
+        ModelProviderCredentialStatus.Missing -> ClawGold
+        ModelProviderCredentialStatus.Stored -> ClawGreen
+    }
+}
+
+private fun providerCredentialStatusLabel(status: ModelProviderCredentialStatus): String {
+    return when (status) {
+        ModelProviderCredentialStatus.Missing -> "Missing"
+        ModelProviderCredentialStatus.Stored -> "Stored"
     }
 }
 

@@ -9,6 +9,7 @@ import io.makoion.mobileclaw.data.LocalFileGraphActionPlanner
 import io.makoion.mobileclaw.data.PersistentChatTranscriptRepository
 import io.makoion.mobileclaw.data.PersistentAgentTaskRepository
 import io.makoion.mobileclaw.data.PhoneAgentActionCoordinator
+import io.makoion.mobileclaw.data.PersistentModelProviderSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeDebugSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeExecutionRepository
 import io.makoion.mobileclaw.data.VoiceEntryCoordinator
@@ -37,6 +38,9 @@ class ShellAppContainer(
     )
     val chatTranscriptRepository = PersistentChatTranscriptRepository(
         context = application,
+        databaseHelper = databaseHelper,
+    )
+    val modelProviderSettingsRepository = PersistentModelProviderSettingsRepository(
         databaseHelper = databaseHelper,
     )
     val transferBridgeCoordinator = TransferBridgeCoordinator(

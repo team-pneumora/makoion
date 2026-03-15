@@ -26,6 +26,8 @@ import io.makoion.mobileclaw.data.FileOrganizePlan
 import io.makoion.mobileclaw.data.FileOrganizeStrategy
 import io.makoion.mobileclaw.data.FilePreviewDetail
 import io.makoion.mobileclaw.data.FileSummaryDetail
+import io.makoion.mobileclaw.data.ModelProviderCredentialStatus
+import io.makoion.mobileclaw.data.ModelProviderProfileState
 import io.makoion.mobileclaw.data.PairedDeviceState
 import io.makoion.mobileclaw.data.PairingSessionState
 import io.makoion.mobileclaw.data.PersistedOrganizeExecution
@@ -41,6 +43,7 @@ import io.makoion.mobileclaw.data.companionAppOpenTargetActionsFolder
 import io.makoion.mobileclaw.data.companionAppOpenTargetInbox
 import io.makoion.mobileclaw.data.companionAppOpenTargetLatestAction
 import io.makoion.mobileclaw.data.companionAppOpenTargetLatestTransfer
+import io.makoion.mobileclaw.data.resolveAgentModelPreference
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -125,6 +128,7 @@ data class ShellUiState(
     val summary: String = "Makoion is converging on a chat-first product shell. Connected files, drives, companions, MCP endpoints, and APIs will sit behind the agent instead of leading the UI.",
     val overviewCards: List<ShellCard> = defaultOverviewCards,
     val resourceConnections: List<ResourceConnectionSummary> = emptyList(),
+    val providerProfiles: List<ModelProviderProfileState> = emptyList(),
     val chatState: ChatState = ChatState(),
     val activeChatThread: ChatThreadRecord? = null,
     val chatThreads: List<ChatThreadRecord> = emptyList(),
@@ -263,6 +267,7 @@ private data class ShellSupportSnapshot(
     val approvals: List<ApprovalInboxItem>,
     val voice: VoiceEntryState,
     val auditInputs: Triple<List<AuditTrailEvent>, ShellRecoveryState, List<AgentTaskRecord>>,
+    val providerProfiles: List<ModelProviderProfileState>,
 )
 
 class ShellViewModel(
@@ -385,12 +390,14 @@ class ShellViewModel(
             ) { auditEvents, recoveryState, agentTasks ->
                 Triple(auditEvents, recoveryState, agentTasks)
             },
-        ) { chatThreads, approvals, voice, auditInputs ->
+            appContainer.modelProviderSettingsRepository.profiles,
+        ) { chatThreads, approvals, voice, auditInputs, providerProfiles ->
             ShellSupportSnapshot(
                 chatThreads = chatThreads,
                 approvals = approvals,
                 voice = voice,
                 auditInputs = auditInputs,
+                providerProfiles = providerProfiles,
             )
         },
     ) { shellInputs, deviceInputs, supportInputs ->
@@ -437,7 +444,9 @@ class ShellViewModel(
                 fileIndexState = shellInputs.files,
                 pairedDevices = deviceInputs.pairedDevices,
                 selectedDeviceId = selectedDeviceId,
+                providerProfiles = supportInputs.providerProfiles,
             ),
+            providerProfiles = supportInputs.providerProfiles,
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
@@ -640,6 +649,7 @@ class ShellViewModel(
                         auditEvents = currentUiState.auditEvents,
                         pairedDevices = currentUiState.deviceControlState.pairedDevices,
                         selectedTargetDeviceId = currentUiState.deviceControlState.selectedTargetDeviceId,
+                        modelPreference = resolveAgentModelPreference(currentUiState.providerProfiles),
                         selectedFileId = currentUiState.fileActionState.selectedFileId,
                     ),
                 )
@@ -766,6 +776,36 @@ class ShellViewModel(
 
     fun postQuickActionsNotification() {
         appContainer.voiceEntryCoordinator.postQuickActionsNotification()
+    }
+
+    fun setModelProviderEnabled(
+        providerId: String,
+        enabled: Boolean,
+    ) {
+        viewModelScope.launch {
+            appContainer.modelProviderSettingsRepository.setProviderEnabled(
+                providerId = providerId,
+                enabled = enabled,
+            )
+        }
+    }
+
+    fun setDefaultModelProvider(providerId: String) {
+        viewModelScope.launch {
+            appContainer.modelProviderSettingsRepository.setDefaultProvider(providerId)
+        }
+    }
+
+    fun selectProviderModel(
+        providerId: String,
+        model: String,
+    ) {
+        viewModelScope.launch {
+            appContainer.modelProviderSettingsRepository.selectModel(
+                providerId = providerId,
+                model = model,
+            )
+        }
     }
 
     fun selectFile(fileId: String) {
@@ -1647,6 +1687,7 @@ class ShellViewModel(
         fileIndexState: FileIndexState,
         pairedDevices: List<PairedDeviceState>,
         selectedDeviceId: String?,
+        providerProfiles: List<ModelProviderProfileState>,
     ): List<ResourceConnectionSummary> {
         val localStorage = ResourceConnectionSummary(
             id = "phone-local-storage",
@@ -1712,8 +1753,36 @@ class ShellViewModel(
             id = "mcp-and-api-profiles",
             title = "MCP and API profiles",
             priorityLabel = "Priority 4",
-            status = ResourceConnectionStatus.Planned,
-            summary = "MCP servers, third-party APIs, and model/provider credentials will surface here once the shared resource registry is wired in.",
+            status = when {
+                providerProfiles.any {
+                    it.enabled && it.credentialStatus == ModelProviderCredentialStatus.Stored
+                } -> ResourceConnectionStatus.Active
+                providerProfiles.isNotEmpty() -> ResourceConnectionStatus.NeedsSetup
+                else -> ResourceConnectionStatus.Planned
+            },
+            summary = when {
+                providerProfiles.isEmpty() ->
+                    "MCP servers, third-party APIs, and model/provider credentials will surface here once the shared resource registry is wired in."
+                else -> {
+                    val defaultProvider = providerProfiles.firstOrNull { it.enabled && it.isDefault }
+                        ?: providerProfiles.firstOrNull { it.enabled }
+                    val configuredCount = providerProfiles.count {
+                        it.credentialStatus == ModelProviderCredentialStatus.Stored
+                    }
+                    buildString {
+                        append("${providerProfiles.size} AI provider profile(s) are seeded")
+                        defaultProvider?.let { profile ->
+                            append("; default is ")
+                            append(profile.displayName)
+                            append(" / ")
+                            append(profile.selectedModel)
+                        }
+                        append(". Configured credential count: ")
+                        append(configuredCount)
+                        append(".")
+                    }
+                }
+            },
         )
         return listOf(localStorage, documentRoots, cloudDrives, companions, mcpAndApis)
     }

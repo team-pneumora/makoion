@@ -14,6 +14,7 @@ class ShellDatabaseHelper(
         createOrganizeExecutionTables(db)
         createAgentTaskTables(db)
         createChatTranscriptTables(db)
+        createModelProviderTables(db)
     }
 
     override fun onUpgrade(
@@ -230,6 +231,9 @@ class ShellDatabaseHelper(
                 columnName = "planner_resources_json",
                 columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
             )
+        }
+        if (oldVersion < 17) {
+            createModelProviderTables(db)
         }
     }
 
@@ -467,6 +471,32 @@ class ShellDatabaseHelper(
         )
     }
 
+    private fun createModelProviderTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS model_provider_profiles (
+                provider_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                supported_models_json TEXT NOT NULL,
+                default_model TEXT NOT NULL,
+                selected_model TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                credential_status TEXT NOT NULL DEFAULT 'Missing',
+                credential_label TEXT,
+                base_url TEXT,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_model_provider_profiles_default
+            ON model_provider_profiles(is_default DESC, is_enabled DESC)
+            """.trimIndent(),
+        )
+    }
+
     private fun addColumnIfMissing(
         db: SQLiteDatabase,
         tableName: String,
@@ -502,6 +532,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 16
+        private const val databaseVersion = 17
     }
 }
