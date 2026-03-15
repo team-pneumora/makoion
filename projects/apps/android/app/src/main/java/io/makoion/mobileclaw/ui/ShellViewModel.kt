@@ -35,6 +35,8 @@ import io.makoion.mobileclaw.data.PairingSessionState
 import io.makoion.mobileclaw.data.PersistedOrganizeExecution
 import io.makoion.mobileclaw.data.ResourceRegistryEntryState
 import io.makoion.mobileclaw.data.ResourceRegistryHealthState
+import io.makoion.mobileclaw.data.ScheduledAutomationRecord
+import io.makoion.mobileclaw.data.ScheduledAutomationStatus
 import io.makoion.mobileclaw.data.ShellRecoveryState
 import io.makoion.mobileclaw.data.TaskFollowUpPresentation
 import io.makoion.mobileclaw.data.TaskRetryActionResult
@@ -138,6 +140,7 @@ data class ShellUiState(
     val activeChatThread: ChatThreadRecord? = null,
     val chatThreads: List<ChatThreadRecord> = emptyList(),
     val agentTasks: List<AgentTaskRecord> = emptyList(),
+    val scheduledAutomations: List<ScheduledAutomationRecord> = emptyList(),
     val fileIndexState: FileIndexState = FileIndexState(),
     val approvals: List<ApprovalInboxItem> = emptyList(),
     val auditEvents: List<AuditTrailEvent> = emptyList(),
@@ -275,6 +278,14 @@ private data class ShellSupportSnapshot(
     val cloudDriveConnections: List<CloudDriveConnectionState>,
     val providerProfiles: List<ModelProviderProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
+    val scheduledAutomations: List<ScheduledAutomationRecord>,
+)
+
+private data class SettingsSnapshot(
+    val cloudDriveConnections: List<CloudDriveConnectionState>,
+    val providerProfiles: List<ModelProviderProfileState>,
+    val resourceRegistryEntries: List<ResourceRegistryEntryState>,
+    val scheduledAutomations: List<ScheduledAutomationRecord>,
 )
 
 private data class ResourceRegistrySyncInput(
@@ -408,8 +419,14 @@ class ShellViewModel(
                 appContainer.cloudDriveConnectionRepository.connections,
                 appContainer.modelProviderSettingsRepository.profiles,
                 appContainer.resourceRegistryRepository.entries,
-            ) { cloudDriveConnections, providerProfiles, resourceRegistryEntries ->
-                Triple(cloudDriveConnections, providerProfiles, resourceRegistryEntries)
+                appContainer.scheduledAutomationRepository.automations,
+            ) { cloudDriveConnections, providerProfiles, resourceRegistryEntries, scheduledAutomations ->
+                SettingsSnapshot(
+                    cloudDriveConnections = cloudDriveConnections,
+                    providerProfiles = providerProfiles,
+                    resourceRegistryEntries = resourceRegistryEntries,
+                    scheduledAutomations = scheduledAutomations,
+                )
             },
         ) { chatThreads, approvals, voice, auditInputs, settingsInputs ->
             ShellSupportSnapshot(
@@ -417,9 +434,10 @@ class ShellViewModel(
                 approvals = approvals,
                 voice = voice,
                 auditInputs = auditInputs,
-                cloudDriveConnections = settingsInputs.first,
-                providerProfiles = settingsInputs.second,
-                resourceRegistryEntries = settingsInputs.third,
+                cloudDriveConnections = settingsInputs.cloudDriveConnections,
+                providerProfiles = settingsInputs.providerProfiles,
+                resourceRegistryEntries = settingsInputs.resourceRegistryEntries,
+                scheduledAutomations = settingsInputs.scheduledAutomations,
             )
         },
     ) { shellInputs, deviceInputs, supportInputs ->
@@ -468,6 +486,7 @@ class ShellViewModel(
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
+            scheduledAutomations = supportInputs.scheduledAutomations,
             fileIndexState = shellInputs.files,
             approvals = supportInputs.approvals,
             auditEvents = auditEvents,
@@ -691,6 +710,7 @@ class ShellViewModel(
                         selectedTargetDeviceId = currentUiState.deviceControlState.selectedTargetDeviceId,
                         cloudDriveConnections = currentUiState.cloudDriveConnections,
                         modelPreference = resolveAgentModelPreference(currentUiState.providerProfiles),
+                        scheduledAutomations = currentUiState.scheduledAutomations,
                         selectedFileId = currentUiState.fileActionState.selectedFileId,
                     ),
                 )
@@ -866,6 +886,24 @@ class ShellViewModel(
             appContainer.modelProviderSettingsRepository.selectModel(
                 providerId = providerId,
                 model = model,
+            )
+        }
+    }
+
+    fun activateScheduledAutomation(automationId: String) {
+        viewModelScope.launch {
+            appContainer.scheduledAutomationRepository.setStatus(
+                automationId = automationId,
+                status = ScheduledAutomationStatus.Active,
+            )
+        }
+    }
+
+    fun pauseScheduledAutomation(automationId: String) {
+        viewModelScope.launch {
+            appContainer.scheduledAutomationRepository.setStatus(
+                automationId = automationId,
+                status = ScheduledAutomationStatus.Paused,
             )
         }
     }

@@ -96,6 +96,8 @@ import io.makoion.mobileclaw.data.OrganizeExecutionStatus
 import io.makoion.mobileclaw.data.PairedDeviceState
 import io.makoion.mobileclaw.data.PairingSessionState
 import io.makoion.mobileclaw.data.PairingSessionStatus
+import io.makoion.mobileclaw.data.ScheduledAutomationRecord
+import io.makoion.mobileclaw.data.ScheduledAutomationStatus
 import io.makoion.mobileclaw.data.ShellRecoveryState
 import io.makoion.mobileclaw.data.ShellRecoveryStatus
 import io.makoion.mobileclaw.data.TransferDraftStatus
@@ -232,6 +234,8 @@ fun MobileClawShellApp(
                 innerPadding = innerPadding,
                 onApprove = shellViewModel::approve,
                 onDeny = shellViewModel::deny,
+                onActivateAutomation = shellViewModel::activateScheduledAutomation,
+                onPauseAutomation = shellViewModel::pauseScheduledAutomation,
                 onOpenHistory = { shellViewModel.openSection(ShellSection.History) },
                 onOpenSettings = { shellViewModel.openSection(ShellSection.Settings) },
             )
@@ -791,6 +795,8 @@ private fun DashboardScreen(
     innerPadding: PaddingValues,
     onApprove: (String) -> Unit,
     onDeny: (String) -> Unit,
+    onActivateAutomation: (String) -> Unit,
+    onPauseAutomation: (String) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -869,6 +875,31 @@ private fun DashboardScreen(
                 key = { it.id },
             ) { task ->
                 AgentTaskCard(task = task)
+            }
+        }
+        if (uiState.scheduledAutomations.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    title = "No recorded automations",
+                    summary = "Recurring chat requests will be stored here as durable automation skeletons before the scheduler worker is fully wired.",
+                )
+            }
+        } else {
+            item {
+                SectionHeader(
+                    title = "Scheduled automations",
+                    subtitle = "Recurring requests stay visible here with placeholder status until background scheduling and delivery executors are fully implemented.",
+                )
+            }
+            items(
+                items = uiState.scheduledAutomations.take(4),
+                key = { it.id },
+            ) { automation ->
+                ScheduledAutomationCard(
+                    automation = automation,
+                    onActivate = { onActivateAutomation(automation.id) },
+                    onPause = { onPauseAutomation(automation.id) },
+                )
             }
         }
         item {
@@ -5750,6 +5781,96 @@ private fun resourceConnectionStatusLabel(status: ResourceConnectionStatus): Str
     }
 }
 
+@Composable
+private fun ScheduledAutomationCard(
+    automation: ScheduledAutomationRecord,
+    onActivate: () -> Unit,
+    onPause: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = automation.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = automation.summary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = scheduledAutomationStatusColor(automation.status).copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        text = scheduledAutomationStatusLabel(automation.status),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = scheduledAutomationStatusColor(automation.status),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(automation.scheduleLabel) },
+                )
+                AssistChip(
+                    onClick = {},
+                    label = { Text(automation.deliveryLabel) },
+                )
+                AssistChip(
+                    onClick = {},
+                    label = { Text("Updated ${automation.updatedAtLabel}") },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (automation.status == ScheduledAutomationStatus.Active) {
+                    OutlinedButton(
+                        onClick = onPause,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Pause placeholder")
+                    }
+                } else {
+                    FilledTonalButton(
+                        onClick = onActivate,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Activate placeholder")
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun cloudDriveStatusColor(status: CloudDriveConnectionStatus): Color {
     return when (status) {
         CloudDriveConnectionStatus.NeedsSetup -> ClawGold
@@ -5763,6 +5884,22 @@ private fun cloudDriveStatusLabel(status: CloudDriveConnectionStatus): String {
         CloudDriveConnectionStatus.NeedsSetup -> "Needs setup"
         CloudDriveConnectionStatus.Staged -> "Staged"
         CloudDriveConnectionStatus.Connected -> "Mock ready"
+    }
+}
+
+private fun scheduledAutomationStatusColor(status: ScheduledAutomationStatus): Color {
+    return when (status) {
+        ScheduledAutomationStatus.Planned -> ClawGold
+        ScheduledAutomationStatus.Active -> ClawGreen
+        ScheduledAutomationStatus.Paused -> Color(0xFF6D7C8A)
+    }
+}
+
+private fun scheduledAutomationStatusLabel(status: ScheduledAutomationStatus): String {
+    return when (status) {
+        ScheduledAutomationStatus.Planned -> "Planned"
+        ScheduledAutomationStatus.Active -> "Placeholder active"
+        ScheduledAutomationStatus.Paused -> "Paused"
     }
 }
 

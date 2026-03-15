@@ -9,6 +9,7 @@ data class AgentTurnContext(
     val selectedTargetDeviceId: String?,
     val cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     val modelPreference: AgentModelPreference = AgentModelPreference(),
+    val scheduledAutomations: List<ScheduledAutomationRecord> = emptyList(),
     val selectedFileId: String? = null,
 )
 
@@ -47,6 +48,7 @@ class LocalPhoneAgentRuntime(
     private val approvalInboxRepository: ApprovalInboxRepository,
     private val auditTrailRepository: AuditTrailRepository,
     private val devicePairingRepository: DevicePairingRepository,
+    private val scheduledAutomationRepository: ScheduledAutomationRepository,
     private val phoneAgentActionCoordinator: PhoneAgentActionCoordinator,
 ) {
     suspend fun processTurn(
@@ -63,6 +65,7 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowHistory -> buildHistoryResponse(trimmedPrompt, context)
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
+            AgentIntent.PlanScheduledAutomation -> planScheduledAutomation(trimmedPrompt, context)
             AgentIntent.PlanBrowserResearch -> planBrowserResearch(trimmedPrompt, context)
             AgentIntent.SummarizeIndexedFiles -> summarizeIndexedFiles(trimmedPrompt, context)
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
@@ -420,6 +423,65 @@ class LocalPhoneAgentRuntime(
                 "browser research skeleton task를 기록했고 필요한 자원 연결을 기다리는 상태로 남겼습니다."
             } else {
                 "Recorded a browser research skeleton task and left it waiting for browser/web resource wiring."
+            },
+            taskStatus = AgentTaskStatus.WaitingResource,
+        )
+    }
+
+    private suspend fun planScheduledAutomation(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val plan = buildScheduledAutomationPlan(prompt)
+        val record = scheduledAutomationRepository.createSkeleton(
+            prompt = prompt,
+            plan = plan,
+        )
+        val recordedCount = context.scheduledAutomations.size + 1
+        val browserLinked = containsAny(
+            prompt.lowercase(),
+            "browser",
+            "browse",
+            "web",
+            "research",
+            "news",
+            "article",
+            "브라우저",
+            "웹",
+            "조사",
+            "검색",
+            "뉴스",
+            "기사",
+        )
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append("반복 작업을 scheduled automation skeleton으로 기록했어요. ")
+                    append("주기는 ${record.scheduleLabel}, 전달 방식은 ${record.deliveryLabel}로 해석했고, Dashboard에서 바로 확인할 수 있습니다. ")
+                    append("현재 scheduler worker와 실제 delivery executor는 아직 연결 전이라 바로 자동 실행되지는 않습니다. ")
+                    append("기록된 automation은 총 ${recordedCount}건입니다.")
+                    if (browserLinked) {
+                        append(" 이 요청은 이후 browser/news research capability와 연결될 수 있게 남겨뒀습니다.")
+                    }
+                }
+            } else {
+                buildString {
+                    append("I recorded this recurring request as a scheduled automation skeleton. ")
+                    append("The schedule was interpreted as ${record.scheduleLabel} and the delivery channel as ${record.deliveryLabel}, and you can review it on Dashboard. ")
+                    append("The scheduler worker and real delivery executor are not wired yet, so it will not run end-to-end today. ")
+                    append("There are now $recordedCount recorded automation skeleton(s).")
+                    if (browserLinked) {
+                        append(" I also kept it aligned with the upcoming browser/news research capability.")
+                    }
+                }
+            },
+            destination = AgentDestination.Dashboard,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = scheduledAutomationPlanActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "${record.scheduleLabel} / ${record.deliveryLabel} automation skeleton을 기록했습니다."
+            } else {
+                "Recorded a ${record.scheduleLabel} / ${record.deliveryLabel} automation skeleton."
             },
             taskStatus = AgentTaskStatus.WaitingResource,
         )
@@ -1616,6 +1678,15 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("resources.refresh"),
                     resources = listOf("phone.local_storage", "approval.inbox", "external.companion"),
                 )
+            looksLikeScheduledAutomationPrompt(normalized) ->
+                plannerOutput(
+                    intent = AgentIntent.PlanScheduledAutomation,
+                    auditResult = "scheduled_automation_planned",
+                    mode = AgentPlannerMode.Plan,
+                    summary = "Capture a recurring or scheduled request and persist it as an automation skeleton until the scheduler executor is wired.",
+                    capabilities = listOf("automation.schedule.plan"),
+                    resources = listOf("task.runtime", "notifications.delivery", "audit.history"),
+                )
             containsAny(
                 normalized,
                 "browser",
@@ -1929,6 +2000,7 @@ class LocalPhoneAgentRuntime(
         private const val approvalsDenyActionKey = "approvals.deny"
         private const val manualTaskRetryActionKey = "agent.task.retry.manual"
         private const val shellRefreshActionKey = "shell.refresh"
+        private const val scheduledAutomationPlanActionKey = "automation.schedule.plan"
         private const val browserResearchPlanActionKey = "browser.research.plan"
         private const val routeDashboardActionKey = "ui.route.dashboard"
         private const val routeHistoryActionKey = "ui.route.history"
@@ -1966,6 +2038,7 @@ private sealed interface AgentIntent {
     data object ShowHistory : AgentIntent
     data object ShowSettings : AgentIntent
     data object RefreshResources : AgentIntent
+    data object PlanScheduledAutomation : AgentIntent
     data object PlanBrowserResearch : AgentIntent
     data object SummarizeIndexedFiles : AgentIntent
     data class OrganizeIndexedFiles(

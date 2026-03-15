@@ -17,6 +17,7 @@ class ShellDatabaseHelper(
         createModelProviderTables(db)
         createResourceRegistryTables(db)
         createCloudDriveTables(db)
+        createScheduledAutomationTables(db)
     }
 
     override fun onUpgrade(
@@ -242,6 +243,9 @@ class ShellDatabaseHelper(
         }
         if (oldVersion < 19) {
             createCloudDriveTables(db)
+        }
+        if (oldVersion < 20) {
+            createScheduledAutomationTables(db)
         }
     }
 
@@ -552,6 +556,30 @@ class ShellDatabaseHelper(
         )
     }
 
+    private fun createScheduledAutomationTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS scheduled_automation_records (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                schedule_label TEXT NOT NULL,
+                delivery_label TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_scheduled_automation_status
+            ON scheduled_automation_records(status, updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
     private fun addColumnIfMissing(
         db: SQLiteDatabase,
         tableName: String,
@@ -587,6 +615,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 19
+        private const val databaseVersion = 20
     }
 }
