@@ -63,6 +63,7 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowHistory -> buildHistoryResponse(trimmedPrompt, context)
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
+            AgentIntent.PlanBrowserResearch -> planBrowserResearch(trimmedPrompt, context)
             AgentIntent.SummarizeIndexedFiles -> summarizeIndexedFiles(trimmedPrompt, context)
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
             AgentIntent.TransferIndexedFiles -> transferIndexedFiles(trimmedPrompt, context)
@@ -367,6 +368,60 @@ class LocalPhoneAgentRuntime(
             fileSummary = summary,
             taskStatus = AgentTaskStatus.Succeeded,
             fileActionNote = summary.headline,
+        )
+    }
+
+    private fun planBrowserResearch(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val brief = buildBrowserResearchBrief(prompt)
+        val stagedCloudCount = context.cloudDriveConnections.count {
+            it.status == CloudDriveConnectionStatus.Staged
+        }
+        val connectedCloudCount = context.cloudDriveConnections.count {
+            it.status == CloudDriveConnectionStatus.Connected
+        }
+        val providerLabel = context.modelPreference.preferredProviderLabel?.let { provider ->
+            context.modelPreference.preferredModel?.let { model ->
+                "$provider / $model"
+            } ?: provider
+        } ?: if (prefersKorean(prompt)) {
+            "미선택"
+        } else {
+            "not selected"
+        }
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append("browser research skeleton으로 요청을 기록했어요. ")
+                    append("핵심 질의는 \"${brief.query}\" 이고, 전달 방식은 ${brief.requestedDelivery} 기준으로 해석했습니다. ")
+                    append("현재 브라우저 자동화와 웹 수집 capability는 아직 실제 executor가 없어서 바로 실행되지는 않습니다. ")
+                    append("cloud connector는 staged ${stagedCloudCount}개, mock-ready ${connectedCloudCount}개이고, 기본 모델 선호도는 $providerLabel 입니다.")
+                    if (brief.recurringHint) {
+                        append(" 반복 실행 힌트도 감지했기 때문에 automation scheduler skeleton 단계와 연결하기 좋은 요청입니다.")
+                    }
+                }
+            } else {
+                buildString {
+                    append("I captured this as a browser research skeleton request. ")
+                    append("The core query is \"${brief.query}\" and the requested delivery channel was interpreted as ${brief.requestedDelivery}. ")
+                    append("Browser automation and live web collection do not have a real executor yet, so I cannot run it end-to-end today. ")
+                    append("Cloud connectors are staged ${stagedCloudCount} / mock-ready ${connectedCloudCount}, and the current model preference is $providerLabel.")
+                    if (brief.recurringHint) {
+                        append(" I also detected a recurring hint, which makes this a good candidate for the upcoming automation scheduler skeleton.")
+                    }
+                }
+            },
+            destination = AgentDestination.Settings,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = browserResearchPlanActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "browser research skeleton task를 기록했고 필요한 자원 연결을 기다리는 상태로 남겼습니다."
+            } else {
+                "Recorded a browser research skeleton task and left it waiting for browser/web resource wiring."
+            },
+            taskStatus = AgentTaskStatus.WaitingResource,
         )
     }
 
@@ -1561,6 +1616,30 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("resources.refresh"),
                     resources = listOf("phone.local_storage", "approval.inbox", "external.companion"),
                 )
+            containsAny(
+                normalized,
+                "browser",
+                "browse",
+                "web",
+                "research",
+                "search web",
+                "news",
+                "article",
+                "브라우저",
+                "웹",
+                "조사",
+                "검색",
+                "뉴스",
+                "기사",
+            ) ->
+                plannerOutput(
+                    intent = AgentIntent.PlanBrowserResearch,
+                    auditResult = "browser_research_planned",
+                    mode = AgentPlannerMode.Plan,
+                    summary = "Capture a browser or web research request and mark it as waiting for browser automation resources.",
+                    capabilities = listOf("browser.research.plan"),
+                    resources = listOf("cloud.drives", "mcp.api_endpoints", "model.providers"),
+                )
             containsAny(normalized, "summarize", "summary", "요약") ->
                 plannerOutput(
                     intent = AgentIntent.SummarizeIndexedFiles,
@@ -1850,6 +1929,7 @@ class LocalPhoneAgentRuntime(
         private const val approvalsDenyActionKey = "approvals.deny"
         private const val manualTaskRetryActionKey = "agent.task.retry.manual"
         private const val shellRefreshActionKey = "shell.refresh"
+        private const val browserResearchPlanActionKey = "browser.research.plan"
         private const val routeDashboardActionKey = "ui.route.dashboard"
         private const val routeHistoryActionKey = "ui.route.history"
         private const val routeSettingsActionKey = "ui.route.settings"
@@ -1886,6 +1966,7 @@ private sealed interface AgentIntent {
     data object ShowHistory : AgentIntent
     data object ShowSettings : AgentIntent
     data object RefreshResources : AgentIntent
+    data object PlanBrowserResearch : AgentIntent
     data object SummarizeIndexedFiles : AgentIntent
     data class OrganizeIndexedFiles(
         val strategy: FileOrganizeStrategy,
