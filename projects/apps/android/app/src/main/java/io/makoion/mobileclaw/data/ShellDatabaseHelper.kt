@@ -15,6 +15,7 @@ class ShellDatabaseHelper(
         createAgentTaskTables(db)
         createChatTranscriptTables(db)
         createModelProviderTables(db)
+        createResourceRegistryTables(db)
     }
 
     override fun onUpgrade(
@@ -234,6 +235,9 @@ class ShellDatabaseHelper(
         }
         if (oldVersion < 17) {
             createModelProviderTables(db)
+        }
+        if (oldVersion < 18) {
+            createResourceRegistryTables(db)
         }
     }
 
@@ -497,6 +501,31 @@ class ShellDatabaseHelper(
         )
     }
 
+    private fun createResourceRegistryTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS resource_registry_entries (
+                id TEXT PRIMARY KEY,
+                resource_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                priority_rank INTEGER NOT NULL,
+                priority_label TEXT NOT NULL,
+                health_state TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_resource_registry_priority
+            ON resource_registry_entries(priority_rank ASC, updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
     private fun addColumnIfMissing(
         db: SQLiteDatabase,
         tableName: String,
@@ -532,6 +561,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 17
+        private const val databaseVersion = 18
     }
 }

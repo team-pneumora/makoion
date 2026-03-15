@@ -12,6 +12,7 @@ import io.makoion.mobileclaw.data.PhoneAgentActionCoordinator
 import io.makoion.mobileclaw.data.PersistentModelProviderSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeDebugSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeExecutionRepository
+import io.makoion.mobileclaw.data.PersistentResourceRegistryRepository
 import io.makoion.mobileclaw.data.VoiceEntryCoordinator
 import io.makoion.mobileclaw.data.PersistentApprovalInboxRepository
 import io.makoion.mobileclaw.data.PersistentAuditTrailRepository
@@ -41,6 +42,9 @@ class ShellAppContainer(
         databaseHelper = databaseHelper,
     )
     val modelProviderSettingsRepository = PersistentModelProviderSettingsRepository(
+        databaseHelper = databaseHelper,
+    )
+    val resourceRegistryRepository = PersistentResourceRegistryRepository(
         databaseHelper = databaseHelper,
     )
     val transferBridgeCoordinator = TransferBridgeCoordinator(

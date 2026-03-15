@@ -31,6 +31,8 @@ import io.makoion.mobileclaw.data.ModelProviderProfileState
 import io.makoion.mobileclaw.data.PairedDeviceState
 import io.makoion.mobileclaw.data.PairingSessionState
 import io.makoion.mobileclaw.data.PersistedOrganizeExecution
+import io.makoion.mobileclaw.data.ResourceRegistryEntryState
+import io.makoion.mobileclaw.data.ResourceRegistryHealthState
 import io.makoion.mobileclaw.data.ShellRecoveryState
 import io.makoion.mobileclaw.data.TaskFollowUpPresentation
 import io.makoion.mobileclaw.data.TaskRetryActionResult
@@ -268,6 +270,7 @@ private data class ShellSupportSnapshot(
     val voice: VoiceEntryState,
     val auditInputs: Triple<List<AuditTrailEvent>, ShellRecoveryState, List<AgentTaskRecord>>,
     val providerProfiles: List<ModelProviderProfileState>,
+    val resourceRegistryEntries: List<ResourceRegistryEntryState>,
 )
 
 class ShellViewModel(
@@ -390,14 +393,20 @@ class ShellViewModel(
             ) { auditEvents, recoveryState, agentTasks ->
                 Triple(auditEvents, recoveryState, agentTasks)
             },
-            appContainer.modelProviderSettingsRepository.profiles,
-        ) { chatThreads, approvals, voice, auditInputs, providerProfiles ->
+            combine(
+                appContainer.modelProviderSettingsRepository.profiles,
+                appContainer.resourceRegistryRepository.entries,
+            ) { providerProfiles, resourceRegistryEntries ->
+                providerProfiles to resourceRegistryEntries
+            },
+        ) { chatThreads, approvals, voice, auditInputs, settingsInputs ->
             ShellSupportSnapshot(
                 chatThreads = chatThreads,
                 approvals = approvals,
                 voice = voice,
                 auditInputs = auditInputs,
-                providerProfiles = providerProfiles,
+                providerProfiles = settingsInputs.first,
+                resourceRegistryEntries = settingsInputs.second,
             )
         },
     ) { shellInputs, deviceInputs, supportInputs ->
@@ -440,12 +449,7 @@ class ShellViewModel(
         ShellUiState(
             selectedSection = shellInputs.section,
             chatState = shellInputs.chat,
-            resourceConnections = buildResourceConnections(
-                fileIndexState = shellInputs.files,
-                pairedDevices = deviceInputs.pairedDevices,
-                selectedDeviceId = selectedDeviceId,
-                providerProfiles = supportInputs.providerProfiles,
-            ),
+            resourceConnections = buildResourceConnections(supportInputs.resourceRegistryEntries),
             providerProfiles = supportInputs.providerProfiles,
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
@@ -527,6 +531,21 @@ class ShellViewModel(
         viewModelScope.launch {
             appContainer.devicePairingRepository.pairedDevices.collect { devices ->
                 reconcileTargetDeviceSelection(devices)
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                fileIndexState,
+                appContainer.devicePairingRepository.pairedDevices,
+                appContainer.modelProviderSettingsRepository.profiles,
+            ) { files, devices, providerProfiles ->
+                Triple(files, devices, providerProfiles)
+            }.collect { (files, devices, providerProfiles) ->
+                appContainer.resourceRegistryRepository.syncSnapshot(
+                    fileIndexState = files,
+                    pairedDevices = devices,
+                    providerProfiles = providerProfiles,
+                )
             }
         }
         viewModelScope.launch {
@@ -1684,107 +1703,22 @@ class ShellViewModel(
     }
 
     private fun buildResourceConnections(
-        fileIndexState: FileIndexState,
-        pairedDevices: List<PairedDeviceState>,
-        selectedDeviceId: String?,
-        providerProfiles: List<ModelProviderProfileState>,
+        entries: List<ResourceRegistryEntryState>,
     ): List<ResourceConnectionSummary> {
-        val localStorage = ResourceConnectionSummary(
-            id = "phone-local-storage",
-            title = "Phone local storage",
-            priorityLabel = "Priority 1",
-            status = if (fileIndexState.permissionGranted || fileIndexState.indexedCount > 0) {
-                ResourceConnectionStatus.Active
-            } else {
-                ResourceConnectionStatus.NeedsSetup
-            },
-            summary = if (fileIndexState.permissionGranted || fileIndexState.indexedCount > 0) {
-                "${fileIndexState.indexedCount} indexed file(s) are currently available through ${fileIndexState.scanSource}."
-            } else {
-                "Grant media access so Makoion can search, summarize, and organize local files directly on the phone."
-            },
-        )
-        val documentRoots = ResourceConnectionSummary(
-            id = "attached-document-roots",
-            title = "Attached document roots",
-            priorityLabel = "Priority 1",
-            status = if (fileIndexState.documentTreeCount > 0) {
-                ResourceConnectionStatus.Active
-            } else {
-                ResourceConnectionStatus.NeedsSetup
-            },
-            summary = if (fileIndexState.documentTreeCount > 0) {
-                "${fileIndexState.documentTreeCount} SAF document root(s) are attached: ${fileIndexState.documentRoots.joinToString().ifBlank { "attached" }}."
-            } else {
-                "Attach SAF document roots for deeper folders that MediaStore does not cover."
-            },
-        )
-        val cloudDrives = ResourceConnectionSummary(
-            id = "cloud-drives",
-            title = "Cloud drives",
-            priorityLabel = "Priority 2",
-            status = ResourceConnectionStatus.Planned,
-            summary = "Google Drive, OneDrive, and Dropbox connectors are planned as the next resource tier after phone storage.",
-        )
-        val companions = ResourceConnectionSummary(
-            id = "external-companions",
-            title = "External companions",
-            priorityLabel = "Priority 3",
-            status = if (pairedDevices.isNotEmpty()) {
-                ResourceConnectionStatus.Active
-            } else {
-                ResourceConnectionStatus.NeedsSetup
-            },
-            summary = if (pairedDevices.isNotEmpty()) {
-                val selectedLabel = pairedDevices.firstOrNull { it.id == selectedDeviceId }?.name
-                buildString {
-                    append("${pairedDevices.size} companion device(s) are paired")
-                    selectedLabel?.let {
-                        append("; current target is ")
-                        append(it)
-                    }
-                    append(".")
-                }
-            } else {
-                "Pair a desktop or external computer so the phone agent can hand off remote actions and file transfers."
-            },
-        )
-        val mcpAndApis = ResourceConnectionSummary(
-            id = "mcp-and-api-profiles",
-            title = "MCP and API profiles",
-            priorityLabel = "Priority 4",
-            status = when {
-                providerProfiles.any {
-                    it.enabled && it.credentialStatus == ModelProviderCredentialStatus.Stored
-                } -> ResourceConnectionStatus.Active
-                providerProfiles.isNotEmpty() -> ResourceConnectionStatus.NeedsSetup
-                else -> ResourceConnectionStatus.Planned
-            },
-            summary = when {
-                providerProfiles.isEmpty() ->
-                    "MCP servers, third-party APIs, and model/provider credentials will surface here once the shared resource registry is wired in."
-                else -> {
-                    val defaultProvider = providerProfiles.firstOrNull { it.enabled && it.isDefault }
-                        ?: providerProfiles.firstOrNull { it.enabled }
-                    val configuredCount = providerProfiles.count {
-                        it.credentialStatus == ModelProviderCredentialStatus.Stored
-                    }
-                    buildString {
-                        append("${providerProfiles.size} AI provider profile(s) are seeded")
-                        defaultProvider?.let { profile ->
-                            append("; default is ")
-                            append(profile.displayName)
-                            append(" / ")
-                            append(profile.selectedModel)
-                        }
-                        append(". Configured credential count: ")
-                        append(configuredCount)
-                        append(".")
-                    }
-                }
-            },
-        )
-        return listOf(localStorage, documentRoots, cloudDrives, companions, mcpAndApis)
+        return entries.map { entry ->
+            ResourceConnectionSummary(
+                id = entry.id,
+                title = entry.title,
+                priorityLabel = entry.priority.label,
+                status = when (entry.health) {
+                    ResourceRegistryHealthState.Active -> ResourceConnectionStatus.Active
+                    ResourceRegistryHealthState.NeedsSetup,
+                    ResourceRegistryHealthState.Degraded -> ResourceConnectionStatus.NeedsSetup
+                    ResourceRegistryHealthState.Planned -> ResourceConnectionStatus.Planned
+                },
+                summary = entry.summary,
+            )
+        }
     }
 
     companion object {
