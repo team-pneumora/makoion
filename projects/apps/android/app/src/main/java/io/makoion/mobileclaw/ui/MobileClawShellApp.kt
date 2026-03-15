@@ -83,6 +83,8 @@ import io.makoion.mobileclaw.data.CompanionHealthStatus
 import io.makoion.mobileclaw.data.CompanionSessionNotifyStatus
 import io.makoion.mobileclaw.data.CompanionWorkflowRunStatus
 import io.makoion.mobileclaw.data.DeviceTransportMode
+import io.makoion.mobileclaw.data.ExternalEndpointProfileState
+import io.makoion.mobileclaw.data.ExternalEndpointStatus
 import io.makoion.mobileclaw.data.FileIndexState
 import io.makoion.mobileclaw.data.FileOrganizePlan
 import io.makoion.mobileclaw.data.FilePreviewDetail
@@ -254,6 +256,7 @@ fun MobileClawShellApp(
                 resourceConnections = uiState.resourceConnections,
                 cloudDriveConnections = uiState.cloudDriveConnections,
                 providerProfiles = uiState.providerProfiles,
+                externalEndpoints = uiState.externalEndpoints,
                 fileIndexState = uiState.fileIndexState,
                 fileActionState = uiState.fileActionState,
                 approvals = uiState.approvals,
@@ -272,6 +275,9 @@ fun MobileClawShellApp(
                 onSelectProviderModel = shellViewModel::selectProviderModel,
                 onStoreProviderCredential = shellViewModel::storeModelProviderCredential,
                 onClearProviderCredential = shellViewModel::clearModelProviderCredential,
+                onStageExternalEndpoint = shellViewModel::stageExternalEndpoint,
+                onMarkExternalEndpointConnected = shellViewModel::markExternalEndpointConnected,
+                onResetExternalEndpoint = shellViewModel::resetExternalEndpoint,
                 onToggleVoiceCapture = toggleVoiceCapture,
                 onShowQuickActions = showQuickActions,
                 onSelectFile = shellViewModel::selectFile,
@@ -1258,6 +1264,7 @@ private fun SettingsScreen(
     resourceConnections: List<ResourceConnectionSummary>,
     cloudDriveConnections: List<CloudDriveConnectionState>,
     providerProfiles: List<ModelProviderProfileState>,
+    externalEndpoints: List<ExternalEndpointProfileState>,
     fileIndexState: FileIndexState,
     fileActionState: FileActionState,
     approvals: List<ApprovalInboxItem>,
@@ -1276,6 +1283,9 @@ private fun SettingsScreen(
     onSelectProviderModel: (String, String) -> Unit,
     onStoreProviderCredential: (String, String) -> Unit,
     onClearProviderCredential: (String) -> Unit,
+    onStageExternalEndpoint: (String) -> Unit,
+    onMarkExternalEndpointConnected: (String) -> Unit,
+    onResetExternalEndpoint: (String) -> Unit,
     onToggleVoiceCapture: () -> Unit,
     onShowQuickActions: () -> Unit,
     onSelectFile: (String) -> Unit,
@@ -1388,6 +1398,25 @@ private fun SettingsScreen(
                     onClearCredential = {
                         onClearProviderCredential(profile.providerId)
                     },
+                )
+            }
+        }
+        if (externalEndpoints.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "MCP and API endpoints",
+                    subtitle = "These Priority 4 profiles keep MCP bridges, browser automation, and external API hooks visible while auth, transport, and executor wiring are still being built.",
+                )
+            }
+            items(
+                items = externalEndpoints,
+                key = { it.endpointId },
+            ) { endpoint ->
+                ExternalEndpointCard(
+                    endpoint = endpoint,
+                    onStage = { onStageExternalEndpoint(endpoint.endpointId) },
+                    onMarkMockReady = { onMarkExternalEndpointConnected(endpoint.endpointId) },
+                    onReset = { onResetExternalEndpoint(endpoint.endpointId) },
                 )
             }
         }
@@ -2883,6 +2912,122 @@ private fun ModelProviderProfileCard(
             }
             Text(
                 text = "Updated ${profile.updatedAtLabel}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExternalEndpointCard(
+    endpoint: ExternalEndpointProfileState,
+    onStage: () -> Unit,
+    onMarkMockReady: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = endpoint.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    endpoint.endpointLabel?.let { endpointLabel ->
+                        Text(
+                            text = "Recorded target $endpointLabel",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ClawGreen,
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = externalEndpointStatusColor(endpoint.status).copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        text = externalEndpointStatusLabel(endpoint.status),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = externalEndpointStatusColor(endpoint.status),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            Text(
+                text = endpoint.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(endpoint.category.displayName) },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = ClawInk.copy(alpha = 0.08f),
+                        labelColor = ClawInk,
+                    ),
+                )
+                endpoint.supportedCapabilities.forEach { capability ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(capability) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = ClawGold.copy(alpha = 0.12f),
+                            labelColor = ClawInk,
+                        ),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onStage,
+                    modifier = Modifier.weight(1f),
+                    enabled = endpoint.status != ExternalEndpointStatus.Staged,
+                ) {
+                    Text("Stage")
+                }
+                FilledTonalButton(
+                    onClick = onMarkMockReady,
+                    modifier = Modifier.weight(1f),
+                    enabled = endpoint.status != ExternalEndpointStatus.Connected,
+                ) {
+                    Text("Mock ready")
+                }
+            }
+            OutlinedButton(
+                onClick = onReset,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = endpoint.status != ExternalEndpointStatus.NeedsSetup,
+            ) {
+                Text("Reset endpoint")
+            }
+            Text(
+                text = "Updated ${endpoint.updatedAtLabel}",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -5938,6 +6083,22 @@ private fun cloudDriveStatusLabel(status: CloudDriveConnectionStatus): String {
         CloudDriveConnectionStatus.NeedsSetup -> "Needs setup"
         CloudDriveConnectionStatus.Staged -> "Staged"
         CloudDriveConnectionStatus.Connected -> "Mock ready"
+    }
+}
+
+private fun externalEndpointStatusColor(status: ExternalEndpointStatus): Color {
+    return when (status) {
+        ExternalEndpointStatus.NeedsSetup -> ClawGold
+        ExternalEndpointStatus.Staged -> Color(0xFF5D8CC9)
+        ExternalEndpointStatus.Connected -> ClawGreen
+    }
+}
+
+private fun externalEndpointStatusLabel(status: ExternalEndpointStatus): String {
+    return when (status) {
+        ExternalEndpointStatus.NeedsSetup -> "Needs setup"
+        ExternalEndpointStatus.Staged -> "Staged"
+        ExternalEndpointStatus.Connected -> "Mock ready"
     }
 }
 

@@ -23,6 +23,7 @@ import io.makoion.mobileclaw.data.CompanionAppOpenResult
 import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionSessionNotifyResult
 import io.makoion.mobileclaw.data.CompanionWorkflowRunResult
+import io.makoion.mobileclaw.data.ExternalEndpointProfileState
 import io.makoion.mobileclaw.data.FileIndexState
 import io.makoion.mobileclaw.data.FileOrganizePlan
 import io.makoion.mobileclaw.data.FileOrganizeStrategy
@@ -136,6 +137,7 @@ data class ShellUiState(
     val resourceConnections: List<ResourceConnectionSummary> = emptyList(),
     val cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     val providerProfiles: List<ModelProviderProfileState> = emptyList(),
+    val externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
     val chatState: ChatState = ChatState(),
     val activeChatThread: ChatThreadRecord? = null,
     val chatThreads: List<ChatThreadRecord> = emptyList(),
@@ -277,6 +279,7 @@ private data class ShellSupportSnapshot(
     val auditInputs: Triple<List<AuditTrailEvent>, ShellRecoveryState, List<AgentTaskRecord>>,
     val cloudDriveConnections: List<CloudDriveConnectionState>,
     val providerProfiles: List<ModelProviderProfileState>,
+    val externalEndpoints: List<ExternalEndpointProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
 )
@@ -284,6 +287,7 @@ private data class ShellSupportSnapshot(
 private data class SettingsSnapshot(
     val cloudDriveConnections: List<CloudDriveConnectionState>,
     val providerProfiles: List<ModelProviderProfileState>,
+    val externalEndpoints: List<ExternalEndpointProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
 )
@@ -293,6 +297,7 @@ private data class ResourceRegistrySyncInput(
     val pairedDevices: List<PairedDeviceState>,
     val providerProfiles: List<ModelProviderProfileState>,
     val cloudDriveConnections: List<CloudDriveConnectionState>,
+    val externalEndpoints: List<ExternalEndpointProfileState>,
 )
 
 class ShellViewModel(
@@ -416,14 +421,21 @@ class ShellViewModel(
                 Triple(auditEvents, recoveryState, agentTasks)
             },
             combine(
-                appContainer.cloudDriveConnectionRepository.connections,
-                appContainer.modelProviderSettingsRepository.profiles,
+                combine(
+                    appContainer.cloudDriveConnectionRepository.connections,
+                    appContainer.modelProviderSettingsRepository.profiles,
+                    appContainer.externalEndpointRepository.profiles,
+                ) { cloudDriveConnections, providerProfiles, externalEndpoints ->
+                    Triple(cloudDriveConnections, providerProfiles, externalEndpoints)
+                },
                 appContainer.resourceRegistryRepository.entries,
                 appContainer.scheduledAutomationRepository.automations,
-            ) { cloudDriveConnections, providerProfiles, resourceRegistryEntries, scheduledAutomations ->
+            ) { settingsInputs, resourceRegistryEntries, scheduledAutomations ->
+                val (cloudDriveConnections, providerProfiles, externalEndpoints) = settingsInputs
                 SettingsSnapshot(
                     cloudDriveConnections = cloudDriveConnections,
                     providerProfiles = providerProfiles,
+                    externalEndpoints = externalEndpoints,
                     resourceRegistryEntries = resourceRegistryEntries,
                     scheduledAutomations = scheduledAutomations,
                 )
@@ -436,6 +448,7 @@ class ShellViewModel(
                 auditInputs = auditInputs,
                 cloudDriveConnections = settingsInputs.cloudDriveConnections,
                 providerProfiles = settingsInputs.providerProfiles,
+                externalEndpoints = settingsInputs.externalEndpoints,
                 resourceRegistryEntries = settingsInputs.resourceRegistryEntries,
                 scheduledAutomations = settingsInputs.scheduledAutomations,
             )
@@ -483,6 +496,7 @@ class ShellViewModel(
             resourceConnections = buildResourceConnections(supportInputs.resourceRegistryEntries),
             cloudDriveConnections = supportInputs.cloudDriveConnections,
             providerProfiles = supportInputs.providerProfiles,
+            externalEndpoints = supportInputs.externalEndpoints,
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
@@ -568,16 +582,23 @@ class ShellViewModel(
         }
         viewModelScope.launch {
             combine(
-                fileIndexState,
-                appContainer.devicePairingRepository.pairedDevices,
-                appContainer.modelProviderSettingsRepository.profiles,
+                combine(
+                    fileIndexState,
+                    appContainer.devicePairingRepository.pairedDevices,
+                    appContainer.modelProviderSettingsRepository.profiles,
+                ) { files, devices, providerProfiles ->
+                    Triple(files, devices, providerProfiles)
+                },
                 appContainer.cloudDriveConnectionRepository.connections,
-            ) { files, devices, providerProfiles, cloudDriveConnections ->
+                appContainer.externalEndpointRepository.profiles,
+            ) { baseInputs, cloudDriveConnections, externalEndpoints ->
+                val (files, devices, providerProfiles) = baseInputs
                 ResourceRegistrySyncInput(
                     fileIndexState = files,
                     pairedDevices = devices,
                     providerProfiles = providerProfiles,
                     cloudDriveConnections = cloudDriveConnections,
+                    externalEndpoints = externalEndpoints,
                 )
             }.collect { snapshot ->
                 appContainer.resourceRegistryRepository.syncSnapshot(
@@ -585,6 +606,7 @@ class ShellViewModel(
                     pairedDevices = snapshot.pairedDevices,
                     providerProfiles = snapshot.providerProfiles,
                     cloudDriveConnections = snapshot.cloudDriveConnections,
+                    externalEndpoints = snapshot.externalEndpoints,
                 )
             }
         }
@@ -710,6 +732,7 @@ class ShellViewModel(
                         selectedTargetDeviceId = currentUiState.deviceControlState.selectedTargetDeviceId,
                         cloudDriveConnections = currentUiState.cloudDriveConnections,
                         modelPreference = resolveAgentModelPreference(currentUiState.providerProfiles),
+                        externalEndpoints = currentUiState.externalEndpoints,
                         scheduledAutomations = currentUiState.scheduledAutomations,
                         selectedFileId = currentUiState.fileActionState.selectedFileId,
                     ),
@@ -857,6 +880,24 @@ class ShellViewModel(
     fun resetCloudDriveConnection(provider: CloudDriveProviderKind) {
         viewModelScope.launch {
             appContainer.cloudDriveConnectionRepository.resetConnection(provider)
+        }
+    }
+
+    fun stageExternalEndpoint(endpointId: String) {
+        viewModelScope.launch {
+            appContainer.externalEndpointRepository.stageEndpoint(endpointId)
+        }
+    }
+
+    fun markExternalEndpointConnected(endpointId: String) {
+        viewModelScope.launch {
+            appContainer.externalEndpointRepository.markConnected(endpointId)
+        }
+    }
+
+    fun resetExternalEndpoint(endpointId: String) {
+        viewModelScope.launch {
+            appContainer.externalEndpointRepository.resetEndpoint(endpointId)
         }
     }
 

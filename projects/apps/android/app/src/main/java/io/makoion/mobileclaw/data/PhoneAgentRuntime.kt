@@ -9,6 +9,7 @@ data class AgentTurnContext(
     val selectedTargetDeviceId: String?,
     val cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     val modelPreference: AgentModelPreference = AgentModelPreference(),
+    val externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
     val scheduledAutomations: List<ScheduledAutomationRecord> = emptyList(),
     val selectedFileId: String? = null,
 )
@@ -385,6 +386,12 @@ class LocalPhoneAgentRuntime(
         val connectedCloudCount = context.cloudDriveConnections.count {
             it.status == CloudDriveConnectionStatus.Connected
         }
+        val stagedExternalEndpointCount = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Staged
+        }
+        val connectedExternalEndpointCount = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Connected
+        }
         val providerLabel = context.modelPreference.preferredProviderLabel?.let { provider ->
             context.modelPreference.preferredModel?.let { model ->
                 "$provider / $model"
@@ -400,7 +407,8 @@ class LocalPhoneAgentRuntime(
                     append("browser research skeleton으로 요청을 기록했어요. ")
                     append("핵심 질의는 \"${brief.query}\" 이고, 전달 방식은 ${brief.requestedDelivery} 기준으로 해석했습니다. ")
                     append("현재 브라우저 자동화와 웹 수집 capability는 아직 실제 executor가 없어서 바로 실행되지는 않습니다. ")
-                    append("cloud connector는 staged ${stagedCloudCount}개, mock-ready ${connectedCloudCount}개이고, 기본 모델 선호도는 $providerLabel 입니다.")
+                    append("cloud connector는 staged ${stagedCloudCount}개, mock-ready ${connectedCloudCount}개입니다. ")
+                    append("MCP/API endpoint는 staged ${stagedExternalEndpointCount}개, mock-ready ${connectedExternalEndpointCount}개이고, 기본 모델 선호도는 $providerLabel 입니다.")
                     if (brief.recurringHint) {
                         append(" 반복 실행 힌트도 감지했기 때문에 automation scheduler skeleton 단계와 연결하기 좋은 요청입니다.")
                     }
@@ -410,7 +418,8 @@ class LocalPhoneAgentRuntime(
                     append("I captured this as a browser research skeleton request. ")
                     append("The core query is \"${brief.query}\" and the requested delivery channel was interpreted as ${brief.requestedDelivery}. ")
                     append("Browser automation and live web collection do not have a real executor yet, so I cannot run it end-to-end today. ")
-                    append("Cloud connectors are staged ${stagedCloudCount} / mock-ready ${connectedCloudCount}, and the current model preference is $providerLabel.")
+                    append("Cloud connectors are staged ${stagedCloudCount} / mock-ready ${connectedCloudCount}. ")
+                    append("MCP/API endpoints are staged ${stagedExternalEndpointCount} / mock-ready ${connectedExternalEndpointCount}, and the current model preference is $providerLabel.")
                     if (brief.recurringHint) {
                         append(" I also detected a recurring hint, which makes this a good candidate for the upcoming automation scheduler skeleton.")
                     }
@@ -650,6 +659,12 @@ class LocalPhoneAgentRuntime(
         val stagedCloudDrives = context.cloudDriveConnections.count {
             it.status == CloudDriveConnectionStatus.Staged
         }
+        val connectedExternalEndpoints = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Connected
+        }
+        val stagedExternalEndpoints = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Staged
+        }
         val providerLabel = context.modelPreference.preferredProviderLabel?.let { provider ->
             val model = context.modelPreference.preferredModel
             if (model.isNullOrBlank()) {
@@ -665,9 +680,9 @@ class LocalPhoneAgentRuntime(
         val configuredProviderCount = context.modelPreference.configuredProviderIds.size
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
-                "Settings에서 연결 자원과 권한을 관리할 수 있어요. 미디어 권한은 $mediaState, 문서 루트는 ${context.fileIndexState.documentTreeCount}개, companion은 ${context.pairedDevices.size}대 연결돼 있고, cloud connector는 staged ${stagedCloudDrives}개 / mock-ready ${connectedCloudDrives}개입니다. 기본 모델 선호도는 $providerLabel 입니다. 구성된 provider credential은 ${configuredProviderCount}개예요."
+                "Settings에서 연결 자원과 권한을 관리할 수 있어요. 미디어 권한은 $mediaState, 문서 루트는 ${context.fileIndexState.documentTreeCount}개, companion은 ${context.pairedDevices.size}대 연결돼 있고, cloud connector는 staged ${stagedCloudDrives}개 / mock-ready ${connectedCloudDrives}개입니다. MCP/API endpoint는 staged ${stagedExternalEndpoints}개 / mock-ready ${connectedExternalEndpoints}개입니다. 기본 모델 선호도는 $providerLabel 입니다. 구성된 provider credential은 ${configuredProviderCount}개예요."
             } else {
-                "Settings is where resources and permissions are managed. Media access is $mediaState, there are ${context.fileIndexState.documentTreeCount} document roots, ${context.pairedDevices.size} companions are connected, cloud connectors are staged ${stagedCloudDrives} / mock-ready ${connectedCloudDrives}, and the current model preference is $providerLabel. There are $configuredProviderCount configured provider credential(s)."
+                "Settings is where resources and permissions are managed. Media access is $mediaState, there are ${context.fileIndexState.documentTreeCount} document roots, ${context.pairedDevices.size} companions are connected, cloud connectors are staged ${stagedCloudDrives} / mock-ready ${connectedCloudDrives}, MCP/API endpoints are staged ${stagedExternalEndpoints} / mock-ready ${connectedExternalEndpoints}, and the current model preference is $providerLabel. There are $configuredProviderCount configured provider credential(s)."
             },
             destination = AgentDestination.Settings,
             taskTitle = taskTitle(prompt),
@@ -1081,6 +1096,12 @@ class LocalPhoneAgentRuntime(
         val connectedCloudDrives = context.cloudDriveConnections.count {
             it.status == CloudDriveConnectionStatus.Connected
         }
+        val connectedExternalEndpoints = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Connected
+        }
+        val stagedExternalEndpoints = context.externalEndpoints.count {
+            it.status == ExternalEndpointStatus.Staged
+        }
         val preferredProviderLabel = context.modelPreference.preferredProviderLabel?.let { provider ->
             val model = context.modelPreference.preferredModel
             if (model.isNullOrBlank()) {
@@ -1109,6 +1130,7 @@ class LocalPhoneAgentRuntime(
                     append("10. allowlisted desktop workflow 실행\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
+                    append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
                     append("기본 모델 선호도는 $preferredProviderLabel 입니다.")
                 }
             } else {
@@ -1126,6 +1148,7 @@ class LocalPhoneAgentRuntime(
                     append("10. Run an allowlisted desktop workflow\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
+                    append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
                     append("The current model preference is $preferredProviderLabel.")
                 }
             },

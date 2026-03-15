@@ -63,6 +63,7 @@ interface ResourceRegistryRepository {
         pairedDevices: List<PairedDeviceState>,
         providerProfiles: List<ModelProviderProfileState>,
         cloudDriveConnections: List<CloudDriveConnectionState>,
+        externalEndpoints: List<ExternalEndpointProfileState>,
     )
 
     suspend fun refresh()
@@ -73,6 +74,7 @@ internal fun buildResourceRegistryEntries(
     pairedDevices: List<PairedDeviceState>,
     providerProfiles: List<ModelProviderProfileState>,
     cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
+    externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
 ): List<ResourceRegistryEntrySeed> {
     val phoneLocalStorage = ResourceRegistryEntrySeed(
         id = resourceIdPhoneLocalStorage,
@@ -251,11 +253,41 @@ internal fun buildResourceRegistryEntries(
         resourceType = resourceTypeMcpApiEndpoints,
         title = "MCP and API endpoints",
         priority = ResourceRegistryPriority.Priority4,
-        health = ResourceRegistryHealthState.Planned,
-        summary = "MCP servers, browser automation, and third-party API profiles will join the resource registry after provider credentials are secured.",
-        metadata = mapOf(
-            "plannedCapabilities" to "mcp.connect|api.profile.attach|browser.automation",
-        ),
+        health = when {
+            externalEndpoints.any { it.status == ExternalEndpointStatus.Connected } ->
+                ResourceRegistryHealthState.Active
+            externalEndpoints.isNotEmpty() -> ResourceRegistryHealthState.NeedsSetup
+            else -> ResourceRegistryHealthState.Planned
+        },
+        summary = externalEndpointSummary(externalEndpoints),
+        capabilities = externalEndpoints
+            .filter { it.status == ExternalEndpointStatus.Connected }
+            .flatMap { it.supportedCapabilities }
+            .distinct()
+            .sorted(),
+        metadata = buildMap {
+            put("profileCount", externalEndpoints.size.toString())
+            put(
+                "connectedCount",
+                externalEndpoints.count { it.status == ExternalEndpointStatus.Connected }.toString(),
+            )
+            put(
+                "stagedCount",
+                externalEndpoints.count { it.status == ExternalEndpointStatus.Staged }.toString(),
+            )
+            if (externalEndpoints.isNotEmpty()) {
+                put(
+                    "endpointIds",
+                    externalEndpoints.joinToString("|") { it.endpointId },
+                )
+                put(
+                    "categories",
+                    externalEndpoints.joinToString("|") { it.category.categoryId },
+                )
+            } else {
+                put("plannedCapabilities", "mcp.connect|api.profile.attach|browser.automation")
+            }
+        },
     )
     return listOf(
         phoneLocalStorage,
@@ -286,12 +318,14 @@ class PersistentResourceRegistryRepository(
         pairedDevices: List<PairedDeviceState>,
         providerProfiles: List<ModelProviderProfileState>,
         cloudDriveConnections: List<CloudDriveConnectionState>,
+        externalEndpoints: List<ExternalEndpointProfileState>,
     ) {
         val seeds = buildResourceRegistryEntries(
             fileIndexState = fileIndexState,
             pairedDevices = pairedDevices,
             providerProfiles = providerProfiles,
             cloudDriveConnections = cloudDriveConnections,
+            externalEndpoints = externalEndpoints,
         )
         withContext(Dispatchers.IO) {
             val db = databaseHelper.writableDatabase
@@ -432,6 +466,24 @@ class PersistentResourceRegistryRepository(
 
     companion object {
         private const val resourceRegistryTable = "resource_registry_entries"
+    }
+}
+
+private fun externalEndpointSummary(
+    externalEndpoints: List<ExternalEndpointProfileState>,
+): String {
+    if (externalEndpoints.isEmpty()) {
+        return "MCP servers, browser automation, and third-party API profiles will join the resource registry after provider credentials are secured."
+    }
+    val connectedCount = externalEndpoints.count { it.status == ExternalEndpointStatus.Connected }
+    val stagedCount = externalEndpoints.count { it.status == ExternalEndpointStatus.Staged }
+    return when {
+        connectedCount > 0 ->
+            "$connectedCount endpoint profile(s) are recorded as mock-ready and $stagedCount endpoint profile(s) are staged for auth and transport wiring."
+        stagedCount > 0 ->
+            "$stagedCount endpoint profile(s) are staged, but auth profiles, transport validation, and executor wiring are still pending."
+        else ->
+            "Endpoint profile seeds exist for MCP bridge, browser automation, and third-party APIs, but they still need setup."
     }
 }
 
