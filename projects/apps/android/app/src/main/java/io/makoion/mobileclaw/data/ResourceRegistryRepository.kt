@@ -62,6 +62,7 @@ interface ResourceRegistryRepository {
         fileIndexState: FileIndexState,
         pairedDevices: List<PairedDeviceState>,
         providerProfiles: List<ModelProviderProfileState>,
+        cloudDriveConnections: List<CloudDriveConnectionState>,
     )
 
     suspend fun refresh()
@@ -71,6 +72,7 @@ internal fun buildResourceRegistryEntries(
     fileIndexState: FileIndexState,
     pairedDevices: List<PairedDeviceState>,
     providerProfiles: List<ModelProviderProfileState>,
+    cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
 ): List<ResourceRegistryEntrySeed> {
     val phoneLocalStorage = ResourceRegistryEntrySeed(
         id = resourceIdPhoneLocalStorage,
@@ -125,16 +127,44 @@ internal fun buildResourceRegistryEntries(
             }
         },
     )
+    val connectedCloudDrives = cloudDriveConnections.count { it.status == CloudDriveConnectionStatus.Connected }
+    val stagedCloudDrives = cloudDriveConnections.count { it.status == CloudDriveConnectionStatus.Staged }
     val cloudDrives = ResourceRegistryEntrySeed(
         id = resourceIdCloudDrives,
         resourceType = resourceTypeCloudDrives,
         title = "Cloud drives",
         priority = ResourceRegistryPriority.Priority2,
-        health = ResourceRegistryHealthState.Planned,
-        summary = "Google Drive, OneDrive, and Dropbox connectors are planned as the next resource tier after phone storage.",
-        metadata = mapOf(
-            "plannedConnectors" to "gdrive|onedrive|dropbox",
-        ),
+        health = when {
+            connectedCloudDrives > 0 -> ResourceRegistryHealthState.Active
+            cloudDriveConnections.isNotEmpty() -> ResourceRegistryHealthState.NeedsSetup
+            else -> ResourceRegistryHealthState.Planned
+        },
+        summary = when {
+            cloudDriveConnections.isEmpty() ->
+                "Google Drive, OneDrive, and Dropbox connectors are planned as the next resource tier after phone storage."
+            connectedCloudDrives > 0 ->
+                "$connectedCloudDrives cloud drive connector(s) are recorded as mock-ready and $stagedCloudDrives connector(s) are staged for OAuth wiring."
+            stagedCloudDrives > 0 ->
+                "$stagedCloudDrives cloud drive connector(s) are staged, but OAuth handoff and token vault integration are still pending."
+            else ->
+                "Cloud drive connector seeds exist for Google Drive, OneDrive, and Dropbox, but they still need setup."
+        },
+        capabilities = if (connectedCloudDrives > 0) {
+            listOf("cloud.files.search", "cloud.files.import")
+        } else {
+            emptyList()
+        },
+        metadata = buildMap {
+            put("connectorCount", cloudDriveConnections.size.toString())
+            put("connectedCount", connectedCloudDrives.toString())
+            put("stagedCount", stagedCloudDrives.toString())
+            if (cloudDriveConnections.isNotEmpty()) {
+                put(
+                    "providers",
+                    cloudDriveConnections.joinToString("|") { it.provider.providerId },
+                )
+            }
+        },
     )
     val companionCapabilities = pairedDevices.flatMap { it.capabilities }
         .distinct()
@@ -255,11 +285,13 @@ class PersistentResourceRegistryRepository(
         fileIndexState: FileIndexState,
         pairedDevices: List<PairedDeviceState>,
         providerProfiles: List<ModelProviderProfileState>,
+        cloudDriveConnections: List<CloudDriveConnectionState>,
     ) {
         val seeds = buildResourceRegistryEntries(
             fileIndexState = fileIndexState,
             pairedDevices = pairedDevices,
             providerProfiles = providerProfiles,
+            cloudDriveConnections = cloudDriveConnections,
         )
         withContext(Dispatchers.IO) {
             val db = databaseHelper.writableDatabase

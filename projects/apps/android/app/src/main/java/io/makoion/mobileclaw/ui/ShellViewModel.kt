@@ -17,6 +17,8 @@ import io.makoion.mobileclaw.data.AuditTrailEvent
 import io.makoion.mobileclaw.data.ChatMessage
 import io.makoion.mobileclaw.data.ChatMessageRole
 import io.makoion.mobileclaw.data.ChatThreadRecord
+import io.makoion.mobileclaw.data.CloudDriveConnectionState
+import io.makoion.mobileclaw.data.CloudDriveProviderKind
 import io.makoion.mobileclaw.data.CompanionAppOpenResult
 import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionSessionNotifyResult
@@ -130,6 +132,7 @@ data class ShellUiState(
     val summary: String = "Makoion is converging on a chat-first product shell. Connected files, drives, companions, MCP endpoints, and APIs will sit behind the agent instead of leading the UI.",
     val overviewCards: List<ShellCard> = defaultOverviewCards,
     val resourceConnections: List<ResourceConnectionSummary> = emptyList(),
+    val cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     val providerProfiles: List<ModelProviderProfileState> = emptyList(),
     val chatState: ChatState = ChatState(),
     val activeChatThread: ChatThreadRecord? = null,
@@ -269,8 +272,16 @@ private data class ShellSupportSnapshot(
     val approvals: List<ApprovalInboxItem>,
     val voice: VoiceEntryState,
     val auditInputs: Triple<List<AuditTrailEvent>, ShellRecoveryState, List<AgentTaskRecord>>,
+    val cloudDriveConnections: List<CloudDriveConnectionState>,
     val providerProfiles: List<ModelProviderProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
+)
+
+private data class ResourceRegistrySyncInput(
+    val fileIndexState: FileIndexState,
+    val pairedDevices: List<PairedDeviceState>,
+    val providerProfiles: List<ModelProviderProfileState>,
+    val cloudDriveConnections: List<CloudDriveConnectionState>,
 )
 
 class ShellViewModel(
@@ -394,10 +405,11 @@ class ShellViewModel(
                 Triple(auditEvents, recoveryState, agentTasks)
             },
             combine(
+                appContainer.cloudDriveConnectionRepository.connections,
                 appContainer.modelProviderSettingsRepository.profiles,
                 appContainer.resourceRegistryRepository.entries,
-            ) { providerProfiles, resourceRegistryEntries ->
-                providerProfiles to resourceRegistryEntries
+            ) { cloudDriveConnections, providerProfiles, resourceRegistryEntries ->
+                Triple(cloudDriveConnections, providerProfiles, resourceRegistryEntries)
             },
         ) { chatThreads, approvals, voice, auditInputs, settingsInputs ->
             ShellSupportSnapshot(
@@ -405,8 +417,9 @@ class ShellViewModel(
                 approvals = approvals,
                 voice = voice,
                 auditInputs = auditInputs,
-                providerProfiles = settingsInputs.first,
-                resourceRegistryEntries = settingsInputs.second,
+                cloudDriveConnections = settingsInputs.first,
+                providerProfiles = settingsInputs.second,
+                resourceRegistryEntries = settingsInputs.third,
             )
         },
     ) { shellInputs, deviceInputs, supportInputs ->
@@ -450,6 +463,7 @@ class ShellViewModel(
             selectedSection = shellInputs.section,
             chatState = shellInputs.chat,
             resourceConnections = buildResourceConnections(supportInputs.resourceRegistryEntries),
+            cloudDriveConnections = supportInputs.cloudDriveConnections,
             providerProfiles = supportInputs.providerProfiles,
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
@@ -538,13 +552,20 @@ class ShellViewModel(
                 fileIndexState,
                 appContainer.devicePairingRepository.pairedDevices,
                 appContainer.modelProviderSettingsRepository.profiles,
-            ) { files, devices, providerProfiles ->
-                Triple(files, devices, providerProfiles)
-            }.collect { (files, devices, providerProfiles) ->
-                appContainer.resourceRegistryRepository.syncSnapshot(
+                appContainer.cloudDriveConnectionRepository.connections,
+            ) { files, devices, providerProfiles, cloudDriveConnections ->
+                ResourceRegistrySyncInput(
                     fileIndexState = files,
                     pairedDevices = devices,
                     providerProfiles = providerProfiles,
+                    cloudDriveConnections = cloudDriveConnections,
+                )
+            }.collect { snapshot ->
+                appContainer.resourceRegistryRepository.syncSnapshot(
+                    fileIndexState = snapshot.fileIndexState,
+                    pairedDevices = snapshot.pairedDevices,
+                    providerProfiles = snapshot.providerProfiles,
+                    cloudDriveConnections = snapshot.cloudDriveConnections,
                 )
             }
         }
@@ -668,6 +689,7 @@ class ShellViewModel(
                         auditEvents = currentUiState.auditEvents,
                         pairedDevices = currentUiState.deviceControlState.pairedDevices,
                         selectedTargetDeviceId = currentUiState.deviceControlState.selectedTargetDeviceId,
+                        cloudDriveConnections = currentUiState.cloudDriveConnections,
                         modelPreference = resolveAgentModelPreference(currentUiState.providerProfiles),
                         selectedFileId = currentUiState.fileActionState.selectedFileId,
                     ),
@@ -795,6 +817,27 @@ class ShellViewModel(
 
     fun postQuickActionsNotification() {
         appContainer.voiceEntryCoordinator.postQuickActionsNotification()
+    }
+
+    fun stageCloudDriveConnection(provider: CloudDriveProviderKind) {
+        viewModelScope.launch {
+            appContainer.cloudDriveConnectionRepository.stageConnection(provider)
+        }
+    }
+
+    fun markMockCloudDriveConnected(provider: CloudDriveProviderKind) {
+        viewModelScope.launch {
+            appContainer.cloudDriveConnectionRepository.markConnected(
+                provider = provider,
+                accountLabel = "${provider.displayName} placeholder account",
+            )
+        }
+    }
+
+    fun resetCloudDriveConnection(provider: CloudDriveProviderKind) {
+        viewModelScope.launch {
+            appContainer.cloudDriveConnectionRepository.resetConnection(provider)
+        }
     }
 
     fun setModelProviderEnabled(

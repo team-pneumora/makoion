@@ -73,6 +73,9 @@ import io.makoion.mobileclaw.data.AuditTrailEvent
 import io.makoion.mobileclaw.data.ChatMessage
 import io.makoion.mobileclaw.data.ChatMessageRole
 import io.makoion.mobileclaw.data.ChatThreadRecord
+import io.makoion.mobileclaw.data.CloudDriveConnectionState
+import io.makoion.mobileclaw.data.CloudDriveConnectionStatus
+import io.makoion.mobileclaw.data.CloudDriveProviderKind
 import io.makoion.mobileclaw.data.CompanionAppOpenStatus
 import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionHealthStatus
@@ -244,6 +247,7 @@ fun MobileClawShellApp(
             )
             ShellSection.Settings -> SettingsScreen(
                 resourceConnections = uiState.resourceConnections,
+                cloudDriveConnections = uiState.cloudDriveConnections,
                 providerProfiles = uiState.providerProfiles,
                 fileIndexState = uiState.fileIndexState,
                 fileActionState = uiState.fileActionState,
@@ -255,6 +259,9 @@ fun MobileClawShellApp(
                 onRequestMediaAccess = requestMediaAccess,
                 onOpenDocumentTree = openDocumentTree,
                 onRefreshFiles = shellViewModel::refreshFiles,
+                onStageCloudDriveConnection = shellViewModel::stageCloudDriveConnection,
+                onMarkMockCloudDriveConnected = shellViewModel::markMockCloudDriveConnected,
+                onResetCloudDriveConnection = shellViewModel::resetCloudDriveConnection,
                 onSetModelProviderEnabled = shellViewModel::setModelProviderEnabled,
                 onSetDefaultModelProvider = shellViewModel::setDefaultModelProvider,
                 onSelectProviderModel = shellViewModel::selectProviderModel,
@@ -1215,6 +1222,7 @@ private fun ChatTranscriptHistoryCard(
 @Composable
 private fun SettingsScreen(
     resourceConnections: List<ResourceConnectionSummary>,
+    cloudDriveConnections: List<CloudDriveConnectionState>,
     providerProfiles: List<ModelProviderProfileState>,
     fileIndexState: FileIndexState,
     fileActionState: FileActionState,
@@ -1226,6 +1234,9 @@ private fun SettingsScreen(
     onRequestMediaAccess: () -> Unit,
     onOpenDocumentTree: () -> Unit,
     onRefreshFiles: () -> Unit,
+    onStageCloudDriveConnection: (CloudDriveProviderKind) -> Unit,
+    onMarkMockCloudDriveConnected: (CloudDriveProviderKind) -> Unit,
+    onResetCloudDriveConnection: (CloudDriveProviderKind) -> Unit,
     onSetModelProviderEnabled: (String, Boolean) -> Unit,
     onSetDefaultModelProvider: (String) -> Unit,
     onSelectProviderModel: (String, String) -> Unit,
@@ -1293,6 +1304,25 @@ private fun SettingsScreen(
             key = { it.id },
         ) { resource ->
             ResourceConnectionCard(resource = resource)
+        }
+        if (cloudDriveConnections.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Cloud drive connectors",
+                    subtitle = "Priority 2 connectors are seeded here first. OAuth and token vault wiring are still pending, so these actions only record staged or mock-ready placeholder states.",
+                )
+            }
+            items(
+                items = cloudDriveConnections,
+                key = { it.provider.providerId },
+            ) { connection ->
+                CloudDriveConnectionCard(
+                    connection = connection,
+                    onStage = { onStageCloudDriveConnection(connection.provider) },
+                    onMarkMockReady = { onMarkMockCloudDriveConnected(connection.provider) },
+                    onReset = { onResetCloudDriveConnection(connection.provider) },
+                )
+            }
         }
         if (providerProfiles.isNotEmpty()) {
             item {
@@ -2768,6 +2798,114 @@ private fun ModelProviderProfileCard(
             }
             Text(
                 text = "Updated ${profile.updatedAtLabel}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CloudDriveConnectionCard(
+    connection: CloudDriveConnectionState,
+    onStage: () -> Unit,
+    onMarkMockReady: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = connection.provider.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    connection.accountLabel?.let { accountLabel ->
+                        Text(
+                            text = "Recorded account $accountLabel",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ClawGreen,
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = cloudDriveStatusColor(connection.status).copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        text = cloudDriveStatusLabel(connection.status),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = cloudDriveStatusColor(connection.status),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            Text(
+                text = connection.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                connection.supportedScopes.forEach { scope ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(scope) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = ClawGold.copy(alpha = 0.12f),
+                            labelColor = ClawInk,
+                        ),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onStage,
+                    modifier = Modifier.weight(1f),
+                    enabled = connection.status != CloudDriveConnectionStatus.Staged,
+                ) {
+                    Text("Stage")
+                }
+                FilledTonalButton(
+                    onClick = onMarkMockReady,
+                    modifier = Modifier.weight(1f),
+                    enabled = connection.status != CloudDriveConnectionStatus.Connected,
+                ) {
+                    Text("Mock ready")
+                }
+            }
+            OutlinedButton(
+                onClick = onReset,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = connection.status != CloudDriveConnectionStatus.NeedsSetup,
+            ) {
+                Text("Reset connector")
+            }
+            Text(
+                text = "Updated ${connection.updatedAtLabel}",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -5609,6 +5747,22 @@ private fun resourceConnectionStatusLabel(status: ResourceConnectionStatus): Str
         ResourceConnectionStatus.Active -> "Active"
         ResourceConnectionStatus.NeedsSetup -> "Needs setup"
         ResourceConnectionStatus.Planned -> "Planned"
+    }
+}
+
+private fun cloudDriveStatusColor(status: CloudDriveConnectionStatus): Color {
+    return when (status) {
+        CloudDriveConnectionStatus.NeedsSetup -> ClawGold
+        CloudDriveConnectionStatus.Staged -> Color(0xFF5D8CC9)
+        CloudDriveConnectionStatus.Connected -> ClawGreen
+    }
+}
+
+private fun cloudDriveStatusLabel(status: CloudDriveConnectionStatus): String {
+    return when (status) {
+        CloudDriveConnectionStatus.NeedsSetup -> "Needs setup"
+        CloudDriveConnectionStatus.Staged -> "Staged"
+        CloudDriveConnectionStatus.Connected -> "Mock ready"
     }
 }
 

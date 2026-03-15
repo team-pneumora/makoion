@@ -16,6 +16,7 @@ class ShellDatabaseHelper(
         createChatTranscriptTables(db)
         createModelProviderTables(db)
         createResourceRegistryTables(db)
+        createCloudDriveTables(db)
     }
 
     override fun onUpgrade(
@@ -238,6 +239,9 @@ class ShellDatabaseHelper(
         }
         if (oldVersion < 18) {
             createResourceRegistryTables(db)
+        }
+        if (oldVersion < 19) {
+            createCloudDriveTables(db)
         }
     }
 
@@ -526,6 +530,28 @@ class ShellDatabaseHelper(
         )
     }
 
+    private fun createCloudDriveTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_drive_connections (
+                provider_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                supported_scopes_json TEXT NOT NULL DEFAULT '[]',
+                account_label TEXT,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_cloud_drive_connections_status
+            ON cloud_drive_connections(status, updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
     private fun addColumnIfMissing(
         db: SQLiteDatabase,
         tableName: String,
@@ -561,6 +587,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 18
+        private const val databaseVersion = 19
     }
 }

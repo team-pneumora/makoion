@@ -4,6 +4,7 @@ import android.app.Application
 import io.makoion.mobileclaw.data.AndroidFileIndexRepository
 import io.makoion.mobileclaw.data.AgentTaskEngine
 import io.makoion.mobileclaw.data.AgentTaskRetryCoordinator
+import io.makoion.mobileclaw.data.PersistentCloudDriveConnectionRepository
 import io.makoion.mobileclaw.data.FileActionExecutor
 import io.makoion.mobileclaw.data.LocalFileGraphActionPlanner
 import io.makoion.mobileclaw.data.PersistentChatTranscriptRepository
@@ -39,6 +40,9 @@ class ShellAppContainer(
     )
     val chatTranscriptRepository = PersistentChatTranscriptRepository(
         context = application,
+        databaseHelper = databaseHelper,
+    )
+    val cloudDriveConnectionRepository = PersistentCloudDriveConnectionRepository(
         databaseHelper = databaseHelper,
     )
     val modelProviderSettingsRepository = PersistentModelProviderSettingsRepository(
