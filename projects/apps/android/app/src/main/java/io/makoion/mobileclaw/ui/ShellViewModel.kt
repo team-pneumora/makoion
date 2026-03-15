@@ -23,6 +23,7 @@ import io.makoion.mobileclaw.data.CompanionAppOpenResult
 import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionSessionNotifyResult
 import io.makoion.mobileclaw.data.CompanionWorkflowRunResult
+import io.makoion.mobileclaw.data.DeliveryChannelProfileState
 import io.makoion.mobileclaw.data.ExternalEndpointProfileState
 import io.makoion.mobileclaw.data.FileIndexState
 import io.makoion.mobileclaw.data.FileOrganizePlan
@@ -138,6 +139,7 @@ data class ShellUiState(
     val cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     val providerProfiles: List<ModelProviderProfileState> = emptyList(),
     val externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
+    val deliveryChannels: List<DeliveryChannelProfileState> = emptyList(),
     val chatState: ChatState = ChatState(),
     val activeChatThread: ChatThreadRecord? = null,
     val chatThreads: List<ChatThreadRecord> = emptyList(),
@@ -280,6 +282,7 @@ private data class ShellSupportSnapshot(
     val cloudDriveConnections: List<CloudDriveConnectionState>,
     val providerProfiles: List<ModelProviderProfileState>,
     val externalEndpoints: List<ExternalEndpointProfileState>,
+    val deliveryChannels: List<DeliveryChannelProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
 )
@@ -288,8 +291,16 @@ private data class SettingsSnapshot(
     val cloudDriveConnections: List<CloudDriveConnectionState>,
     val providerProfiles: List<ModelProviderProfileState>,
     val externalEndpoints: List<ExternalEndpointProfileState>,
+    val deliveryChannels: List<DeliveryChannelProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
+)
+
+private data class ResourceSettingsSnapshot(
+    val cloudDriveConnections: List<CloudDriveConnectionState>,
+    val providerProfiles: List<ModelProviderProfileState>,
+    val externalEndpoints: List<ExternalEndpointProfileState>,
+    val deliveryChannels: List<DeliveryChannelProfileState>,
 )
 
 private data class ResourceRegistrySyncInput(
@@ -298,6 +309,7 @@ private data class ResourceRegistrySyncInput(
     val providerProfiles: List<ModelProviderProfileState>,
     val cloudDriveConnections: List<CloudDriveConnectionState>,
     val externalEndpoints: List<ExternalEndpointProfileState>,
+    val deliveryChannels: List<DeliveryChannelProfileState>,
 )
 
 class ShellViewModel(
@@ -425,17 +437,23 @@ class ShellViewModel(
                     appContainer.cloudDriveConnectionRepository.connections,
                     appContainer.modelProviderSettingsRepository.profiles,
                     appContainer.externalEndpointRepository.profiles,
-                ) { cloudDriveConnections, providerProfiles, externalEndpoints ->
-                    Triple(cloudDriveConnections, providerProfiles, externalEndpoints)
+                    appContainer.deliveryChannelRepository.profiles,
+                ) { cloudDriveConnections, providerProfiles, externalEndpoints, deliveryChannels ->
+                    ResourceSettingsSnapshot(
+                        cloudDriveConnections = cloudDriveConnections,
+                        providerProfiles = providerProfiles,
+                        externalEndpoints = externalEndpoints,
+                        deliveryChannels = deliveryChannels,
+                    )
                 },
                 appContainer.resourceRegistryRepository.entries,
                 appContainer.scheduledAutomationRepository.automations,
             ) { settingsInputs, resourceRegistryEntries, scheduledAutomations ->
-                val (cloudDriveConnections, providerProfiles, externalEndpoints) = settingsInputs
                 SettingsSnapshot(
-                    cloudDriveConnections = cloudDriveConnections,
-                    providerProfiles = providerProfiles,
-                    externalEndpoints = externalEndpoints,
+                    cloudDriveConnections = settingsInputs.cloudDriveConnections,
+                    providerProfiles = settingsInputs.providerProfiles,
+                    externalEndpoints = settingsInputs.externalEndpoints,
+                    deliveryChannels = settingsInputs.deliveryChannels,
                     resourceRegistryEntries = resourceRegistryEntries,
                     scheduledAutomations = scheduledAutomations,
                 )
@@ -449,6 +467,7 @@ class ShellViewModel(
                 cloudDriveConnections = settingsInputs.cloudDriveConnections,
                 providerProfiles = settingsInputs.providerProfiles,
                 externalEndpoints = settingsInputs.externalEndpoints,
+                deliveryChannels = settingsInputs.deliveryChannels,
                 resourceRegistryEntries = settingsInputs.resourceRegistryEntries,
                 scheduledAutomations = settingsInputs.scheduledAutomations,
             )
@@ -497,6 +516,7 @@ class ShellViewModel(
             cloudDriveConnections = supportInputs.cloudDriveConnections,
             providerProfiles = supportInputs.providerProfiles,
             externalEndpoints = supportInputs.externalEndpoints,
+            deliveryChannels = supportInputs.deliveryChannels,
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
@@ -591,7 +611,8 @@ class ShellViewModel(
                 },
                 appContainer.cloudDriveConnectionRepository.connections,
                 appContainer.externalEndpointRepository.profiles,
-            ) { baseInputs, cloudDriveConnections, externalEndpoints ->
+                appContainer.deliveryChannelRepository.profiles,
+            ) { baseInputs, cloudDriveConnections, externalEndpoints, deliveryChannels ->
                 val (files, devices, providerProfiles) = baseInputs
                 ResourceRegistrySyncInput(
                     fileIndexState = files,
@@ -599,6 +620,7 @@ class ShellViewModel(
                     providerProfiles = providerProfiles,
                     cloudDriveConnections = cloudDriveConnections,
                     externalEndpoints = externalEndpoints,
+                    deliveryChannels = deliveryChannels,
                 )
             }.collect { snapshot ->
                 appContainer.resourceRegistryRepository.syncSnapshot(
@@ -607,6 +629,7 @@ class ShellViewModel(
                     providerProfiles = snapshot.providerProfiles,
                     cloudDriveConnections = snapshot.cloudDriveConnections,
                     externalEndpoints = snapshot.externalEndpoints,
+                    deliveryChannels = snapshot.deliveryChannels,
                 )
             }
         }
@@ -733,6 +756,7 @@ class ShellViewModel(
                         cloudDriveConnections = currentUiState.cloudDriveConnections,
                         modelPreference = resolveAgentModelPreference(currentUiState.providerProfiles),
                         externalEndpoints = currentUiState.externalEndpoints,
+                        deliveryChannels = currentUiState.deliveryChannels,
                         scheduledAutomations = currentUiState.scheduledAutomations,
                         selectedFileId = currentUiState.fileActionState.selectedFileId,
                     ),
@@ -898,6 +922,24 @@ class ShellViewModel(
     fun resetExternalEndpoint(endpointId: String) {
         viewModelScope.launch {
             appContainer.externalEndpointRepository.resetEndpoint(endpointId)
+        }
+    }
+
+    fun stageDeliveryChannel(channelId: String) {
+        viewModelScope.launch {
+            appContainer.deliveryChannelRepository.stageChannel(channelId)
+        }
+    }
+
+    fun markDeliveryChannelConnected(channelId: String) {
+        viewModelScope.launch {
+            appContainer.deliveryChannelRepository.markConnected(channelId)
+        }
+    }
+
+    fun resetDeliveryChannel(channelId: String) {
+        viewModelScope.launch {
+            appContainer.deliveryChannelRepository.resetChannel(channelId)
         }
     }
 

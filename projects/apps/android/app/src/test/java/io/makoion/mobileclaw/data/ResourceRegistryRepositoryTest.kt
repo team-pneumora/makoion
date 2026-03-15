@@ -13,13 +13,14 @@ class ResourceRegistryRepositoryTest {
             providerProfiles = emptyList(),
         )
 
-        assertEquals(6, entries.size)
+        assertEquals(7, entries.size)
         assertEquals(ResourceRegistryHealthState.NeedsSetup, entries.first { it.id == resourceIdPhoneLocalStorage }.health)
         assertEquals(ResourceRegistryHealthState.NeedsSetup, entries.first { it.id == resourceIdPhoneDocumentRoots }.health)
         assertEquals(ResourceRegistryHealthState.Planned, entries.first { it.id == resourceIdCloudDrives }.health)
         assertEquals(ResourceRegistryHealthState.NeedsSetup, entries.first { it.id == resourceIdExternalCompanions }.health)
         assertEquals(ResourceRegistryHealthState.Planned, entries.first { it.id == resourceIdAiModelProviders }.health)
         assertEquals(ResourceRegistryHealthState.Planned, entries.first { it.id == resourceIdMcpApiEndpoints }.health)
+        assertEquals(ResourceRegistryHealthState.Planned, entries.first { it.id == resourceIdDeliveryChannels }.health)
     }
 
     @Test

@@ -82,6 +82,8 @@ import io.makoion.mobileclaw.data.CompanionHealthCheckResult
 import io.makoion.mobileclaw.data.CompanionHealthStatus
 import io.makoion.mobileclaw.data.CompanionSessionNotifyStatus
 import io.makoion.mobileclaw.data.CompanionWorkflowRunStatus
+import io.makoion.mobileclaw.data.DeliveryChannelProfileState
+import io.makoion.mobileclaw.data.DeliveryChannelStatus
 import io.makoion.mobileclaw.data.DeviceTransportMode
 import io.makoion.mobileclaw.data.ExternalEndpointProfileState
 import io.makoion.mobileclaw.data.ExternalEndpointStatus
@@ -257,6 +259,7 @@ fun MobileClawShellApp(
                 cloudDriveConnections = uiState.cloudDriveConnections,
                 providerProfiles = uiState.providerProfiles,
                 externalEndpoints = uiState.externalEndpoints,
+                deliveryChannels = uiState.deliveryChannels,
                 fileIndexState = uiState.fileIndexState,
                 fileActionState = uiState.fileActionState,
                 approvals = uiState.approvals,
@@ -278,6 +281,9 @@ fun MobileClawShellApp(
                 onStageExternalEndpoint = shellViewModel::stageExternalEndpoint,
                 onMarkExternalEndpointConnected = shellViewModel::markExternalEndpointConnected,
                 onResetExternalEndpoint = shellViewModel::resetExternalEndpoint,
+                onStageDeliveryChannel = shellViewModel::stageDeliveryChannel,
+                onMarkDeliveryChannelConnected = shellViewModel::markDeliveryChannelConnected,
+                onResetDeliveryChannel = shellViewModel::resetDeliveryChannel,
                 onToggleVoiceCapture = toggleVoiceCapture,
                 onShowQuickActions = showQuickActions,
                 onSelectFile = shellViewModel::selectFile,
@@ -1265,6 +1271,7 @@ private fun SettingsScreen(
     cloudDriveConnections: List<CloudDriveConnectionState>,
     providerProfiles: List<ModelProviderProfileState>,
     externalEndpoints: List<ExternalEndpointProfileState>,
+    deliveryChannels: List<DeliveryChannelProfileState>,
     fileIndexState: FileIndexState,
     fileActionState: FileActionState,
     approvals: List<ApprovalInboxItem>,
@@ -1286,6 +1293,9 @@ private fun SettingsScreen(
     onStageExternalEndpoint: (String) -> Unit,
     onMarkExternalEndpointConnected: (String) -> Unit,
     onResetExternalEndpoint: (String) -> Unit,
+    onStageDeliveryChannel: (String) -> Unit,
+    onMarkDeliveryChannelConnected: (String) -> Unit,
+    onResetDeliveryChannel: (String) -> Unit,
     onToggleVoiceCapture: () -> Unit,
     onShowQuickActions: () -> Unit,
     onSelectFile: (String) -> Unit,
@@ -1417,6 +1427,25 @@ private fun SettingsScreen(
                     onStage = { onStageExternalEndpoint(endpoint.endpointId) },
                     onMarkMockReady = { onMarkExternalEndpointConnected(endpoint.endpointId) },
                     onReset = { onResetExternalEndpoint(endpoint.endpointId) },
+                )
+            }
+        }
+        if (deliveryChannels.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Delivery channels",
+                    subtitle = "Recurring jobs and long-running tasks will deliver results through these channels. Local notification is already available, while Telegram, companion relay, and webhook routing are still placeholders.",
+                )
+            }
+            items(
+                items = deliveryChannels,
+                key = { it.channelId },
+            ) { channel ->
+                DeliveryChannelCard(
+                    channel = channel,
+                    onStage = { onStageDeliveryChannel(channel.channelId) },
+                    onMarkMockReady = { onMarkDeliveryChannelConnected(channel.channelId) },
+                    onReset = { onResetDeliveryChannel(channel.channelId) },
                 )
             }
         }
@@ -3028,6 +3057,122 @@ private fun ExternalEndpointCard(
             }
             Text(
                 text = "Updated ${endpoint.updatedAtLabel}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeliveryChannelCard(
+    channel: DeliveryChannelProfileState,
+    onStage: () -> Unit,
+    onMarkMockReady: () -> Unit,
+    onReset: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = channel.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    channel.destinationLabel?.let { destinationLabel ->
+                        Text(
+                            text = "Recorded destination $destinationLabel",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ClawGreen,
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = deliveryChannelStatusColor(channel.status).copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        text = deliveryChannelStatusLabel(channel.status),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = deliveryChannelStatusColor(channel.status),
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            Text(
+                text = channel.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(channel.type.displayName) },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = ClawInk.copy(alpha = 0.08f),
+                        labelColor = ClawInk,
+                    ),
+                )
+                channel.supportedDeliveries.forEach { delivery ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(delivery) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = ClawGold.copy(alpha = 0.12f),
+                            labelColor = ClawInk,
+                        ),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onStage,
+                    modifier = Modifier.weight(1f),
+                    enabled = channel.status != DeliveryChannelStatus.Staged,
+                ) {
+                    Text("Stage")
+                }
+                FilledTonalButton(
+                    onClick = onMarkMockReady,
+                    modifier = Modifier.weight(1f),
+                    enabled = channel.status != DeliveryChannelStatus.Connected,
+                ) {
+                    Text("Mock ready")
+                }
+            }
+            OutlinedButton(
+                onClick = onReset,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = channel.status != DeliveryChannelStatus.NeedsSetup,
+            ) {
+                Text("Reset channel")
+            }
+            Text(
+                text = "Updated ${channel.updatedAtLabel}",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -6099,6 +6244,22 @@ private fun externalEndpointStatusLabel(status: ExternalEndpointStatus): String 
         ExternalEndpointStatus.NeedsSetup -> "Needs setup"
         ExternalEndpointStatus.Staged -> "Staged"
         ExternalEndpointStatus.Connected -> "Mock ready"
+    }
+}
+
+private fun deliveryChannelStatusColor(status: DeliveryChannelStatus): Color {
+    return when (status) {
+        DeliveryChannelStatus.NeedsSetup -> ClawGold
+        DeliveryChannelStatus.Staged -> Color(0xFF5D8CC9)
+        DeliveryChannelStatus.Connected -> ClawGreen
+    }
+}
+
+private fun deliveryChannelStatusLabel(status: DeliveryChannelStatus): String {
+    return when (status) {
+        DeliveryChannelStatus.NeedsSetup -> "Needs setup"
+        DeliveryChannelStatus.Staged -> "Staged"
+        DeliveryChannelStatus.Connected -> "Mock ready"
     }
 }
 

@@ -18,6 +18,7 @@ class ShellDatabaseHelper(
         createResourceRegistryTables(db)
         createCloudDriveTables(db)
         createExternalEndpointTables(db)
+        createDeliveryChannelTables(db)
         createScheduledAutomationTables(db)
     }
 
@@ -250,6 +251,9 @@ class ShellDatabaseHelper(
         }
         if (oldVersion < 21) {
             createExternalEndpointTables(db)
+        }
+        if (oldVersion < 22) {
+            createDeliveryChannelTables(db)
         }
     }
 
@@ -583,6 +587,29 @@ class ShellDatabaseHelper(
         )
     }
 
+    private fun createDeliveryChannelTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS delivery_channel_profiles (
+                channel_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                type_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                supported_deliveries_json TEXT NOT NULL DEFAULT '[]',
+                destination_label TEXT,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_delivery_channel_profiles_status
+            ON delivery_channel_profiles(status, type_id, updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
     private fun createScheduledAutomationTables(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -642,6 +669,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 21
+        private const val databaseVersion = 22
     }
 }

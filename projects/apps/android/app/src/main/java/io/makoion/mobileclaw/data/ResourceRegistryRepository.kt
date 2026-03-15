@@ -64,6 +64,7 @@ interface ResourceRegistryRepository {
         providerProfiles: List<ModelProviderProfileState>,
         cloudDriveConnections: List<CloudDriveConnectionState>,
         externalEndpoints: List<ExternalEndpointProfileState>,
+        deliveryChannels: List<DeliveryChannelProfileState>,
     )
 
     suspend fun refresh()
@@ -75,6 +76,7 @@ internal fun buildResourceRegistryEntries(
     providerProfiles: List<ModelProviderProfileState>,
     cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
+    deliveryChannels: List<DeliveryChannelProfileState> = emptyList(),
 ): List<ResourceRegistryEntrySeed> {
     val phoneLocalStorage = ResourceRegistryEntrySeed(
         id = resourceIdPhoneLocalStorage,
@@ -289,6 +291,47 @@ internal fun buildResourceRegistryEntries(
             }
         },
     )
+    val deliveryChannelsEntry = ResourceRegistryEntrySeed(
+        id = resourceIdDeliveryChannels,
+        resourceType = resourceTypeDeliveryChannels,
+        title = "Delivery channels",
+        priority = ResourceRegistryPriority.Priority4,
+        health = when {
+            deliveryChannels.any { it.status == DeliveryChannelStatus.Connected } ->
+                ResourceRegistryHealthState.Active
+            deliveryChannels.isNotEmpty() -> ResourceRegistryHealthState.NeedsSetup
+            else -> ResourceRegistryHealthState.Planned
+        },
+        summary = deliveryChannelSummary(deliveryChannels),
+        capabilities = deliveryChannels
+            .filter { it.status == DeliveryChannelStatus.Connected }
+            .flatMap { it.supportedDeliveries }
+            .distinct()
+            .sorted(),
+        metadata = buildMap {
+            put("profileCount", deliveryChannels.size.toString())
+            put(
+                "connectedCount",
+                deliveryChannels.count { it.status == DeliveryChannelStatus.Connected }.toString(),
+            )
+            put(
+                "stagedCount",
+                deliveryChannels.count { it.status == DeliveryChannelStatus.Staged }.toString(),
+            )
+            if (deliveryChannels.isNotEmpty()) {
+                put(
+                    "channelIds",
+                    deliveryChannels.joinToString("|") { it.channelId },
+                )
+                put(
+                    "types",
+                    deliveryChannels.joinToString("|") { it.type.typeId },
+                )
+            } else {
+                put("plannedCapabilities", "notifications.local|notifications.telegram|notifications.webhook")
+            }
+        },
+    )
     return listOf(
         phoneLocalStorage,
         documentRoots,
@@ -296,6 +339,7 @@ internal fun buildResourceRegistryEntries(
         companions,
         aiModelProviders,
         mcpApiEndpoints,
+        deliveryChannelsEntry,
     )
 }
 
@@ -319,6 +363,7 @@ class PersistentResourceRegistryRepository(
         providerProfiles: List<ModelProviderProfileState>,
         cloudDriveConnections: List<CloudDriveConnectionState>,
         externalEndpoints: List<ExternalEndpointProfileState>,
+        deliveryChannels: List<DeliveryChannelProfileState>,
     ) {
         val seeds = buildResourceRegistryEntries(
             fileIndexState = fileIndexState,
@@ -326,6 +371,7 @@ class PersistentResourceRegistryRepository(
             providerProfiles = providerProfiles,
             cloudDriveConnections = cloudDriveConnections,
             externalEndpoints = externalEndpoints,
+            deliveryChannels = deliveryChannels,
         )
         withContext(Dispatchers.IO) {
             val db = databaseHelper.writableDatabase
@@ -487,12 +533,31 @@ private fun externalEndpointSummary(
     }
 }
 
+private fun deliveryChannelSummary(
+    deliveryChannels: List<DeliveryChannelProfileState>,
+): String {
+    if (deliveryChannels.isEmpty()) {
+        return "Phone notifications, Telegram, desktop companion relay, and webhook deliveries will join the resource registry as automation outputs."
+    }
+    val connectedCount = deliveryChannels.count { it.status == DeliveryChannelStatus.Connected }
+    val stagedCount = deliveryChannels.count { it.status == DeliveryChannelStatus.Staged }
+    return when {
+        connectedCount > 0 ->
+            "$connectedCount delivery channel(s) are available and $stagedCount channel(s) are staged for automation routing."
+        stagedCount > 0 ->
+            "$stagedCount delivery channel(s) are staged, but scheduler binding, retry policy, and destination auth are still pending."
+        else ->
+            "Delivery channel seeds exist for phone notifications, Telegram, desktop companion relay, and webhook outputs, but they still need setup."
+    }
+}
+
 const val resourceIdPhoneLocalStorage = "phone-local-storage"
 const val resourceIdPhoneDocumentRoots = "attached-document-roots"
 const val resourceIdCloudDrives = "cloud-drives"
 const val resourceIdExternalCompanions = "external-companions"
 const val resourceIdAiModelProviders = "ai-model-providers"
 const val resourceIdMcpApiEndpoints = "mcp-api-endpoints"
+const val resourceIdDeliveryChannels = "delivery-channels"
 
 const val resourceTypePhoneLocalStorage = "phone.local_storage"
 const val resourceTypePhoneDocumentRoots = "phone.document_roots"
@@ -500,3 +565,4 @@ const val resourceTypeCloudDrives = "cloud.drives"
 const val resourceTypeExternalCompanions = "external.companions"
 const val resourceTypeAiModelProviders = "model.providers"
 const val resourceTypeMcpApiEndpoints = "mcp.api_endpoints"
+const val resourceTypeDeliveryChannels = "delivery.channels"
