@@ -36,6 +36,7 @@ data class AgentTurnResult(
     val companionSessionNotifyResult: CompanionSessionNotifyResult? = null,
     val companionAppOpenResult: CompanionAppOpenResult? = null,
     val companionWorkflowRunResult: CompanionWorkflowRunResult? = null,
+    val planningTrace: AgentPlanningTrace? = null,
 )
 
 class LocalPhoneAgentRuntime(
@@ -52,7 +53,7 @@ class LocalPhoneAgentRuntime(
     ): AgentTurnResult {
         val trimmedPrompt = prompt.trim()
         val plannerOutput = planTurn(trimmedPrompt)
-        val result = when (val intent = plannerOutput.intent) {
+        val rawResult = when (val intent = plannerOutput.intent) {
             is AgentIntent.ApprovePendingApproval -> approvePendingApproval(trimmedPrompt, context, intent.approvalId)
             is AgentIntent.DenyPendingApproval -> denyPendingApproval(trimmedPrompt, context, intent.approvalId)
             is AgentIntent.RetryTask -> retryAgentTask(trimmedPrompt, context, intent.taskId)
@@ -69,10 +70,24 @@ class LocalPhoneAgentRuntime(
             is AgentIntent.RunCompanionWorkflow -> runCompanionWorkflow(trimmedPrompt, context, intent.workflowId)
             AgentIntent.ExplainCapabilities -> explainCapabilities(trimmedPrompt, context)
         }
+        val result = rawResult.copy(planningTrace = plannerOutput.planningTrace)
         auditTrailRepository.logAction(
             action = "agent.turn",
             result = plannerOutput.auditResult,
             details = buildString {
+                append("Mode: ")
+                append(plannerOutput.planningTrace.mode.name)
+                append(" | Plan: ")
+                append(plannerOutput.planningTrace.summary)
+                if (plannerOutput.planningTrace.capabilities.isNotEmpty()) {
+                    append(" | Capabilities: ")
+                    append(plannerOutput.planningTrace.capabilities.joinToString())
+                }
+                if (plannerOutput.planningTrace.resources.isNotEmpty()) {
+                    append(" | Resources: ")
+                    append(plannerOutput.planningTrace.resources.joinToString())
+                }
+                append(" | ")
                 append("Prompt: ")
                 append(trimmedPrompt.take(maxAuditPromptLength))
                 append(" | ")
@@ -1349,19 +1364,31 @@ class LocalPhoneAgentRuntime(
         )
         return when {
             wantsDenyAction ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.DenyPendingApproval(approvalId),
                     auditResult = "approval_denied_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Resolve a pending approval by denying it from the chat loop.",
+                    capabilities = listOf("approvals.resolve"),
+                    resources = listOf("approval.inbox"),
                 )
             wantsApproveAction ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.ApprovePendingApproval(approvalId),
                     auditResult = "approval_approved_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Resolve a pending approval by approving it from the chat loop.",
+                    capabilities = listOf("approvals.resolve"),
+                    resources = listOf("approval.inbox"),
                 )
             wantsRetryAction ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.RetryTask(taskId),
                     auditResult = "task_retried_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Retry a previously failed or waiting task from chat.",
+                    capabilities = listOf("task.retry"),
+                    resources = listOf("task.runtime"),
                 )
             containsAny(
                 normalized,
@@ -1375,9 +1402,13 @@ class LocalPhoneAgentRuntime(
                 "상태 확인",
                 "건강 확인",
             ) ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.ProbeCompanionHealth,
                     auditResult = "companion_health_probed",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Probe the selected companion health endpoint and refresh its capability snapshot.",
+                    capabilities = listOf("devices.health_probe"),
+                    resources = listOf("external.companion"),
                 )
             containsAny(
                 normalized,
@@ -1393,89 +1424,173 @@ class LocalPhoneAgentRuntime(
                 "컴패니언 알림",
                 "알림 보내",
             ) ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.SendCompanionSessionNotification,
                     auditResult = "companion_session_notified",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Send a session notification to the selected companion.",
+                    capabilities = listOf("devices.session_notify"),
+                    resources = listOf("external.companion"),
                 )
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "latest action", "recent action", "last action", "최근 액션", "방금 액션") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenLatestAction),
                     auditResult = "companion_latest_action_workflow_run",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Run the allowlisted desktop workflow that opens the latest companion action.",
+                    capabilities = listOf("devices.workflow_run"),
+                    resources = listOf("external.companion"),
                 )
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "latest transfer", "recent transfer", "최근 전송", "전송 폴더") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenLatestTransfer),
                     auditResult = "companion_latest_transfer_workflow_run",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Run the allowlisted desktop workflow that opens the latest transfer.",
+                    capabilities = listOf("devices.workflow_run"),
+                    resources = listOf("external.companion"),
                 )
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "actions folder", "action folder", "액션 폴더", "actions") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenActionsFolder),
                     auditResult = "companion_actions_workflow_run",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Run the allowlisted desktop workflow that opens the companion actions folder.",
+                    capabilities = listOf("devices.workflow_run"),
+                    resources = listOf("external.companion"),
                 )
             wantsOpen && containsAny(normalized, "inbox", "받은", "수신") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.OpenCompanionTarget(companionAppOpenTargetInbox),
                     auditResult = "companion_inbox_open",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Open the companion inbox surface.",
+                    capabilities = listOf("devices.app_open"),
+                    resources = listOf("external.companion"),
                 )
             wantsOpen &&
                 containsAny(normalized, "latest action", "recent action", "last action", "최근 액션", "방금 액션") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.OpenCompanionTarget(companionAppOpenTargetLatestAction),
                     auditResult = "companion_latest_action_open",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Open the latest companion action surface.",
+                    capabilities = listOf("devices.app_open"),
+                    resources = listOf("external.companion"),
                 )
             wantsOpen && containsAny(normalized, "latest transfer", "recent transfer", "최근 전송", "전송 폴더") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.OpenCompanionTarget(companionAppOpenTargetLatestTransfer),
                     auditResult = "companion_latest_transfer_open",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Open the latest companion transfer surface.",
+                    capabilities = listOf("devices.app_open"),
+                    resources = listOf("external.companion"),
                 )
             wantsOpen && containsAny(normalized, "actions folder", "action folder", "액션 폴더", "actions") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.OpenCompanionTarget(companionAppOpenTargetActionsFolder),
                     auditResult = "companion_actions_open",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Open the companion actions folder surface.",
+                    capabilities = listOf("devices.app_open"),
+                    resources = listOf("external.companion"),
                 )
             containsAny(normalized, "refresh", "rescan", "reindex", "scan", "새로고침", "스캔", "인덱스") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.RefreshResources,
                     auditResult = "resources_refreshed",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Refresh indexed phone resources, approvals, audits, and paired companions.",
+                    capabilities = listOf("resources.refresh"),
+                    resources = listOf("phone.local_storage", "approval.inbox", "external.companion"),
                 )
             containsAny(normalized, "summarize", "summary", "요약") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.SummarizeIndexedFiles,
                     auditResult = "files_summarized",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Summarize the files currently indexed from the phone resource stack.",
+                    capabilities = listOf("files.summarize"),
+                    resources = listOf("phone.local_storage", "phone.document_roots"),
                 )
             containsAny(normalized, "organize", "정리", "분류") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.OrganizeIndexedFiles(strategyForPrompt(normalized)),
                     auditResult = "organize_requested",
+                    mode = AgentPlannerMode.Plan,
+                    summary = "Create a dry-run organize plan and raise an approval request before any destructive action.",
+                    capabilities = listOf("files.organize", "approvals.request"),
+                    resources = listOf("phone.local_storage", "phone.document_roots", "approval.inbox"),
                 )
             containsAny(normalized, "approve", "approval", "review", "승인", "검토", "dashboard", "대시보드", "status", "현황") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.ShowDashboard,
                     auditResult = "dashboard_routed",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Route the user to Dashboard to inspect approvals, task state, and resource status.",
+                    capabilities = listOf("ui.route.dashboard"),
+                    resources = listOf("shell.navigation"),
                 )
             containsAny(normalized, "history", "audit", "log", "기록", "히스토리", "로그") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.ShowHistory,
                     auditResult = "history_routed",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Route the user to History to inspect audit and prior task activity.",
+                    capabilities = listOf("ui.route.history"),
+                    resources = listOf("shell.navigation", "audit.history"),
                 )
             containsAny(normalized, "settings", "connect", "connection", "permission", "권한", "설정", "연결", "drive", "mcp", "api", "companion", "device") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.ShowSettings,
                     auditResult = "settings_routed",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Route the user to Settings to inspect connections, permissions, and resource configuration.",
+                    capabilities = listOf("ui.route.settings"),
+                    resources = listOf("shell.navigation", "resource.stack"),
                 )
             containsAny(normalized, "send", "transfer", "share", "보내", "전송") ->
-                AgentPlannerOutput(
+                plannerOutput(
                     intent = AgentIntent.TransferIndexedFiles,
                     auditResult = "transfer_requested",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Prepare a companion transfer approval for indexed files and the selected remote device.",
+                    capabilities = listOf("files.transfer", "approvals.request"),
+                    resources = listOf("phone.local_storage", "external.companion", "approval.inbox"),
                 )
-            else -> AgentPlannerOutput(
+            else -> plannerOutput(
                 intent = AgentIntent.ExplainCapabilities,
                 auditResult = "capabilities_explained",
+                mode = AgentPlannerMode.Answer,
+                summary = "Explain the current capability envelope of the chat loop and connected resource stack.",
+                capabilities = listOf("agent.capabilities.explain"),
+                resources = listOf("resource.stack", "task.runtime"),
             )
         }
+    }
+
+    private fun plannerOutput(
+        intent: AgentIntent,
+        auditResult: String,
+        mode: AgentPlannerMode,
+        summary: String,
+        capabilities: List<String>,
+        resources: List<String>,
+    ): AgentPlannerOutput {
+        return AgentPlannerOutput(
+            intent = intent,
+            auditResult = auditResult,
+            planningTrace = AgentPlanningTrace(
+                mode = mode,
+                summary = summary,
+                capabilities = capabilities,
+                resources = resources,
+            ),
+        )
     }
 
     private fun strategyForPrompt(normalizedPrompt: String): FileOrganizeStrategy {
@@ -1701,6 +1816,7 @@ class LocalPhoneAgentRuntime(
 private data class AgentPlannerOutput(
     val intent: AgentIntent,
     val auditResult: String,
+    val planningTrace: AgentPlanningTrace,
 )
 
 private sealed interface AgentIntent {

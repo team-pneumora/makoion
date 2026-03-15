@@ -60,6 +60,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.makoion.mobileclaw.BuildConfig
 import io.makoion.mobileclaw.data.AgentTaskRecord
 import io.makoion.mobileclaw.data.AgentDestination
+import io.makoion.mobileclaw.data.AgentPlannerMode
 import io.makoion.mobileclaw.data.AgentTaskStatus
 import io.makoion.mobileclaw.data.ApprovalInboxItem
 import io.makoion.mobileclaw.data.ApprovalInboxRisk
@@ -1613,11 +1614,42 @@ private fun ChatMessageContextCard(
                         ),
                     )
                 }
+                task?.plannerMode?.let {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("Planner • ${agentPlannerModeLabel(it)}") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = plannerModeColor(it).copy(alpha = 0.16f),
+                            labelColor = ClawInk,
+                        ),
+                    )
+                }
             }
             primaryDetail?.let { detail ->
                 Text(
                     text = detail,
                     style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            task?.plannerSummary?.takeIf { it.isNotBlank() }?.let { plannerSummary ->
+                Text(
+                    text = "Planner summary • $plannerSummary",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ClawGreen,
+                )
+            }
+            task?.plannerCapabilities?.takeIf { it.isNotEmpty() }?.let { capabilities ->
+                Text(
+                    text = "Capabilities • ${capabilities.joinToString()}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            task?.plannerResources?.takeIf { it.isNotEmpty() }?.let { resources ->
+                Text(
+                    text = "Resources • ${resources.joinToString()}",
+                    style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -4337,6 +4369,27 @@ private fun AgentTaskCard(task: AgentTaskRecord) {
                     color = ClawGreen,
                 )
             }
+            task.plannerSummary?.takeIf { it.isNotBlank() }?.let { plannerSummary ->
+                Text(
+                    text = "Planner • ${task.plannerMode?.let(::agentPlannerModeLabel) ?: "Structured"} • $plannerSummary",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = ClawGreen,
+                )
+            }
+            task.plannerCapabilities.takeIf { it.isNotEmpty() }?.let { capabilities ->
+                Text(
+                    text = "Capabilities ${capabilities.joinToString()}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            task.plannerResources.takeIf { it.isNotEmpty() }?.let { resources ->
+                Text(
+                    text = "Resources ${resources.joinToString()}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 text = "Action ${task.actionKey}",
                 style = MaterialTheme.typography.labelLarge,
@@ -5366,6 +5419,26 @@ private fun resourceConnectionStatusLabel(status: ResourceConnectionStatus): Str
         ResourceConnectionStatus.Active -> "Active"
         ResourceConnectionStatus.NeedsSetup -> "Needs setup"
         ResourceConnectionStatus.Planned -> "Planned"
+    }
+}
+
+private fun plannerModeColor(mode: AgentPlannerMode): Color {
+    return when (mode) {
+        AgentPlannerMode.Answer -> ClawGreen
+        AgentPlannerMode.Question -> ClawGold
+        AgentPlannerMode.Plan -> Color(0xFF5D8CC9)
+        AgentPlannerMode.ActionIntent -> ClawInk
+        AgentPlannerMode.Escalation -> Color(0xFFC15B52)
+    }
+}
+
+private fun agentPlannerModeLabel(mode: AgentPlannerMode): String {
+    return when (mode) {
+        AgentPlannerMode.Answer -> "Answer"
+        AgentPlannerMode.Question -> "Question"
+        AgentPlannerMode.Plan -> "Plan"
+        AgentPlannerMode.ActionIntent -> "Action"
+        AgentPlannerMode.Escalation -> "Escalation"
     }
 }
 

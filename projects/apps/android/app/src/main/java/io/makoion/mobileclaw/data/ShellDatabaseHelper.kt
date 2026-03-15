@@ -205,6 +205,32 @@ class ShellDatabaseHelper(
                 """.trimIndent(),
             )
         }
+        if (oldVersion < 16) {
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "planner_mode",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "planner_summary",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "planner_capabilities_json",
+                columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "agent_tasks",
+                columnName = "planner_resources_json",
+                columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
+            )
+        }
     }
 
     private fun createApprovalTables(db: SQLiteDatabase) {
@@ -356,6 +382,10 @@ class ShellDatabaseHelper(
                 status TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 reply_preview TEXT,
+                planner_mode TEXT,
+                planner_summary TEXT,
+                planner_capabilities_json TEXT NOT NULL DEFAULT '[]',
+                planner_resources_json TEXT NOT NULL DEFAULT '[]',
                 destination TEXT NOT NULL,
                 approval_request_id TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
@@ -472,6 +502,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 15
+        private const val databaseVersion = 16
     }
 }

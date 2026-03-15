@@ -48,6 +48,7 @@ class AgentTaskEngine(
                 destination = turnResult.destination,
                 approvalRequestId = turnResult.approvalRequestId,
                 actionKey = turnResult.taskActionKey,
+                planningTrace = turnResult.planningTrace,
                 maxRetryCount = turnResult.taskMaxRetryCount,
             ) ?: task
             AgentTaskExecution(

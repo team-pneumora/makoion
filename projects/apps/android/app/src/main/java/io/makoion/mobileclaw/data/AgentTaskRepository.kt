@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 
 const val defaultTaskActionKey = "agent.turn"
 
@@ -36,6 +37,10 @@ data class AgentTaskRecord(
     val status: AgentTaskStatus,
     val summary: String,
     val replyPreview: String? = null,
+    val plannerMode: AgentPlannerMode? = null,
+    val plannerSummary: String? = null,
+    val plannerCapabilities: List<String> = emptyList(),
+    val plannerResources: List<String> = emptyList(),
     val destination: AgentDestination = AgentDestination.Chat,
     val approvalRequestId: String? = null,
     val retryCount: Int = 0,
@@ -70,6 +75,7 @@ interface AgentTaskRepository {
         destination: AgentDestination? = null,
         approvalRequestId: String? = null,
         actionKey: String? = null,
+        planningTrace: AgentPlanningTrace? = null,
         retryCount: Int? = null,
         maxRetryCount: Int? = null,
         nextRetryAtEpochMillis: Long? = null,
@@ -153,6 +159,7 @@ class PersistentAgentTaskRepository(
         destination: AgentDestination?,
         approvalRequestId: String?,
         actionKey: String?,
+        planningTrace: AgentPlanningTrace?,
         retryCount: Int?,
         maxRetryCount: Int?,
         nextRetryAtEpochMillis: Long?,
@@ -171,6 +178,18 @@ class PersistentAgentTaskRepository(
                     put("destination", (destination ?: existing.destination).name)
                     put("approval_request_id", approvalRequestId ?: existing.approvalRequestId)
                     put("action_key", actionKey ?: existing.actionKey)
+                    put("planner_mode", planningTrace?.mode?.name ?: existing.plannerMode?.name)
+                    put("planner_summary", planningTrace?.summary ?: existing.plannerSummary)
+                    put(
+                        "planner_capabilities_json",
+                        planningTrace?.let { trace -> jsonArrayString(trace.capabilities) }
+                            ?: jsonArrayString(existing.plannerCapabilities),
+                    )
+                    put(
+                        "planner_resources_json",
+                        planningTrace?.let { trace -> jsonArrayString(trace.resources) }
+                            ?: jsonArrayString(existing.plannerResources),
+                    )
                     put("retry_count", retryCount ?: existing.retryCount)
                     put("max_retry_count", maxRetryCount ?: existing.maxRetryCount)
                     if (resolvedStatus == AgentTaskStatus.RetryScheduled) {
@@ -301,6 +320,10 @@ class PersistentAgentTaskRepository(
                 "status",
                 "summary",
                 "reply_preview",
+                "planner_mode",
+                "planner_summary",
+                "planner_capabilities_json",
+                "planner_resources_json",
                 "destination",
                 "approval_request_id",
                 "retry_count",
@@ -325,6 +348,10 @@ class PersistentAgentTaskRepository(
             val statusIndex = cursor.getColumnIndexOrThrow("status")
             val summaryIndex = cursor.getColumnIndexOrThrow("summary")
             val replyPreviewIndex = cursor.getColumnIndexOrThrow("reply_preview")
+            val plannerModeIndex = cursor.getColumnIndexOrThrow("planner_mode")
+            val plannerSummaryIndex = cursor.getColumnIndexOrThrow("planner_summary")
+            val plannerCapabilitiesIndex = cursor.getColumnIndexOrThrow("planner_capabilities_json")
+            val plannerResourcesIndex = cursor.getColumnIndexOrThrow("planner_resources_json")
             val destinationIndex = cursor.getColumnIndexOrThrow("destination")
             val approvalRequestIdIndex = cursor.getColumnIndexOrThrow("approval_request_id")
             val retryCountIndex = cursor.getColumnIndexOrThrow("retry_count")
@@ -349,6 +376,12 @@ class PersistentAgentTaskRepository(
                     status = AgentTaskStatus.valueOf(cursor.getString(statusIndex)),
                     summary = cursor.getString(summaryIndex),
                     replyPreview = cursor.getString(replyPreviewIndex),
+                    plannerMode = cursor.getString(plannerModeIndex)?.takeIf { it.isNotBlank() }?.let {
+                        AgentPlannerMode.valueOf(it)
+                    },
+                    plannerSummary = cursor.getString(plannerSummaryIndex),
+                    plannerCapabilities = jsonArrayToList(cursor.getString(plannerCapabilitiesIndex)),
+                    plannerResources = jsonArrayToList(cursor.getString(plannerResourcesIndex)),
                     destination = runCatching {
                         AgentDestination.valueOf(cursor.getString(destinationIndex))
                     }.getOrDefault(AgentDestination.Chat),
@@ -412,6 +445,10 @@ class PersistentAgentTaskRepository(
                 "status",
                 "summary",
                 "reply_preview",
+                "planner_mode",
+                "planner_summary",
+                "planner_capabilities_json",
+                "planner_resources_json",
                 "destination",
                 "approval_request_id",
                 "retry_count",
@@ -444,6 +481,16 @@ class PersistentAgentTaskRepository(
                 status = AgentTaskStatus.valueOf(cursor.getString(cursor.getColumnIndexOrThrow("status"))),
                 summary = cursor.getString(cursor.getColumnIndexOrThrow("summary")),
                 replyPreview = cursor.getString(cursor.getColumnIndexOrThrow("reply_preview")),
+                plannerMode = cursor.getString(cursor.getColumnIndexOrThrow("planner_mode"))
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { AgentPlannerMode.valueOf(it) },
+                plannerSummary = cursor.getString(cursor.getColumnIndexOrThrow("planner_summary")),
+                plannerCapabilities = jsonArrayToList(
+                    cursor.getString(cursor.getColumnIndexOrThrow("planner_capabilities_json")),
+                ),
+                plannerResources = jsonArrayToList(
+                    cursor.getString(cursor.getColumnIndexOrThrow("planner_resources_json")),
+                ),
                 destination = runCatching {
                     AgentDestination.valueOf(cursor.getString(cursor.getColumnIndexOrThrow("destination")))
                 }.getOrDefault(AgentDestination.Chat),
@@ -473,5 +520,23 @@ class PersistentAgentTaskRepository(
                 ).toString(),
             )
         }
+    }
+
+    private fun jsonArrayString(values: List<String>): String {
+        return JSONArray(values).toString()
+    }
+
+    private fun jsonArrayToList(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) {
+            return emptyList()
+        }
+        val array = runCatching { JSONArray(raw) }.getOrElse {
+            return emptyList()
+        }
+        return buildList {
+            for (index in 0 until array.length()) {
+                add(array.optString(index))
+            }
+        }.filter { it.isNotBlank() }
     }
 }
