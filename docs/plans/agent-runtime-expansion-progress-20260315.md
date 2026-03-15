@@ -22,6 +22,7 @@
 | 2026-03-16 | Step 7 | 완료 | `scheduled automation` skeleton을 추가하고, 반복/정기 요청을 별도 automation 레코드로 저장해 Dashboard에서 placeholder 상태를 확인하고 `activate/pause` 토글할 수 있게 확장함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `8b7a11f`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 | 2026-03-16 | Step 8 | 완료 | Android Keystore 기반 `provider credential vault` skeleton을 추가하고, Settings provider 카드에서 API key/token 저장/삭제, DB의 credential status/label sync, mask helper/unit test를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `26354d6`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 | 2026-03-16 | Step 9 | 완료 | `MCP/API endpoint registry` skeleton을 추가하고, `MCP bridge / browser automation / third-party API` seed, staged/mock-ready/reset 상태, Settings 카드, resource registry Priority 4 연동, turn context endpoint summary를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `40b1372`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
+| 2026-03-16 | Step 10 | 완료 | `delivery channel registry` skeleton을 추가하고, `phone local notification / Telegram / desktop companion / webhook` seed, staged/mock-ready/reset 상태, Settings 카드, resource registry 연동, automation/browser turn context delivery summary를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `668b1c4`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 
 ## 현재 메모
 
@@ -35,4 +36,5 @@
 - Step 7에서는 scheduler worker가 아직 없더라도 반복 요청을 task 이외의 durable automation record로 남기도록 분리했다. 실제 schedule runner와 notification delivery worker는 후속 단계다.
 - Step 8에서는 provider secret 자체를 SQLite에 두지 않고 Android Keystore + encrypted preference payload로 분리했다. 아직 secret read/rotation/failover policy와 per-provider base URL override는 최소 수준이다.
 - Step 9에서는 MCP/API endpoint도 cloud drive와 같은 placeholder lifecycle로 다루기 시작했다. 아직 실제 MCP handshake, browser executor, API auth binding은 없고 `stage/mock-ready` 상태와 resource registry 반영까지만 구현했다.
-- 다음 구현 후보는 `delivery channel registry skeleton`과 `code generation task skeleton`이다.
+- Step 10에서는 자동화 결과 전달 경로를 별도 registry로 분리했다. 로컬 알림은 이미 connected seed로 두고, Telegram/desktop companion/webhook은 placeholder 상태로 관리한다. 실제 delivery worker와 per-channel credential binding은 후속 단계다.
+- 다음 구현 후보는 `code generation task skeleton`이다.
