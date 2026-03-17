@@ -259,6 +259,32 @@ class ShellDatabaseHelper(
         if (oldVersion < 23) {
             createCodeGenerationProjectTables(db)
         }
+        if (oldVersion < 24) {
+            addColumnIfMissing(
+                db,
+                tableName = "code_generation_projects",
+                columnName = "workspace_path",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "code_generation_projects",
+                columnName = "entry_file_path",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "code_generation_projects",
+                columnName = "generated_file_count",
+                columnDefinition = "INTEGER NOT NULL DEFAULT 0",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "code_generation_projects",
+                columnName = "generator_label",
+                columnDefinition = "TEXT NOT NULL DEFAULT ''",
+            )
+        }
     }
 
     private fun createApprovalTables(db: SQLiteDatabase) {
@@ -626,6 +652,10 @@ class ShellDatabaseHelper(
                 output_label TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 status TEXT NOT NULL,
+                workspace_path TEXT,
+                entry_file_path TEXT,
+                generated_file_count INTEGER NOT NULL DEFAULT 0,
+                generator_label TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
@@ -698,6 +728,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 23
+        private const val databaseVersion = 24
     }
 }

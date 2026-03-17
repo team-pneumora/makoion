@@ -6302,10 +6302,54 @@ private fun CodeGenerationProjectCard(
                     onClick = {},
                     label = { Text(project.outputLabel) },
                 )
+                project.generatorLabel?.let { generatorLabel ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(generatorLabel) },
+                    )
+                }
+                if (project.generatedFileCount > 0) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("${project.generatedFileCount} files") },
+                    )
+                }
                 AssistChip(
                     onClick = {},
                     label = { Text("Updated ${project.updatedAtLabel}") },
                 )
+            }
+            project.workspacePath?.let { workspacePath ->
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Workspace",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = workspacePath,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ClawInk,
+                    )
+                }
+            }
+            project.entryFilePath?.let { entryFilePath ->
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Entry file",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = entryFilePath,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ClawInk,
+                    )
+                }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -6317,8 +6361,8 @@ private fun CodeGenerationProjectCard(
                             when (project.status) {
                                 CodeGenerationProjectStatus.Planned -> CodeGenerationProjectStatus.Scoped
                                 CodeGenerationProjectStatus.Scoped -> CodeGenerationProjectStatus.Ready
-                                CodeGenerationProjectStatus.Ready -> CodeGenerationProjectStatus.Blocked
-                                CodeGenerationProjectStatus.Blocked -> CodeGenerationProjectStatus.Planned
+                                CodeGenerationProjectStatus.Ready -> CodeGenerationProjectStatus.Planned
+                                CodeGenerationProjectStatus.Blocked -> CodeGenerationProjectStatus.Scoped
                             },
                         )
                     },
@@ -6328,8 +6372,8 @@ private fun CodeGenerationProjectCard(
                         when (project.status) {
                             CodeGenerationProjectStatus.Planned -> "Mark scoped"
                             CodeGenerationProjectStatus.Scoped -> "Mark ready"
-                            CodeGenerationProjectStatus.Ready -> "Mark blocked"
-                            CodeGenerationProjectStatus.Blocked -> "Reset planned"
+                            CodeGenerationProjectStatus.Ready -> "Reset planned"
+                            CodeGenerationProjectStatus.Blocked -> "Resume scoped"
                         },
                     )
                 }
@@ -6337,7 +6381,7 @@ private fun CodeGenerationProjectCard(
                     onClick = {
                         onUpdateStatus(
                             when (project.status) {
-                                CodeGenerationProjectStatus.Blocked -> CodeGenerationProjectStatus.Scoped
+                                CodeGenerationProjectStatus.Blocked -> CodeGenerationProjectStatus.Planned
                                 else -> CodeGenerationProjectStatus.Blocked
                             },
                         )
@@ -6346,7 +6390,7 @@ private fun CodeGenerationProjectCard(
                 ) {
                     Text(
                         when (project.status) {
-                            CodeGenerationProjectStatus.Blocked -> "Resume scoped"
+                            CodeGenerationProjectStatus.Blocked -> "Reset planned"
                             else -> "Block project"
                         },
                     )

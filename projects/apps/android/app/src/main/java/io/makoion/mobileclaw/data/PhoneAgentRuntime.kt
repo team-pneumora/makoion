@@ -52,6 +52,7 @@ class LocalPhoneAgentRuntime(
     private val devicePairingRepository: DevicePairingRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
     private val codeGenerationProjectRepository: CodeGenerationProjectRepository,
+    private val codeGenerationWorkspaceExecutor: CodeGenerationWorkspaceExecutor,
     private val phoneAgentActionCoordinator: PhoneAgentActionCoordinator,
 ) {
     suspend fun processTurn(
@@ -518,10 +519,6 @@ class LocalPhoneAgentRuntime(
             prompt = prompt,
             companionAvailable = context.pairedDevices.isNotEmpty(),
         )
-        val record = codeGenerationProjectRepository.createSkeleton(
-            prompt = prompt,
-            plan = plan,
-        )
         val configuredProviderCount = context.modelPreference.configuredProviderIds.size
         val connectedExternalEndpoints = context.externalEndpoints.count {
             it.status == ExternalEndpointStatus.Connected
@@ -529,32 +526,78 @@ class LocalPhoneAgentRuntime(
         val connectedDeliveryChannels = context.deliveryChannels.count {
             it.status == DeliveryChannelStatus.Connected
         }
-        return AgentTurnResult(
-            reply = if (prefersKorean(prompt)) {
-                buildString {
-                    append("code generation skeleton으로 요청을 기록했어요. ")
-                    append("대상은 ${record.targetLabel}, 작업 공간은 ${record.workspaceLabel}, 예상 출력은 ${record.outputLabel}로 해석했습니다. ")
-                    append("Dashboard에서 지속적으로 추적할 수 있고, 현재 구성된 provider credential은 ${configuredProviderCount}개, mock-ready MCP/API endpoint는 ${connectedExternalEndpoints}개, mock-ready delivery channel은 ${connectedDeliveryChannels}개입니다. ")
-                    append("실제 파일 생성, 편집, 실행까지 이어지는 build executor는 아직 후속 단계입니다.")
-                }
-            } else {
-                buildString {
-                    append("I recorded this as a code generation skeleton request. ")
-                    append("The target was interpreted as ${record.targetLabel}, the workspace as ${record.workspaceLabel}, and the expected output as ${record.outputLabel}. ")
-                    append("You can keep tracking it from Dashboard. Right now there are ${configuredProviderCount} configured provider credential(s), ${connectedExternalEndpoints} mock-ready MCP/API endpoint(s), and ${connectedDeliveryChannels} mock-ready delivery channel(s). ")
-                    append("The real build executor for file generation, editing, and run loops is still a follow-up step.")
-                }
-            },
-            destination = AgentDestination.Dashboard,
-            taskTitle = taskTitle(prompt),
-            taskActionKey = codeGenerationPlanActionKey,
-            taskSummary = if (prefersKorean(prompt)) {
-                "code generation skeleton project를 기록했고 build executor 연결을 기다리는 상태로 남겼습니다."
-            } else {
-                "Recorded a code generation skeleton project and left it waiting for build executor wiring."
-            },
-            taskStatus = AgentTaskStatus.WaitingResource,
-        )
+        return runCatching {
+            val artifact = codeGenerationWorkspaceExecutor.generateScaffold(
+                prompt = prompt,
+                plan = plan,
+            )
+            val record = codeGenerationProjectRepository.createProject(
+                prompt = prompt,
+                plan = plan,
+                artifact = artifact,
+            )
+            AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    buildString {
+                        append("phone-local code scaffold를 생성했어요. ")
+                        append("대상은 ${record.targetLabel}, 작업 공간은 ${record.workspaceLabel}, 예상 출력은 ${record.outputLabel}입니다. ")
+                        append("${record.generatedFileCount}개 파일을 ${record.workspacePath?.let(::compactCodeGenerationPath) ?: "workspace"}에 만들었고, 시작 파일은 ${record.entryFilePath?.let(::compactCodeGenerationPath) ?: "README.md"}입니다. ")
+                        append("현재 구성된 provider credential은 ${configuredProviderCount}개, mock-ready MCP/API endpoint는 ${connectedExternalEndpoints}개, mock-ready delivery channel은 ${connectedDeliveryChannels}개입니다. ")
+                        append("Dashboard에서 이 초안을 계속 추적하고 다음 빌드 단계로 이어갈 수 있습니다.")
+                    }
+                } else {
+                    buildString {
+                        append("I generated a phone-local code scaffold. ")
+                        append("The target is ${record.targetLabel}, the workspace is ${record.workspaceLabel}, and the expected output is ${record.outputLabel}. ")
+                        append("I wrote ${record.generatedFileCount} file(s) into ${record.workspacePath?.let(::compactCodeGenerationPath) ?: "the workspace"}, and the starting file is ${record.entryFilePath?.let(::compactCodeGenerationPath) ?: "README.md"}. ")
+                        append("There are ${configuredProviderCount} configured provider credential(s), ${connectedExternalEndpoints} mock-ready MCP/API endpoint(s), and ${connectedDeliveryChannels} mock-ready delivery channel(s) available for the next iteration. ")
+                        append("You can keep tracking this draft from Dashboard.")
+                    }
+                },
+                destination = AgentDestination.Dashboard,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = codeGenerationPlanActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "phone-local code scaffold를 생성했고 Dashboard에서 추적할 수 있게 기록했습니다."
+                } else {
+                    "Generated a phone-local code scaffold and recorded it for Dashboard tracking."
+                },
+                taskStatus = AgentTaskStatus.Succeeded,
+            )
+        }.getOrElse { error ->
+            val record = codeGenerationProjectRepository.createProject(
+                prompt = prompt,
+                plan = plan,
+            )
+            codeGenerationProjectRepository.setStatus(
+                projectId = record.id,
+                status = CodeGenerationProjectStatus.Blocked,
+            )
+            AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    buildString {
+                        append("code generation 요청은 기록했지만 phone-local scaffold 생성은 실패했습니다. ")
+                        append("대상은 ${record.targetLabel}, 작업 공간은 ${record.workspaceLabel}, 예상 출력은 ${record.outputLabel}로 남겨뒀고, 실패 이유는 ${error.message ?: error::class.java.simpleName} 입니다. ")
+                        append("Dashboard에서 blocked 상태로 추적하면서 다음 executor 복구를 이어갈 수 있습니다.")
+                    }
+                } else {
+                    buildString {
+                        append("I recorded the code generation request, but the phone-local scaffold generation failed. ")
+                        append("The target is ${record.targetLabel}, the workspace is ${record.workspaceLabel}, and the expected output is ${record.outputLabel}. The failure reason was ${error.message ?: error::class.java.simpleName}. ")
+                        append("The project is left blocked on Dashboard so the next executor pass can recover it.")
+                    }
+                },
+                destination = AgentDestination.Dashboard,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = codeGenerationPlanActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "code generation project는 기록했지만 local scaffold 생성에 실패해 blocked 상태로 남겼습니다."
+                } else {
+                    "Recorded the code generation project, but local scaffold generation failed and the project was left blocked."
+                },
+                taskStatus = AgentTaskStatus.Failed,
+            )
+        }
     }
 
     private suspend fun organizeIndexedFiles(
@@ -1201,7 +1244,7 @@ class LocalPhoneAgentRuntime(
                     append("8. companion health snapshot 새로고침\n")
                     append("9. desktop companion notification 보내기\n")
                     append("10. allowlisted desktop workflow 실행\n")
-                    append("11. code/app/automation build skeleton 기록\n")
+                    append("11. code/app/automation starter scaffold 생성\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
                     append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
@@ -1221,7 +1264,7 @@ class LocalPhoneAgentRuntime(
                     append("8. Refresh the companion health snapshot\n")
                     append("9. Send a desktop companion notification\n")
                     append("10. Run an allowlisted desktop workflow\n")
-                    append("11. Capture a code, app, or automation build skeleton\n")
+                    append("11. Generate a code, app, or automation starter scaffold\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
                     append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
@@ -1783,7 +1826,7 @@ class LocalPhoneAgentRuntime(
                     intent = AgentIntent.PlanCodeGeneration,
                     auditResult = "code_generation_planned",
                     mode = AgentPlannerMode.Plan,
-                    summary = "Capture a code, app, or automation build request and persist it as a durable build skeleton until the executor is wired.",
+                    summary = "Generate a phone-local starter scaffold for a code, app, or automation request and persist it as a durable dashboard project.",
                     capabilities = listOf("code.generate.plan"),
                     resources = listOf("phone.local_storage", "external.companion", "model.providers", "delivery.channels"),
                 )

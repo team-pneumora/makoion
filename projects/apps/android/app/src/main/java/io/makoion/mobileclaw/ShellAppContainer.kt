@@ -9,6 +9,7 @@ import io.makoion.mobileclaw.data.PersistentDeliveryChannelRegistryRepository
 import io.makoion.mobileclaw.data.PersistentExternalEndpointRegistryRepository
 import io.makoion.mobileclaw.data.PersistentCloudDriveConnectionRepository
 import io.makoion.mobileclaw.data.PersistentCodeGenerationProjectRepository
+import io.makoion.mobileclaw.data.LocalCodeGenerationWorkspaceExecutor
 import io.makoion.mobileclaw.data.FileActionExecutor
 import io.makoion.mobileclaw.data.LocalFileGraphActionPlanner
 import io.makoion.mobileclaw.data.PersistentChatTranscriptRepository
@@ -63,6 +64,10 @@ class ShellAppContainer(
     )
     val codeGenerationProjectRepository = PersistentCodeGenerationProjectRepository(
         databaseHelper = databaseHelper,
+        auditTrailRepository = auditTrailRepository,
+    )
+    val codeGenerationWorkspaceExecutor = LocalCodeGenerationWorkspaceExecutor(
+        context = application,
         auditTrailRepository = auditTrailRepository,
     )
     val resourceRegistryRepository = PersistentResourceRegistryRepository(
@@ -121,6 +126,7 @@ class ShellAppContainer(
         devicePairingRepository = devicePairingRepository,
         scheduledAutomationRepository = scheduledAutomationRepository,
         codeGenerationProjectRepository = codeGenerationProjectRepository,
+        codeGenerationWorkspaceExecutor = codeGenerationWorkspaceExecutor,
         phoneAgentActionCoordinator = phoneAgentActionCoordinator,
     )
     val agentTaskEngine = AgentTaskEngine(

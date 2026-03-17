@@ -28,6 +28,10 @@ data class CodeGenerationProjectRecord(
     val outputLabel: String,
     val summary: String,
     val status: CodeGenerationProjectStatus,
+    val workspacePath: String?,
+    val entryFilePath: String?,
+    val generatedFileCount: Int,
+    val generatorLabel: String?,
     val createdAtEpochMillis: Long,
     val createdAtLabel: String,
     val updatedAtLabel: String,
@@ -36,9 +40,10 @@ data class CodeGenerationProjectRecord(
 interface CodeGenerationProjectRepository {
     val projects: StateFlow<List<CodeGenerationProjectRecord>>
 
-    suspend fun createSkeleton(
+    suspend fun createProject(
         prompt: String,
         plan: CodeGenerationProjectPlan,
+        artifact: CodeGenerationWorkspaceArtifact? = null,
     ): CodeGenerationProjectRecord
 
     suspend fun setStatus(
@@ -64,13 +69,22 @@ class PersistentCodeGenerationProjectRepository(
         }
     }
 
-    override suspend fun createSkeleton(
+    override suspend fun createProject(
         prompt: String,
         plan: CodeGenerationProjectPlan,
+        artifact: CodeGenerationWorkspaceArtifact?,
     ): CodeGenerationProjectRecord {
         val projectId = "codegen-${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
-        val summary = buildCodeGenerationSummary(plan)
+        val summary = buildCodeGenerationSummary(
+            plan = plan,
+            artifact = artifact,
+        )
+        val initialStatus = if (artifact == null) {
+            CodeGenerationProjectStatus.Planned
+        } else {
+            CodeGenerationProjectStatus.Ready
+        }
         withContext(Dispatchers.IO) {
             databaseHelper.writableDatabase.insert(
                 projectTable,
@@ -83,7 +97,11 @@ class PersistentCodeGenerationProjectRepository(
                     put("workspace_label", plan.workspaceLabel)
                     put("output_label", plan.outputLabel)
                     put("summary", summary)
-                    put("status", CodeGenerationProjectStatus.Planned.name)
+                    put("status", initialStatus.name)
+                    put("workspace_path", artifact?.workspacePath)
+                    put("entry_file_path", artifact?.entryFilePath)
+                    put("generated_file_count", artifact?.generatedFileCount ?: 0)
+                    put("generator_label", artifact?.generatorLabel.orEmpty())
                     put("created_at", now)
                     put("updated_at", now)
                 },
@@ -91,8 +109,12 @@ class PersistentCodeGenerationProjectRepository(
         }
         auditTrailRepository.logAction(
             action = "codegen.project",
-            result = "planned",
-            details = "Recorded code generation skeleton ${plan.title} (${plan.targetLabel}, ${plan.workspaceLabel}).",
+            result = initialStatus.name.lowercase(),
+            details = if (artifact == null) {
+                "Recorded code generation skeleton ${plan.title} (${plan.targetLabel}, ${plan.workspaceLabel})."
+            } else {
+                "Generated code project ${plan.title} with ${artifact.generatedFileCount} file(s) at ${artifact.workspacePath}."
+            },
         )
         refresh()
         return _projects.value.first { it.id == projectId }
@@ -136,6 +158,10 @@ class PersistentCodeGenerationProjectRepository(
                     "output_label",
                     "summary",
                     "status",
+                    "workspace_path",
+                    "entry_file_path",
+                    "generated_file_count",
+                    "generator_label",
                     "created_at",
                     "updated_at",
                 ),
@@ -163,6 +189,11 @@ class PersistentCodeGenerationProjectRepository(
                                         cursor.getString(cursor.getColumnIndexOrThrow("status")),
                                     )
                                 }.getOrDefault(CodeGenerationProjectStatus.Planned),
+                                workspacePath = cursor.getString(cursor.getColumnIndexOrThrow("workspace_path")),
+                                entryFilePath = cursor.getString(cursor.getColumnIndexOrThrow("entry_file_path")),
+                                generatedFileCount = cursor.getInt(cursor.getColumnIndexOrThrow("generated_file_count")),
+                                generatorLabel = cursor.getString(cursor.getColumnIndexOrThrow("generator_label"))
+                                    ?.takeIf { it.isNotBlank() },
                                 createdAtEpochMillis = createdAt,
                                 createdAtLabel = DateUtils.getRelativeTimeSpanString(
                                     createdAt,

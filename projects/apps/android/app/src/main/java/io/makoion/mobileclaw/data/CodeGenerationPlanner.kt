@@ -1,10 +1,43 @@
 package io.makoion.mobileclaw.data
 
+enum class CodeGenerationProjectKind(
+    val targetLabel: String,
+    val outputLabel: String,
+    val title: String,
+    val slugPrefix: String,
+) {
+    AndroidApp(
+        targetLabel = "Android app",
+        outputLabel = "Gradle Android project scaffold",
+        title = "Android app build scaffold",
+        slugPrefix = "android-app",
+    ),
+    AutomationWorkflow(
+        targetLabel = "Automation workflow",
+        outputLabel = "Automation workflow scaffold",
+        title = "Automation build scaffold",
+        slugPrefix = "automation-workflow",
+    ),
+    ScriptOrTool(
+        targetLabel = "Script or tool",
+        outputLabel = "Runnable script scaffold",
+        title = "Script build scaffold",
+        slugPrefix = "script-tool",
+    ),
+    GenericCodeProject(
+        targetLabel = "Code project",
+        outputLabel = "Source scaffold",
+        title = "Code project scaffold",
+        slugPrefix = "code-project",
+    ),
+}
+
 data class CodeGenerationProjectPlan(
     val title: String,
     val targetLabel: String,
     val workspaceLabel: String,
     val outputLabel: String,
+    val kind: CodeGenerationProjectKind,
 )
 
 internal fun buildCodeGenerationProjectPlan(
@@ -12,7 +45,7 @@ internal fun buildCodeGenerationProjectPlan(
     companionAvailable: Boolean,
 ): CodeGenerationProjectPlan {
     val normalized = prompt.lowercase()
-    val targetLabel = when {
+    val kind = when {
         containsAnyNormalized(
             normalized,
             "android",
@@ -22,7 +55,7 @@ internal fun buildCodeGenerationProjectPlan(
             "안드로이드",
             "모바일 앱",
             "앱",
-        ) -> "Android app"
+        ) -> CodeGenerationProjectKind.AndroidApp
         containsAnyNormalized(
             normalized,
             "automation",
@@ -34,7 +67,7 @@ internal fun buildCodeGenerationProjectPlan(
             "워크플로",
             "봇",
             "텔레그램",
-        ) -> "Automation workflow"
+        ) -> CodeGenerationProjectKind.AutomationWorkflow
         containsAnyNormalized(
             normalized,
             "script",
@@ -43,8 +76,8 @@ internal fun buildCodeGenerationProjectPlan(
             "스크립트",
             "툴",
             "명령줄",
-        ) -> "Script or tool"
-        else -> "Code project"
+        ) -> CodeGenerationProjectKind.ScriptOrTool
+        else -> CodeGenerationProjectKind.GenericCodeProject
     }
     val workspaceLabel = when {
         companionAvailable && containsAnyNormalized(
@@ -61,28 +94,37 @@ internal fun buildCodeGenerationProjectPlan(
         companionAvailable -> "Phone workspace first, companion optional"
         else -> "Phone local workspace"
     }
-    val outputLabel = when (targetLabel) {
-        "Android app" -> "Gradle Android project skeleton"
-        "Automation workflow" -> "Automation workflow scaffold"
-        "Script or tool" -> "Runnable script scaffold"
-        else -> "Source scaffold"
-    }
-    val title = when (targetLabel) {
-        "Android app" -> "Android app build skeleton"
-        "Automation workflow" -> "Automation build skeleton"
-        "Script or tool" -> "Script build skeleton"
-        else -> "Code project skeleton"
-    }
     return CodeGenerationProjectPlan(
-        title = title,
-        targetLabel = targetLabel,
+        title = kind.title,
+        targetLabel = kind.targetLabel,
         workspaceLabel = workspaceLabel,
-        outputLabel = outputLabel,
+        outputLabel = kind.outputLabel,
+        kind = kind,
     )
 }
 
-internal fun buildCodeGenerationSummary(plan: CodeGenerationProjectPlan): String {
-    return "Recorded a ${plan.targetLabel} request for ${plan.workspaceLabel}. Output target: ${plan.outputLabel}. Real file generation and execution are still pending implementation."
+internal fun buildCodeGenerationSummary(
+    plan: CodeGenerationProjectPlan,
+    artifact: CodeGenerationWorkspaceArtifact? = null,
+): String {
+    return if (artifact == null) {
+        "Recorded a ${plan.targetLabel} request for ${plan.workspaceLabel}. Output target: ${plan.outputLabel}. Real file generation and execution are still pending implementation."
+    } else {
+        buildString {
+            append("Generated a ")
+            append(plan.targetLabel)
+            append(" scaffold with ")
+            append(artifact.generatedFileCount)
+            append(" file(s) via ")
+            append(artifact.generatorLabel)
+            append(". Workspace: ")
+            append(compactCodeGenerationPath(artifact.workspacePath))
+            artifact.entryFilePath?.let { entryFilePath ->
+                append(". Entry file: ")
+                append(compactCodeGenerationPath(entryFilePath))
+            }
+        }
+    }
 }
 
 internal fun looksLikeCodeGenerationPrompt(normalizedPrompt: String): Boolean {

@@ -15,7 +15,8 @@ class CodeGenerationPlannerTest {
 
         assertEquals("Android app", plan.targetLabel)
         assertEquals("Phone local workspace", plan.workspaceLabel)
-        assertEquals("Gradle Android project skeleton", plan.outputLabel)
+        assertEquals("Gradle Android project scaffold", plan.outputLabel)
+        assertEquals(CodeGenerationProjectKind.AndroidApp, plan.kind)
     }
 
     @Test
@@ -28,15 +29,39 @@ class CodeGenerationPlannerTest {
     fun `code generation summary includes workspace and output`() {
         val summary = buildCodeGenerationSummary(
             CodeGenerationProjectPlan(
-                title = "Automation build skeleton",
+                title = "Automation build scaffold",
                 targetLabel = "Automation workflow",
                 workspaceLabel = "Companion-assisted workspace",
                 outputLabel = "Automation workflow scaffold",
+                kind = CodeGenerationProjectKind.AutomationWorkflow,
             ),
         )
 
         assertTrue(summary.contains("Automation workflow"))
         assertTrue(summary.contains("Companion-assisted workspace"))
         assertTrue(summary.contains("Automation workflow scaffold"))
+    }
+
+    @Test
+    fun `code generation summary includes generated artifact details`() {
+        val summary = buildCodeGenerationSummary(
+            plan = CodeGenerationProjectPlan(
+                title = "Code project scaffold",
+                targetLabel = "Code project",
+                workspaceLabel = "Phone local workspace",
+                outputLabel = "Source scaffold",
+                kind = CodeGenerationProjectKind.GenericCodeProject,
+            ),
+            artifact = CodeGenerationWorkspaceArtifact(
+                workspacePath = "/storage/emulated/0/Android/data/io.makoion/files/Documents/makoion-workspaces/codegen/demo",
+                entryFilePath = "/storage/emulated/0/Android/data/io.makoion/files/Documents/makoion-workspaces/codegen/demo/src/main.kt",
+                generatedFileCount = 5,
+                generatorLabel = "Phone local source starter",
+            ),
+        )
+
+        assertTrue(summary.contains("5 file"))
+        assertTrue(summary.contains("Phone local source starter"))
+        assertTrue(summary.contains("src/main.kt"))
     }
 }
