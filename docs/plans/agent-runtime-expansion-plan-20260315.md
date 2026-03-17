@@ -229,6 +229,29 @@ Makoion은 아래 순서로 자원을 확장한다.
 | 9 | MCP/API registry skeleton | Priority 4 외부 연동의 표준화 시작 | MCP, external API | Settings | unit + compile | 8.4, Track C/E |
 | 10 | delivery channel registry skeleton | automation 결과 전달 기반 시작 | notification, telegram, email | Settings/Dashboard | unit + compile | 4, Track D/F |
 | 11 | code generation task skeleton | 코드/앱 생성 시나리오의 첫 작업선 추가 | codegen, workspace draft | chat task | compile + task tests | 4, Track D |
+| 12 | phone-local code scaffold executor | 채팅 요청이 실제 산출물 파일로 이어지기 시작 | codegen, local workspace, artifact tracking | Chat/Dashboard | unit + compile | 4, Track D/F |
+
+### Step 12 상세 범위
+
+목표:
+- code generation 요청이 placeholder 기록에 그치지 않고 폰 로컬 workspace에 실제 scaffold 파일을 생성한다.
+
+주요 산출물:
+- app 내부 workspace root 아래에 project별 디렉터리 생성
+- `Android app / Automation workflow / Script or tool / Generic code project` 템플릿 파일 생성
+- Dashboard에서 `workspace path`, `entry file`, `generated file count`, `generator label` 확인 가능
+- chat reply와 audit log에 생성 결과를 구조적으로 남김
+
+비목표:
+- LLM 기반 실제 코드 작성 루프
+- companion remote build/execution
+- 범용 shell/exec
+- public app project export wizard
+
+검증:
+- 같은 prompt 계열에서 target별 scaffold descriptor가 일관되게 생성됨
+- Android unit test에서 slug/path/template 생성 규칙을 검증
+- `projects/apps/android`: `./gradlew :app:testDebugUnitTest :app:compileDebugKotlin` 통과
 
 ## 9. 작업 수주 템플릿
 

@@ -24,6 +24,7 @@
 | 2026-03-16 | Step 9 | 완료 | `MCP/API endpoint registry` skeleton을 추가하고, `MCP bridge / browser automation / third-party API` seed, staged/mock-ready/reset 상태, Settings 카드, resource registry Priority 4 연동, turn context endpoint summary를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `40b1372`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 | 2026-03-16 | Step 10 | 완료 | `delivery channel registry` skeleton을 추가하고, `phone local notification / Telegram / desktop companion / webhook` seed, staged/mock-ready/reset 상태, Settings 카드, resource registry 연동, automation/browser turn context delivery summary를 도입함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `668b1c4`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 | 2026-03-16 | Step 11 | 완료 | `code generation project` skeleton을 추가하고, `app / automation / script / code project` build 요청을 planner가 별도 intent로 기록해 durable project record, Dashboard status 카드, placeholder status transition을 남기도록 확장함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `4ae0f85`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
+| 2026-03-17 | Step 12 | 완료 | `phone-local code scaffold executor`를 추가하고, code generation 요청이 `Android app / automation workflow / script / generic code project` 템플릿 파일을 실제 workspace에 생성하도록 확장함. `workspace path / entry file / generated file count / generator label`을 DB와 Dashboard 카드에 반영하고, 성공 시 chat turn이 실제 scaffold 생성 결과를 답하도록 변경함 | `projects/apps/android`: `.\gradlew.bat :app:testDebugUnitTest :app:compileDebugKotlin` 통과 | 커밋 `ab72333`, 브랜치 `codex/agent-runtime-plan-20260315` 푸시 완료 |
 
 ## 현재 메모
 
@@ -39,4 +40,6 @@
 - Step 9에서는 MCP/API endpoint도 cloud drive와 같은 placeholder lifecycle로 다루기 시작했다. 아직 실제 MCP handshake, browser executor, API auth binding은 없고 `stage/mock-ready` 상태와 resource registry 반영까지만 구현했다.
 - Step 10에서는 자동화 결과 전달 경로를 별도 registry로 분리했다. 로컬 알림은 이미 connected seed로 두고, Telegram/desktop companion/webhook은 placeholder 상태로 관리한다. 실제 delivery worker와 per-channel credential binding은 후속 단계다.
 - Step 11에서는 `만들어줘 / 구축해줘 / 앱/자동화/스크립트 개발` 요청을 일반 답변이 아니라 별도 code generation project line으로 남기기 시작했다. 실제 코드 생성/파일 편집 executor는 아직 없고, 이번 단계는 planner 분리와 durable dashboard tracking까지다.
-- 다음 구현 후보는 `real executor wiring`, `workspace/file patch loop`, `browser/MCP/action execution` 후속 단계다.
+- Step 12에서는 app Documents workspace fallback 아래에 실제 scaffold 파일을 만드는 on-device executor를 추가했다. code generation project는 이제 placeholder만 남기지 않고 생성된 파일 수와 entry file을 추적한다. 아직 provider-backed multi-file edit loop, workspace export/share, companion remote build는 후속 단계다.
+- WSL `./gradlew`는 로컬 JDK가 `--enable-native-access=ALL-UNNAMED`를 받지 못해 실패했다. 검증은 Windows `gradlew.bat` 경로로 계속 진행했다.
+- 다음 구현 후보는 `workspace/file patch loop`, `browser/MCP/action execution`, `delivery worker` 후속 단계다.
