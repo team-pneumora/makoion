@@ -59,17 +59,38 @@ class ScheduledAutomationCoordinator(
         return executeAutomation(automationId, manualTrigger)
     }
 
-    suspend fun syncScheduledWork() {
+    suspend fun syncScheduledWork(): ScheduledAutomationSyncSnapshot {
         scheduledAutomationRepository.refresh()
-        scheduledAutomationRepository.automations.value.forEach { automation ->
+        val automations = scheduledAutomationRepository.automations.value
+        var snapshot = ScheduledAutomationSyncSnapshot(
+            automationCount = automations.size,
+        )
+        automations.forEach { automation ->
             if (automation.status == ScheduledAutomationStatus.Active) {
+                snapshot = snapshot.copy(
+                    activeCount = snapshot.activeCount + 1,
+                )
                 val schedule = scheduleFor(automation)
                 enqueueScheduledWork(automation.id, schedule)
-                scheduledAutomationRepository.updateScheduleWindow(
-                    automationId = automation.id,
-                    nextRunAtEpochMillis = schedule.initialRunAtEpochMillis,
-                )
+                if (automation.nextRunAtEpochMillis != schedule.initialRunAtEpochMillis) {
+                    scheduledAutomationRepository.updateScheduleWindow(
+                        automationId = automation.id,
+                        nextRunAtEpochMillis = schedule.initialRunAtEpochMillis,
+                    )
+                    snapshot = snapshot.copy(
+                        repairedScheduleWindowCount = snapshot.repairedScheduleWindowCount + 1,
+                    )
+                }
             } else {
+                snapshot = when (automation.status) {
+                    ScheduledAutomationStatus.Planned -> snapshot.copy(
+                        plannedCount = snapshot.plannedCount + 1,
+                    )
+                    ScheduledAutomationStatus.Paused -> snapshot.copy(
+                        pausedCount = snapshot.pausedCount + 1,
+                    )
+                    ScheduledAutomationStatus.Active -> snapshot
+                }
                 WorkManager.getInstance(context).cancelUniqueWork(
                     ScheduledAutomationWorker.workName(automation.id),
                 )
@@ -78,9 +99,13 @@ class ScheduledAutomationCoordinator(
                         automationId = automation.id,
                         nextRunAtEpochMillis = null,
                     )
+                    snapshot = snapshot.copy(
+                        repairedScheduleWindowCount = snapshot.repairedScheduleWindowCount + 1,
+                    )
                 }
             }
         }
+        return snapshot
     }
 
     suspend fun executeAutomation(
@@ -231,3 +256,11 @@ enum class AutomationDeliveryMode(
     LocalNotification("delivered"),
     LocalFallback("local_fallback"),
 }
+
+data class ScheduledAutomationSyncSnapshot(
+    val automationCount: Int = 0,
+    val activeCount: Int = 0,
+    val plannedCount: Int = 0,
+    val pausedCount: Int = 0,
+    val repairedScheduleWindowCount: Int = 0,
+)

@@ -361,7 +361,6 @@ class ShellViewModel(
     init {
         viewModelScope.launch {
             appContainer.shellRecoveryCoordinator.start()
-            appContainer.scheduledAutomationCoordinator.start()
         }
     }
 

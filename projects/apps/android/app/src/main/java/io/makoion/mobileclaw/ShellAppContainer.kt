@@ -147,6 +147,8 @@ class ShellAppContainer(
         auditTrailRepository = auditTrailRepository,
         devicePairingRepository = devicePairingRepository,
         organizeExecutionRepository = organizeExecutionRepository,
+        scheduledAutomationRepository = scheduledAutomationRepository,
+        scheduledAutomationCoordinator = scheduledAutomationCoordinator,
         transferBridgeCoordinator = transferBridgeCoordinator,
     )
 }

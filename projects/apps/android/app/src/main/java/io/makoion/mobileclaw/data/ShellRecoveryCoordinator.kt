@@ -25,7 +25,7 @@ data class ShellRecoveryState(
     val triggerLabel: String? = null,
     val updatedAtLabel: String? = null,
     val summary: String = "Foreground recovery has not run yet.",
-    val detail: String = "The shell refreshes approvals, tasks, devices, organize executions, audit events, and transfer recovery whenever the app comes back to the foreground.",
+    val detail: String = "The shell refreshes approvals, tasks, scheduled automations, devices, organize executions, audit events, and transfer recovery whenever the app comes back to the foreground.",
 )
 
 class ShellRecoveryCoordinator(
@@ -35,6 +35,8 @@ class ShellRecoveryCoordinator(
     private val auditTrailRepository: AuditTrailRepository,
     private val devicePairingRepository: DevicePairingRepository,
     private val organizeExecutionRepository: OrganizeExecutionRepository,
+    private val scheduledAutomationRepository: ScheduledAutomationRepository,
+    private val scheduledAutomationCoordinator: ScheduledAutomationCoordinator,
     private val transferBridgeCoordinator: TransferBridgeCoordinator,
 ) : DefaultLifecycleObserver {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -76,18 +78,22 @@ class ShellRecoveryCoordinator(
             triggerLabel = trigger.label,
             updatedAtLabel = relativeTimeLabel(now),
             summary = "${trigger.label} recovery is refreshing shell state.",
-            detail = "Refreshing approvals, tasks, paired devices, organize executions, audit events, and transfer recovery.",
+            detail = "Refreshing approvals, tasks, scheduled automations, paired devices, organize executions, audit events, and transfer recovery.",
         )
         recoveryJob?.cancel()
         recoveryJob = scope.launch {
             val failures = mutableListOf<String>()
             var transferRecoverySnapshot = TransferRecoverySnapshot()
             var taskRecoverySnapshot = AgentTaskRecoverySnapshot()
+            var automationSyncSnapshot = ScheduledAutomationSyncSnapshot()
             refreshStep("approvals", failures) {
                 approvalInboxRepository.refresh()
             }
             refreshStep("tasks", failures) {
                 agentTaskRepository.refresh()
+            }
+            refreshStep("automations", failures) {
+                automationSyncSnapshot = scheduledAutomationCoordinator.syncScheduledWork()
             }
             refreshStep("devices", failures) {
                 devicePairingRepository.refresh()
@@ -118,6 +124,7 @@ class ShellRecoveryCoordinator(
             val recoveryDetails = buildRecoveryDetails(
                 transferRecoverySnapshot = transferRecoverySnapshot,
                 taskRecoverySnapshot = taskRecoverySnapshot,
+                automationSyncSnapshot = automationSyncSnapshot,
             )
             val completedAt = System.currentTimeMillis()
             if (failures.isEmpty()) {
@@ -125,7 +132,7 @@ class ShellRecoveryCoordinator(
                     status = ShellRecoveryStatus.Success,
                     triggerLabel = trigger.label,
                     updatedAtLabel = relativeTimeLabel(completedAt),
-                    summary = "${trigger.label} recovery refreshed approvals, tasks, devices, organize, audit, and transfer recovery.",
+                    summary = "${trigger.label} recovery refreshed approvals, tasks, automations, devices, organize, audit, and transfer recovery.",
                     detail = recoveryDetails,
                 )
                 _state.value = successState
@@ -177,9 +184,11 @@ class ShellRecoveryCoordinator(
     private fun buildRecoveryDetails(
         transferRecoverySnapshot: TransferRecoverySnapshot,
         taskRecoverySnapshot: AgentTaskRecoverySnapshot,
+        automationSyncSnapshot: ScheduledAutomationSyncSnapshot,
     ): String {
         val approvalCount = approvalInboxRepository.items.value.size
         val taskCount = agentTaskRepository.tasks.value.size
+        val automationCount = scheduledAutomationRepository.automations.value.size
         val pairedDeviceCount = devicePairingRepository.pairedDevices.value.size
         val auditCount = auditTrailRepository.events.value.size
         val organizeState = if (organizeExecutionRepository.latest.value == null) {
@@ -193,12 +202,16 @@ class ShellRecoveryCoordinator(
             append(" approval(s), ")
             append(taskCount)
             append(" task(s), ")
+            append(automationCount)
+            append(" automation(s), ")
             append(pairedDeviceCount)
             append(" paired device(s), ")
             append(organizeState)
             append(", and ")
             append(auditCount)
             append(" audit event(s). ")
+            append(buildAutomationRecoverySummary(automationSyncSnapshot))
+            append(" ")
             append(buildTaskRecoverySummary(taskRecoverySnapshot))
             append(" ")
             append(
@@ -206,6 +219,49 @@ class ShellRecoveryCoordinator(
                     transferRecoverySnapshot = transferRecoverySnapshot,
                 ),
             )
+        }
+    }
+
+    private fun buildAutomationRecoverySummary(
+        automationSyncSnapshot: ScheduledAutomationSyncSnapshot,
+    ): String {
+        return when {
+            automationSyncSnapshot.automationCount == 0 ->
+                "Automation recovery found no scheduled automations."
+            else -> buildString {
+                append("Automation recovery loaded ")
+                append(automationSyncSnapshot.automationCount)
+                append(" automation(s)")
+                val statusCounts = buildList {
+                    if (automationSyncSnapshot.activeCount > 0) {
+                        add("${automationSyncSnapshot.activeCount} active")
+                    }
+                    if (automationSyncSnapshot.plannedCount > 0) {
+                        add("${automationSyncSnapshot.plannedCount} planned")
+                    }
+                    if (automationSyncSnapshot.pausedCount > 0) {
+                        add("${automationSyncSnapshot.pausedCount} paused")
+                    }
+                }
+                if (statusCounts.isNotEmpty()) {
+                    append(" (")
+                    append(statusCounts.joinToString(", "))
+                    append(")")
+                }
+                when {
+                    automationSyncSnapshot.repairedScheduleWindowCount > 0 -> {
+                        append(" and repaired ")
+                        append(automationSyncSnapshot.repairedScheduleWindowCount)
+                        append(" schedule window(s).")
+                    }
+                    automationSyncSnapshot.activeCount > 0 -> {
+                        append(" and confirmed ")
+                        append(automationSyncSnapshot.activeCount)
+                        append(" active schedule(s).")
+                    }
+                    else -> append(".")
+                }
+            }
         }
     }
 

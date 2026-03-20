@@ -160,3 +160,42 @@
 - `where.exe git` returned no result.
 - A recursive scan under `C:\Program Files` and `C:\Program Files (x86)` did not locate a usable `git.exe`.
 - Result: code changes are saved locally, but commit/push could not be executed in this session.
+
+## Follow-up Session: Shell Recovery Automation Hardening
+
+### Scope
+
+- Align foreground/manual recovery with the new scheduled automation runtime.
+- Remove duplicate startup scheduling so one recovery path owns automation resync.
+- Revalidate the recovery path on the installed emulator app.
+
+### Changes applied
+
+- Extended `ShellRecoveryCoordinator` to include scheduled automation refresh and WorkManager resync.
+- Added recovery detail reporting for automation counts and repaired schedule windows.
+- Wired the recovery coordinator in `ShellAppContainer` with the scheduled automation repository/coordinator dependencies.
+- Removed the extra `scheduledAutomationCoordinator.start()` call from `ShellViewModel` so app launch no longer kicks automation sync from two separate paths.
+- Expanded `ScheduledAutomationFlowTest` to trigger manual recovery after activation and assert:
+  - recovery finishes in `Success`
+  - recovery detail mentions automation reconciliation
+  - the active automation still has a persisted `next_run_at`
+
+### Emulator validation results
+
+- `:app:assembleDebug` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest` passed after the recovery hardening patch.
+- The installed app now validates this full path on the emulator:
+  1. create automation from chat
+  2. activate schedule
+  3. manual recovery request
+  4. recovery success state with automation detail
+  5. manual run reflected in Dashboard
+
+### Current blocker
+
+- Git remote write access is still blocked in this Codex session.
+- `git ls-remote` succeeds, but `git push` requires GitHub credentials and fails with:
+  - `fatal: Cannot prompt because user interactivity has been disabled.`
+  - `fatal: could not read Username for 'https://github.com': terminal prompts disabled`
+- Local commits can be created, but push requires the operator to authenticate GitHub in this environment first.

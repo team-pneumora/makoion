@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import io.makoion.mobileclaw.data.ShellRecoveryStatus
 import io.makoion.mobileclaw.MainActivity
 import io.makoion.mobileclaw.MobileClawApplication
 import io.makoion.mobileclaw.data.ShellDatabaseHelper
@@ -70,6 +71,30 @@ class ScheduledAutomationFlowTest {
             composeRule.onAllNodesWithText("Pause schedule", useUnmergedTree = true)
                 .fetchSemanticsNodes().isNotEmpty()
         }
+
+        application.appContainer.shellRecoveryCoordinator.requestManualRecovery()
+
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            val recoveryState = application.appContainer.shellRecoveryCoordinator.state.value
+            recoveryState.triggerLabel == "Manual" && recoveryState.status != ShellRecoveryStatus.Running
+        }
+
+        val recoveryState = application.appContainer.shellRecoveryCoordinator.state.value
+        assertTrue(
+            "Expected manual recovery to finish successfully after scheduled automation activation.",
+            recoveryState.status == ShellRecoveryStatus.Success,
+        )
+        assertTrue(
+            "Expected recovery details to mention automation reconciliation.",
+            recoveryState.detail.contains("Automation recovery", ignoreCase = true),
+        )
+
+        val recoveredAutomation = readAutomationRecord(prompt)
+        assertNotNull("Expected the scheduled automation to remain persisted after recovery.", recoveredAutomation)
+        assertTrue(
+            "Expected recovery to preserve or recompute a next-run timestamp for the active automation.",
+            recoveredAutomation!!.nextRunAtEpochMillis != null,
+        )
 
         runBlocking {
             application.appContainer.scheduledAutomationCoordinator.runAutomationNow(automationId)
