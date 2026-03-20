@@ -7,6 +7,11 @@ import android.database.sqlite.SQLiteOpenHelper
 class ShellDatabaseHelper(
     context: Context,
 ) : SQLiteOpenHelper(context, databaseName, null, databaseVersion) {
+    fun ensureMcpSkillSchema() {
+        val db = writableDatabase
+        createMcpSkillTables(db)
+    }
+
     fun ensureScheduledAutomationSchema() {
         val db = writableDatabase
         createScheduledAutomationTables(db)
@@ -38,6 +43,7 @@ class ShellDatabaseHelper(
         createDeliveryChannelTables(db)
         createCodeGenerationProjectTables(db)
         createScheduledAutomationTables(db)
+        createMcpSkillTables(db)
     }
 
     override fun onUpgrade(
@@ -315,6 +321,9 @@ class ShellDatabaseHelper(
                 columnName = "next_run_at",
                 columnDefinition = "INTEGER",
             )
+        }
+        if (oldVersion < 26) {
+            createMcpSkillTables(db)
         }
     }
 
@@ -700,6 +709,31 @@ class ShellDatabaseHelper(
         )
     }
 
+    private fun createMcpSkillTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_skill_catalog (
+                skill_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                version_label TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL DEFAULT '[]',
+                source_endpoint_id TEXT NOT NULL,
+                source_label TEXT NOT NULL,
+                status TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mcp_skill_catalog_updated_at
+            ON mcp_skill_catalog(updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
     private fun createScheduledAutomationTables(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -761,6 +795,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 25
+        private const val databaseVersion = 26
     }
 }

@@ -4,15 +4,15 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import io.makoion.mobileclaw.data.AgentTurnContext
 import io.makoion.mobileclaw.data.ShellRecoveryStatus
 import io.makoion.mobileclaw.MainActivity
 import io.makoion.mobileclaw.MobileClawApplication
 import io.makoion.mobileclaw.data.ShellDatabaseHelper
+import io.makoion.mobileclaw.data.resolveAgentModelPreference
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertNotNull
@@ -41,11 +41,13 @@ class ScheduledAutomationFlowTest {
         val prompt = "Every morning send a notification digest automation"
         val initialAutomationCount = countAutomationRecords(prompt)
 
-        composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("Record daily automation", useUnmergedTree = true)
-                .fetchSemanticsNodes().isNotEmpty()
+        runBlocking {
+            application.appContainer.agentTaskEngine.submitTurn(
+                threadId = "thread-instrumentation-automation",
+                prompt = prompt,
+                context = buildTurnContext(),
+            )
         }
-        composeRule.onNodeWithText("Record daily automation", useUnmergedTree = true).performClick()
 
         composeRule.waitUntil(timeoutMillis = 15_000) {
             countAutomationRecords(prompt) > initialAutomationCount
@@ -169,4 +171,31 @@ class ScheduledAutomationFlowTest {
         get() = InstrumentationRegistry.getInstrumentation()
             .targetContext
             .applicationContext as MobileClawApplication
+
+    private suspend fun buildTurnContext(): AgentTurnContext {
+        val appContainer = application.appContainer
+        val fileIndexState = appContainer.fileIndexRepository.refreshIndex()
+        appContainer.approvalInboxRepository.refresh()
+        appContainer.agentTaskRepository.refresh()
+        appContainer.auditTrailRepository.refresh()
+        appContainer.devicePairingRepository.refresh()
+        appContainer.cloudDriveConnectionRepository.refresh()
+        appContainer.externalEndpointRepository.refresh()
+        appContainer.deliveryChannelRepository.refresh()
+        appContainer.scheduledAutomationRepository.refresh()
+        return AgentTurnContext(
+            fileIndexState = fileIndexState,
+            approvals = appContainer.approvalInboxRepository.items.value,
+            tasks = appContainer.agentTaskRepository.tasks.value,
+            auditEvents = appContainer.auditTrailRepository.events.value,
+            pairedDevices = appContainer.devicePairingRepository.pairedDevices.value,
+            selectedTargetDeviceId = null,
+            cloudDriveConnections = appContainer.cloudDriveConnectionRepository.connections.value,
+            modelPreference = resolveAgentModelPreference(appContainer.modelProviderSettingsRepository.profiles.value),
+            externalEndpoints = appContainer.externalEndpointRepository.profiles.value,
+            deliveryChannels = appContainer.deliveryChannelRepository.profiles.value,
+            scheduledAutomations = appContainer.scheduledAutomationRepository.automations.value,
+            selectedFileId = null,
+        )
+    }
 }

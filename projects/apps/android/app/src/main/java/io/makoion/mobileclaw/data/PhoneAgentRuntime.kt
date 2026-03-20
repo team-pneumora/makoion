@@ -50,7 +50,10 @@ class LocalPhoneAgentRuntime(
     private val approvalInboxRepository: ApprovalInboxRepository,
     private val auditTrailRepository: AuditTrailRepository,
     private val devicePairingRepository: DevicePairingRepository,
+    private val externalEndpointRepository: ExternalEndpointRegistryRepository,
+    private val mcpSkillRepository: McpSkillRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
+    private val scheduledAutomationCoordinator: ScheduledAutomationCoordinator,
     private val codeGenerationProjectRepository: CodeGenerationProjectRepository,
     private val codeGenerationWorkspaceExecutor: CodeGenerationWorkspaceExecutor,
     private val phoneAgentActionCoordinator: PhoneAgentActionCoordinator,
@@ -70,11 +73,17 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
             AgentIntent.PlanScheduledAutomation -> planScheduledAutomation(trimmedPrompt, context)
+            is AgentIntent.ActivateScheduledAutomation -> activateScheduledAutomation(trimmedPrompt, context, intent.automationId)
+            is AgentIntent.PauseScheduledAutomation -> pauseScheduledAutomation(trimmedPrompt, context, intent.automationId)
+            is AgentIntent.RunScheduledAutomationNow -> runScheduledAutomationNow(trimmedPrompt, context, intent.automationId)
             AgentIntent.PlanCodeGeneration -> planCodeGeneration(trimmedPrompt, context)
             AgentIntent.PlanBrowserResearch -> planBrowserResearch(trimmedPrompt, context)
             AgentIntent.SummarizeIndexedFiles -> summarizeIndexedFiles(trimmedPrompt, context)
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
             AgentIntent.TransferIndexedFiles -> transferIndexedFiles(trimmedPrompt, context)
+            AgentIntent.ConnectMcpBridge -> connectMcpBridge(trimmedPrompt)
+            AgentIntent.SyncMcpSkills -> syncMcpSkills(trimmedPrompt, context)
+            AgentIntent.ShowMcpSkills -> showMcpSkills(trimmedPrompt)
             AgentIntent.ProbeCompanionHealth -> probeCompanionHealth(trimmedPrompt, context)
             AgentIntent.SendCompanionSessionNotification -> sendCompanionSessionNotification(trimmedPrompt, context)
             is AgentIntent.OpenCompanionTarget -> openCompanionTarget(trimmedPrompt, context, intent.targetKind)
@@ -510,6 +519,276 @@ class LocalPhoneAgentRuntime(
                 "Recorded a ${record.scheduleLabel} / ${record.deliveryLabel} automation."
             },
             taskStatus = AgentTaskStatus.Succeeded,
+        )
+    }
+
+    private suspend fun activateScheduledAutomation(
+        prompt: String,
+        context: AgentTurnContext,
+        automationId: String?,
+    ): AgentTurnResult {
+        val automation = resolveScheduledAutomation(prompt, context, automationId)
+        if (automation == null) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "활성화할 automation을 찾지 못했어요. 먼저 반복 작업을 기록하거나 Dashboard에서 automation 상태를 확인해 주세요."
+                } else {
+                    "I could not find an automation to activate. Record a recurring task first or check Dashboard."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = scheduledAutomationActivateActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "활성화할 automation이 없습니다."
+                } else {
+                    "No scheduled automation matched the activation request."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+        val updated = scheduledAutomationCoordinator.activateAutomation(automation.id) ?: automation
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append("${updated.title} automation을 활성화했어요. ")
+                    append("다음 실행은 ${updated.nextRunAtLabel ?: "곧"} 예정입니다. ")
+                    append("이후에는 채팅에서 '지금 실행해' 또는 '일시정지해'라고 이어서 제어할 수 있습니다.")
+                }
+            } else {
+                buildString {
+                    append("I activated ${updated.title}. ")
+                    append("The next run is ${updated.nextRunAtLabel ?: "scheduled soon"}. ")
+                    append("You can keep controlling it from chat by asking me to run it now or pause it.")
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = scheduledAutomationActivateActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "채팅에서 automation 일정을 활성화했습니다."
+            } else {
+                "Activated the scheduled automation from chat."
+            },
+        )
+    }
+
+    private suspend fun pauseScheduledAutomation(
+        prompt: String,
+        context: AgentTurnContext,
+        automationId: String?,
+    ): AgentTurnResult {
+        val automation = resolveScheduledAutomation(prompt, context, automationId)
+        if (automation == null) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "일시정지할 automation을 찾지 못했어요."
+                } else {
+                    "I could not find an automation to pause."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = scheduledAutomationPauseActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "일시정지할 automation이 없습니다."
+                } else {
+                    "No scheduled automation matched the pause request."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+        val updated = scheduledAutomationCoordinator.pauseAutomation(automation.id) ?: automation
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "${updated.title} automation을 일시정지했어요. 다시 시작하려면 채팅에서 활성화해 달라고 말해 주세요."
+            } else {
+                "I paused ${updated.title}. Ask me in chat to activate it again whenever you want to resume the schedule."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = scheduledAutomationPauseActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "채팅에서 automation 일정을 일시정지했습니다."
+            } else {
+                "Paused the scheduled automation from chat."
+            },
+        )
+    }
+
+    private suspend fun runScheduledAutomationNow(
+        prompt: String,
+        context: AgentTurnContext,
+        automationId: String?,
+    ): AgentTurnResult {
+        val automation = resolveScheduledAutomation(prompt, context, automationId)
+        if (automation == null) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "즉시 실행할 automation을 찾지 못했어요."
+                } else {
+                    "I could not find an automation to run right now."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = scheduledAutomationRunNowActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "즉시 실행할 automation이 없습니다."
+                } else {
+                    "No scheduled automation matched the immediate run request."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+        val updated = scheduledAutomationCoordinator.runAutomationNow(automation.id) ?: automation
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append("${updated.title} automation을 바로 실행했어요. ")
+                    append("최근 실행 시각은 ${updated.lastRunAtLabel ?: "방금"}이고, 다음 일정은 ${updated.nextRunAtLabel ?: "현재 상태 기준으로 유지"} 입니다.")
+                }
+            } else {
+                buildString {
+                    append("I ran ${updated.title} immediately. ")
+                    append("The last run was ${updated.lastRunAtLabel ?: "just now"}, and the next schedule is ${updated.nextRunAtLabel ?: "preserved from the current state"}.")
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = scheduledAutomationRunNowActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "채팅에서 automation을 즉시 실행했습니다."
+            } else {
+                "Executed the scheduled automation immediately from chat."
+            },
+        )
+    }
+
+    private suspend fun connectMcpBridge(
+        prompt: String,
+    ): AgentTurnResult {
+        externalEndpointRepository.markConnected(mcpBridgeEndpointId)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "MCP bridge를 mock-ready 상태로 연결했어요. 이제 채팅에서 MCP skill 업데이트를 요청하면 추가 스킬 카탈로그를 동기화할 수 있습니다."
+            } else {
+                "I marked the MCP bridge as mock-ready. You can now ask me in chat to update MCP skills and I will sync the staged skill catalog."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = mcpBridgeConnectActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "채팅에서 MCP bridge 연결 상태를 갱신했습니다."
+            } else {
+                "Marked the MCP bridge as connected from chat."
+            },
+        )
+    }
+
+    private suspend fun syncMcpSkills(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val mcpEndpoint = context.externalEndpoints.firstOrNull { it.endpointId == mcpBridgeEndpointId }
+        val syncResult = mcpSkillRepository.syncFromMcpBridge(mcpEndpoint)
+        val installedSkills = mcpSkillRepository.skills.value
+        val topSkills = installedSkills.take(3)
+        val failedToSync = syncResult.updatedSkillCount == 0
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append(
+                        if (failedToSync) {
+                            "아직 MCP skill을 동기화하지 못했어요. ${syncResult.summary}"
+                        } else {
+                            "${syncResult.sourceLabel ?: "MCP bridge"}에서 MCP skill ${syncResult.updatedSkillCount}개를 동기화했어요. "
+                        },
+                    )
+                    if (topSkills.isNotEmpty()) {
+                        append("현재 스킬은 ")
+                        append(topSkills.joinToString { "${it.title} (${it.versionLabel})" })
+                        append(" 순서로 기록돼 있습니다.")
+                    } else {
+                        append("먼저 MCP bridge를 연결한 뒤 다시 요청해 주세요.")
+                    }
+                }
+            } else {
+                buildString {
+                    append(
+                        if (failedToSync) {
+                            "I could not sync MCP skills yet. ${syncResult.summary}"
+                        } else {
+                            "I synced ${syncResult.updatedSkillCount} MCP skill(s) from ${syncResult.sourceLabel ?: "the MCP bridge"}. "
+                        },
+                    )
+                    if (topSkills.isNotEmpty()) {
+                        append("The current catalog includes ")
+                        append(topSkills.joinToString { "${it.title} (${it.versionLabel})" })
+                        append(".")
+                    } else {
+                        append("Connect the MCP bridge first and ask again.")
+                    }
+                }
+            },
+            destination = if (failedToSync) AgentDestination.Settings else AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = mcpSkillSyncActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                if (failedToSync) {
+                    "MCP skill 동기화가 아직 준비되지 않았습니다."
+                } else {
+                    "채팅에서 MCP skill 카탈로그를 동기화했습니다."
+                }
+            } else {
+                if (failedToSync) {
+                    "The MCP skill sync is not ready yet."
+                } else {
+                    "Synced the MCP skill catalog from chat."
+                }
+            },
+            taskStatus = if (failedToSync) AgentTaskStatus.WaitingResource else AgentTaskStatus.Succeeded,
+        )
+    }
+
+    private suspend fun showMcpSkills(
+        prompt: String,
+    ): AgentTurnResult {
+        mcpSkillRepository.refresh()
+        val installedSkills = mcpSkillRepository.skills.value
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                if (installedSkills.isEmpty()) {
+                    "아직 설치된 MCP skill이 없습니다. 먼저 MCP bridge를 연결하고 skill 업데이트를 요청해 주세요."
+                } else {
+                    buildString {
+                        append("현재 MCP skill ${installedSkills.size}개가 설치되어 있어요.\n")
+                        append(
+                            installedSkills.joinToString(separator = "\n") { skill ->
+                                "- ${skill.title} ${skill.versionLabel}: ${skill.summary}"
+                            },
+                        )
+                    }
+                }
+            } else {
+                if (installedSkills.isEmpty()) {
+                    "There are no installed MCP skills yet. Connect the MCP bridge and ask me to update MCP skills first."
+                } else {
+                    buildString {
+                        append("There are ${installedSkills.size} installed MCP skill(s).\n")
+                        append(
+                            installedSkills.joinToString(separator = "\n") { skill ->
+                                "- ${skill.title} ${skill.versionLabel}: ${skill.summary}"
+                            },
+                        )
+                    }
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = mcpSkillShowActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "현재 MCP skill 카탈로그를 요약했습니다."
+            } else {
+                "Summarized the installed MCP skills."
+            },
         )
     }
 
@@ -1220,6 +1499,7 @@ class LocalPhoneAgentRuntime(
         val stagedDeliveryChannels = context.deliveryChannels.count {
             it.status == DeliveryChannelStatus.Staged
         }
+        val installedMcpSkills = mcpSkillRepository.skills.value.size
         val preferredProviderLabel = context.modelPreference.preferredProviderLabel?.let { provider ->
             val model = context.modelPreference.preferredModel
             if (model.isNullOrBlank()) {
@@ -1235,7 +1515,7 @@ class LocalPhoneAgentRuntime(
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열한 가지예요.\n")
+                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열세 가지예요.\n")
                     append("1. 인덱싱된 파일 요약 (${indexedCount}개 감지)\n")
                     append("2. 파일 정리 dry-run 계획 생성 후 승인 요청\n")
                     append("3. companion 전송 approval 생성\n")
@@ -1246,16 +1526,19 @@ class LocalPhoneAgentRuntime(
                     append("8. companion health snapshot 새로고침\n")
                     append("9. desktop companion notification 보내기\n")
                     append("10. allowlisted desktop workflow 실행\n")
-                    append("11. code/app/automation starter scaffold 생성\n")
+                    append("11. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
+                    append("12. MCP bridge 연결 및 MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
+                    append("13. code/app/automation starter scaffold 생성\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
                     append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
                     append("delivery channel은 staged ${stagedDeliveryChannels}개, mock-ready ${connectedDeliveryChannels}개입니다.\n")
+                    append("예시: '최근 automation 활성화해', '지금 automation 실행해', 'MCP skill 업데이트해'.\n")
                     append("기본 모델 선호도는 $preferredProviderLabel 입니다.")
                 }
             } else {
                 buildString {
-                    append("This first chat loop can do eleven things right now.\n")
+                    append("This first chat loop can do thirteen things right now.\n")
                     append("1. Summarize indexed files ($indexedCount detected)\n")
                     append("2. Create an organize dry-run and submit it for approval\n")
                     append("3. Create a companion transfer approval\n")
@@ -1266,11 +1549,14 @@ class LocalPhoneAgentRuntime(
                     append("8. Refresh the companion health snapshot\n")
                     append("9. Send a desktop companion notification\n")
                     append("10. Run an allowlisted desktop workflow\n")
-                    append("11. Generate a code, app, or automation starter scaffold\n")
+                    append("11. Record, activate, pause, and run scheduled automations\n")
+                    append("12. Connect the MCP bridge and update MCP skills ($installedMcpSkills installed)\n")
+                    append("13. Generate a code, app, or automation starter scaffold\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
                     append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
                     append("Delivery channels staged: $stagedDeliveryChannels, mock-ready: $connectedDeliveryChannels.\n")
+                    append("Examples: 'activate the latest automation', 'run the latest automation now', 'update MCP skills'.\n")
                     append("The current model preference is $preferredProviderLabel.")
                 }
             },
@@ -1639,6 +1925,7 @@ class LocalPhoneAgentRuntime(
         val normalized = prompt.lowercase()
         val approvalId = approvalIdFromPrompt(prompt)
         val taskId = taskIdFromPrompt(prompt)
+        val automationId = automationIdFromPrompt(prompt)
         val wantsOpen = containsAny(
             normalized,
             "open",
@@ -1677,6 +1964,77 @@ class LocalPhoneAgentRuntime(
             "다시 실행",
             "다시 해",
         )
+        val mentionsAutomation = containsAny(
+            normalized,
+            "automation",
+            "automations",
+            "schedule",
+            "scheduled",
+            "반복",
+            "자동화",
+        )
+        val wantsRunAutomationNow = mentionsAutomation && containsAny(
+            normalized,
+            "run automation",
+            "run the automation",
+            "run latest automation",
+            "run the latest automation",
+            "automation now",
+            "run schedule now",
+            "지금 automation",
+            "자동화 실행",
+            "반복 작업 실행",
+        )
+        val wantsPauseAutomation = mentionsAutomation && containsAny(
+            normalized,
+            "pause automation",
+            "pause the automation",
+            "stop automation",
+            "disable automation",
+            "일시정지",
+            "멈춰",
+            "중지",
+        )
+        val wantsActivateAutomation = mentionsAutomation && containsAny(
+            normalized,
+            "activate automation",
+            "start automation",
+            "resume automation",
+            "enable automation",
+            "automation on",
+            "활성화",
+            "다시 켜",
+            "재개",
+        )
+        val wantsConnectMcpBridge = containsAny(
+            normalized,
+            "connect mcp bridge",
+            "setup mcp bridge",
+            "enable mcp bridge",
+            "mcp bridge 연결",
+            "mcp 연결",
+            "mcp 브리지 연결",
+        )
+        val wantsSyncMcpSkills = containsAny(
+            normalized,
+            "update mcp skills",
+            "sync mcp skills",
+            "install mcp skills",
+            "refresh mcp skills",
+            "mcp skill 업데이트",
+            "mcp 스킬 업데이트",
+            "mcp skill 동기화",
+            "mcp 스킬 동기화",
+        )
+        val wantsShowMcpSkills = containsAny(
+            normalized,
+            "show mcp skills",
+            "list mcp skills",
+            "what mcp skills",
+            "mcp skill 목록",
+            "mcp 스킬 목록",
+            "mcp 스킬 보여",
+        )
         return when {
             wantsDenyAction ->
                 plannerOutput(
@@ -1704,6 +2062,60 @@ class LocalPhoneAgentRuntime(
                     summary = "Retry a previously failed or waiting task from chat.",
                     capabilities = listOf("task.retry"),
                     resources = listOf("task.runtime"),
+                )
+            wantsRunAutomationNow ->
+                plannerOutput(
+                    intent = AgentIntent.RunScheduledAutomationNow(automationId),
+                    auditResult = "scheduled_automation_run_now",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Run a scheduled automation immediately from the chat loop.",
+                    capabilities = listOf("automation.schedule.run"),
+                    resources = listOf("task.runtime", "notifications.delivery"),
+                )
+            wantsPauseAutomation ->
+                plannerOutput(
+                    intent = AgentIntent.PauseScheduledAutomation(automationId),
+                    auditResult = "scheduled_automation_paused",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Pause a scheduled automation from chat.",
+                    capabilities = listOf("automation.schedule.pause"),
+                    resources = listOf("task.runtime"),
+                )
+            wantsActivateAutomation ->
+                plannerOutput(
+                    intent = AgentIntent.ActivateScheduledAutomation(automationId),
+                    auditResult = "scheduled_automation_activated",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Activate a scheduled automation from chat.",
+                    capabilities = listOf("automation.schedule.activate"),
+                    resources = listOf("task.runtime"),
+                )
+            wantsSyncMcpSkills ->
+                plannerOutput(
+                    intent = AgentIntent.SyncMcpSkills,
+                    auditResult = "mcp_skills_synced",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Sync the MCP skill catalog from the connected MCP bridge.",
+                    capabilities = listOf("mcp.skills.sync"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            wantsShowMcpSkills ->
+                plannerOutput(
+                    intent = AgentIntent.ShowMcpSkills,
+                    auditResult = "mcp_skills_listed",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Summarize the installed MCP skill catalog.",
+                    capabilities = listOf("mcp.skills.sync"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            wantsConnectMcpBridge ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectMcpBridge,
+                    auditResult = "mcp_bridge_connected",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Mark the MCP bridge as mock-ready from the chat loop.",
+                    capabilities = listOf("mcp.connect"),
+                    resources = listOf("mcp.api_endpoints"),
                 )
             containsAny(
                 normalized,
@@ -1930,6 +2342,21 @@ class LocalPhoneAgentRuntime(
         }
     }
 
+    private fun resolveScheduledAutomation(
+        prompt: String,
+        context: AgentTurnContext,
+        automationId: String?,
+    ): ScheduledAutomationRecord? {
+        automationId?.let { explicitId ->
+            context.scheduledAutomations.firstOrNull { it.id == explicitId }?.let { return it }
+        }
+        val normalized = prompt.lowercase()
+        context.scheduledAutomations.firstOrNull { automation ->
+            normalized.contains(automation.title.lowercase())
+        }?.let { return it }
+        return context.scheduledAutomations.firstOrNull()
+    }
+
     private fun plannerOutput(
         intent: AgentIntent,
         auditResult: String,
@@ -1983,6 +2410,10 @@ class LocalPhoneAgentRuntime(
 
     private fun taskIdFromPrompt(prompt: String): String? {
         return taskIdPattern.find(prompt)?.value
+    }
+
+    private fun automationIdFromPrompt(prompt: String): String? {
+        return automationIdPattern.find(prompt)?.value
     }
 
     private fun approvalReply(
@@ -2155,11 +2586,17 @@ class LocalPhoneAgentRuntime(
         private const val manualTaskRetryActionKey = "agent.task.retry.manual"
         private const val shellRefreshActionKey = "shell.refresh"
         private const val scheduledAutomationPlanActionKey = "automation.schedule.plan"
+        private const val scheduledAutomationActivateActionKey = "automation.schedule.activate"
+        private const val scheduledAutomationPauseActionKey = "automation.schedule.pause"
+        private const val scheduledAutomationRunNowActionKey = "automation.schedule.run_now"
         private const val codeGenerationPlanActionKey = "code.generate.plan"
         private const val browserResearchPlanActionKey = "browser.research.plan"
         private const val routeDashboardActionKey = "ui.route.dashboard"
         private const val routeHistoryActionKey = "ui.route.history"
         private const val routeSettingsActionKey = "ui.route.settings"
+        private const val mcpBridgeConnectActionKey = "mcp.bridge.connect"
+        private const val mcpSkillSyncActionKey = "mcp.skills.sync"
+        private const val mcpSkillShowActionKey = "mcp.skills.show"
         private const val companionHealthProbeActionKey = "devices.health_probe"
         private const val companionSessionNotifyActionKey = "devices.session_notify"
         private const val companionAppOpenActionKey = "devices.app_open"
@@ -2167,9 +2604,11 @@ class LocalPhoneAgentRuntime(
         private const val desktopWorkflowIdOpenLatestAction = "open_latest_action"
         private const val desktopWorkflowIdOpenLatestTransfer = "open_latest_transfer"
         private const val desktopWorkflowIdOpenActionsFolder = "open_actions_folder"
+        private const val mcpBridgeEndpointId = "companion-mcp-bridge"
         private const val explainCapabilitiesActionKey = "agent.capabilities.explain"
         private val approvalIdPattern = Regex("""approval-[A-Za-z0-9-]+""")
         private val taskIdPattern = Regex("""task-[A-Za-z0-9-]+""")
+        private val automationIdPattern = Regex("""automation-[A-Za-z0-9-]+""")
     }
 }
 
@@ -2194,6 +2633,15 @@ private sealed interface AgentIntent {
     data object ShowSettings : AgentIntent
     data object RefreshResources : AgentIntent
     data object PlanScheduledAutomation : AgentIntent
+    data class ActivateScheduledAutomation(
+        val automationId: String? = null,
+    ) : AgentIntent
+    data class PauseScheduledAutomation(
+        val automationId: String? = null,
+    ) : AgentIntent
+    data class RunScheduledAutomationNow(
+        val automationId: String? = null,
+    ) : AgentIntent
     data object PlanCodeGeneration : AgentIntent
     data object PlanBrowserResearch : AgentIntent
     data object SummarizeIndexedFiles : AgentIntent
@@ -2201,6 +2649,9 @@ private sealed interface AgentIntent {
         val strategy: FileOrganizeStrategy,
     ) : AgentIntent
     data object TransferIndexedFiles : AgentIntent
+    data object ConnectMcpBridge : AgentIntent
+    data object SyncMcpSkills : AgentIntent
+    data object ShowMcpSkills : AgentIntent
     data object ProbeCompanionHealth : AgentIntent
     data object SendCompanionSessionNotification : AgentIntent
     data class OpenCompanionTarget(

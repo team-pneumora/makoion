@@ -199,3 +199,53 @@
   - `fatal: Cannot prompt because user interactivity has been disabled.`
   - `fatal: could not read Username for 'https://github.com': terminal prompts disabled`
 - Local commits can be created, but push requires the operator to authenticate GitHub in this environment first.
+
+## Follow-up Session: Chat-first Shell Simplification and MCP Skill Updates
+
+### Scope
+
+- Reduce the Chat screen to a simpler conversation-first surface.
+- Expand chat control so scheduled automations and MCP bridge setup can be handled as natural-language turns.
+- Add a durable MCP skill catalog that can be updated from the connected MCP bridge seed.
+
+### Changes applied
+
+- Simplified the Chat surface in `MobileClawShellApp.kt`:
+  - removed the large hero/quick-start stack from the main conversation flow
+  - introduced a compact conversation header
+  - anchored the composer at the bottom
+  - moved quick prompts into a slim horizontal chip rail above the input
+- Extended `PhoneAgentRuntime.kt` so chat can now:
+  - activate the latest or referenced scheduled automation
+  - pause the latest or referenced scheduled automation
+  - run the latest or referenced scheduled automation immediately
+  - connect the MCP bridge seed from chat
+  - sync MCP skills from the MCP bridge
+  - list currently installed MCP skills
+- Added `McpSkillRepository.kt` with SQLite-backed MCP skill persistence:
+  - seeded sync bundle currently installs three mock-ready skill packages
+  - desktop action bridge
+  - browser research handoff
+  - external API ingest
+- Updated the MCP external endpoint seed so the capability surface now advertises `mcp.skills.sync`.
+- Added tests:
+  - `McpSkillRepositoryTest.kt`
+  - `McpSkillChatFlowTest.kt`
+- Stabilized instrumentation strategy by using the installed app's real `AgentTaskEngine.submitTurn(...)` path instead of fragile Compose text-entry gestures for agent-turn submission.
+
+### Emulator validation results
+
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest` passed with:
+  - `ScheduledAutomationFlowTest`
+  - `McpSkillChatFlowTest`
+
+### Product effect
+
+- The Chat tab is now much closer to the intended “simple conversation window” described in the master plan.
+- Major agent controls can now stay inside chat instead of forcing Dashboard/Settings detours:
+  - approvals and retries were already in chat
+  - scheduled automation lifecycle control is now also in chat
+  - MCP bridge setup and skill catalog updates are now also in chat

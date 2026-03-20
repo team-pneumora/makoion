@@ -73,7 +73,7 @@ internal fun defaultExternalEndpointSeeds(): List<SeededExternalEndpointProfile>
             category = ExternalEndpointCategory.McpServer,
             status = ExternalEndpointStatus.NeedsSetup,
             summary = "This seed reserves the MCP bridge profile that will expose companion-side tools and file operations to the phone agent.",
-            supportedCapabilities = listOf("mcp.connect", "mcp.tools.list", "mcp.tools.call"),
+            supportedCapabilities = listOf("mcp.connect", "mcp.tools.list", "mcp.tools.call", "mcp.skills.sync"),
             defaultConnectedLabel = "Companion MCP placeholder",
         ),
         SeededExternalEndpointProfile(

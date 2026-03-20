@@ -16,6 +16,7 @@ import io.makoion.mobileclaw.data.PersistentChatTranscriptRepository
 import io.makoion.mobileclaw.data.PersistentAgentTaskRepository
 import io.makoion.mobileclaw.data.PhoneAgentActionCoordinator
 import io.makoion.mobileclaw.data.PersistentModelProviderSettingsRepository
+import io.makoion.mobileclaw.data.PersistentMcpSkillRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeDebugSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeExecutionRepository
 import io.makoion.mobileclaw.data.PersistentResourceRegistryRepository
@@ -59,6 +60,10 @@ class ShellAppContainer(
     )
     val externalEndpointRepository = PersistentExternalEndpointRegistryRepository(
         databaseHelper = databaseHelper,
+    )
+    val mcpSkillRepository = PersistentMcpSkillRepository(
+        databaseHelper = databaseHelper,
+        auditTrailRepository = auditTrailRepository,
     )
     val deliveryChannelRepository = PersistentDeliveryChannelRegistryRepository(
         databaseHelper = databaseHelper,
@@ -130,7 +135,10 @@ class ShellAppContainer(
         approvalInboxRepository = approvalInboxRepository,
         auditTrailRepository = auditTrailRepository,
         devicePairingRepository = devicePairingRepository,
+        externalEndpointRepository = externalEndpointRepository,
+        mcpSkillRepository = mcpSkillRepository,
         scheduledAutomationRepository = scheduledAutomationRepository,
+        scheduledAutomationCoordinator = scheduledAutomationCoordinator,
         codeGenerationProjectRepository = codeGenerationProjectRepository,
         codeGenerationWorkspaceExecutor = codeGenerationWorkspaceExecutor,
         phoneAgentActionCoordinator = phoneAgentActionCoordinator,

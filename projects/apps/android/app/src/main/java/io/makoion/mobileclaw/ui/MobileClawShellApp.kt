@@ -45,6 +45,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -387,96 +388,140 @@ private fun ChatScreen(
     } ?: uiState.deviceControlState.pairedDevices.firstOrNull { device ->
         device.transportMode == DeviceTransportMode.DirectHttp
     } ?: uiState.deviceControlState.pairedDevices.firstOrNull()
-    val latestCompanionProbeAudit = uiState.auditEvents.firstOrNull { event ->
-        event.headline == "devices.health_probe" &&
-            (selectedCompanion?.name == null || event.details.contains(selectedCompanion.name))
-    }
 
-    LazyColumn(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .testTag(ShellTestTags.chatScreenList),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            top = innerPadding.calculateTopPadding() + 16.dp,
-            end = 20.dp,
-            bottom = innerPadding.calculateBottomPadding() + 24.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(top = innerPadding.calculateTopPadding() + 12.dp),
     ) {
-        item {
-            HeroCard(
-                eyebrow = "Chat-first shell",
-                title = "Talk to Makoion",
-                summary = "Ask Makoion to use connected files, drives, companions, MCP endpoints, and APIs from this phone-hosted agent shell.",
-            )
-        }
-        uiState.activeChatThread?.let { thread ->
-            item {
-                ChatSessionCard(
-                    thread = thread,
-                    onStartNewSession = onStartNewSession,
-                )
+        ChatConversationHeader(
+            activeThread = uiState.activeChatThread,
+            isProcessing = uiState.chatState.isProcessing,
+            selectedCompanionName = selectedCompanion?.name,
+            onStartNewSession = onStartNewSession,
+        )
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .testTag(ShellTestTags.chatScreenList),
+            contentPadding = PaddingValues(
+                start = 20.dp,
+                top = 12.dp,
+                end = 20.dp,
+                bottom = 12.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (uiState.chatState.messages.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "Agent conversation",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = ClawInk,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = "Ask with plain language. Makoion will plan, execute, ask for approval when needed, and keep the task recoverable on this phone.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
-        }
-        if (quickPrompts.isNotEmpty()) {
-            item {
-                ChatQuickStartCard(
-                    prompts = quickPrompts,
-                    selectedCompanionName = selectedCompanion?.name,
-                    selectedCompanionPinnedByUser = uiState.deviceControlState.isTargetDevicePinnedByUser,
-                    companionProbe = uiState.deviceControlState.companionProbe,
-                    latestCompanionProbeAudit = latestCompanionProbeAudit,
-                    onSubmitPrompt = onSubmitSuggestedPrompt,
-                )
-            }
-        }
-        if (uiState.chatState.isProcessing) {
-            item {
-                StatusCard(
-                    title = "Agent runtime active",
-                    summary = "Makoion is planning or executing this turn against the resources currently connected to the phone.",
-                    status = "Working",
-                    icon = Icons.Default.NotificationsActive,
-                )
-            }
-        }
             items(
                 items = uiState.chatState.messages,
                 key = { it.id },
             ) { message ->
-            ChatMessageCard(
-                message = message,
-                tasks = uiState.agentTasks,
-                approvals = uiState.approvals,
-                onApprove = onApprove,
-                onDeny = onDeny,
-                onRetry = onRetry,
-                onSubmitPrompt = onSubmitSuggestedPrompt,
-            )
-        }
-        if (pendingApprovals.isNotEmpty() || retryableTasks.isNotEmpty()) {
-            item {
-                ChatInlineActionsCard(
-                    approvals = pendingApprovals,
-                    retryableTasks = retryableTasks,
-                    remainingApprovalCount = uiState.approvals.count { it.status == ApprovalInboxStatus.Pending } - pendingApprovals.size,
-                    remainingRetryCount = uiState.agentTasks.count(::isChatRetryableTask) - retryableTasks.size,
+                ChatMessageCard(
+                    message = message,
+                    tasks = uiState.agentTasks,
+                    approvals = uiState.approvals,
                     onApprove = onApprove,
                     onDeny = onDeny,
                     onRetry = onRetry,
+                    onSubmitPrompt = onSubmitSuggestedPrompt,
                 )
             }
+            if (pendingApprovals.isNotEmpty() || retryableTasks.isNotEmpty()) {
+                item {
+                    ChatInlineActionsCard(
+                        approvals = pendingApprovals,
+                        retryableTasks = retryableTasks,
+                        remainingApprovalCount = uiState.approvals.count { it.status == ApprovalInboxStatus.Pending } - pendingApprovals.size,
+                        remainingRetryCount = uiState.agentTasks.count(::isChatRetryableTask) - retryableTasks.size,
+                        onApprove = onApprove,
+                        onDeny = onDeny,
+                        onRetry = onRetry,
+                    )
+                }
+            }
         }
-        item {
-            ChatComposerCard(
-                draft = uiState.chatState.draft,
-                isProcessing = uiState.chatState.isProcessing,
-                voiceActive = uiState.voiceEntryState.isActive,
-                onUpdateDraft = onUpdateDraft,
-                onToggleVoiceCapture = onToggleVoiceCapture,
-                onSendPrompt = onSendPrompt,
-            )
+        ChatComposerCard(
+            draft = uiState.chatState.draft,
+            isProcessing = uiState.chatState.isProcessing,
+            voiceActive = uiState.voiceEntryState.isActive,
+            quickPrompts = quickPrompts,
+            onUpdateDraft = onUpdateDraft,
+            onToggleVoiceCapture = onToggleVoiceCapture,
+            onSendPrompt = onSendPrompt,
+            onSubmitSuggestedPrompt = onSubmitSuggestedPrompt,
+        )
+    }
+}
+
+@Composable
+private fun ChatConversationHeader(
+    activeThread: ChatThreadRecord?,
+    isProcessing: Boolean,
+    selectedCompanionName: String?,
+    onStartNewSession: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = activeThread?.title ?: "New conversation",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = ClawInk,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = buildString {
+                        append(if (isProcessing) "Agent is working" else "Chat controls the agent")
+                        selectedCompanionName?.let {
+                            append(" • target $it")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onStartNewSession) {
+                Text("New chat")
+            }
         }
     }
 }
@@ -487,10 +532,12 @@ private data class ChatQuickPrompt(
 )
 
 private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> {
+    val latestAutomation = uiState.scheduledAutomations.firstOrNull()
+    val mcpBridge = uiState.externalEndpoints.firstOrNull { it.endpointId == mcpBridgeEndpointIdForChat }
     return buildList {
         add(
             ChatQuickPrompt(
-                label = "Refresh resources",
+                label = "Refresh",
                 prompt = promptRefreshResources,
             ),
         )
@@ -500,17 +547,27 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
                 prompt = promptPlanDailyAutomation,
             ),
         )
+        latestAutomation?.let { automation ->
+            add(
+                ChatQuickPrompt(
+                    label = if (automation.status == ScheduledAutomationStatus.Active) {
+                        "Run latest automation"
+                    } else {
+                        "Activate automation"
+                    },
+                    prompt = if (automation.status == ScheduledAutomationStatus.Active) {
+                        promptRunLatestAutomationNow
+                    } else {
+                        promptActivateLatestAutomation
+                    },
+                ),
+            )
+        }
         if (uiState.fileIndexState.permissionGranted && uiState.fileIndexState.indexedItems.isNotEmpty()) {
             add(
                 ChatQuickPrompt(
                     label = "Summarize files",
                     prompt = promptSummarizeCurrentFiles,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Organize by type",
-                    prompt = promptOrganizeFilesByType,
                 ),
             )
         } else {
@@ -536,53 +593,25 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
                 ),
             )
         }
+        add(
+            ChatQuickPrompt(
+                label = if (mcpBridge?.status == ExternalEndpointStatus.Connected) {
+                    "Update MCP skills"
+                } else {
+                    "Connect MCP bridge"
+                },
+                prompt = if (mcpBridge?.status == ExternalEndpointStatus.Connected) {
+                    promptSyncMcpSkills
+                } else {
+                    promptConnectMcpBridge
+                },
+            ),
+        )
         if (uiState.deviceControlState.pairedDevices.isNotEmpty()) {
             add(
                 ChatQuickPrompt(
-                    label = "Check companion health",
+                    label = "Check companion",
                     prompt = promptCheckCompanionHealth,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Send notification",
-                    prompt = promptSendDesktopNotification,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Run latest action workflow",
-                    prompt = promptRunOpenLatestActionWorkflow,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Run latest workflow",
-                    prompt = promptRunOpenLatestTransferWorkflow,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Run actions workflow",
-                    prompt = promptRunOpenActionsFolderWorkflow,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Open latest action",
-                    prompt = promptOpenLatestActionFolder,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Open latest transfer",
-                    prompt = promptOpenLatestTransferFolder,
-                ),
-            )
-            add(
-                ChatQuickPrompt(
-                    label = "Open companion inbox",
-                    prompt = promptOpenCompanionInbox,
                 ),
             )
         }
@@ -2162,11 +2191,16 @@ private fun ChatComposerCard(
     draft: String,
     isProcessing: Boolean,
     voiceActive: Boolean,
+    quickPrompts: List<ChatQuickPrompt>,
     onUpdateDraft: (String) -> Unit,
     onToggleVoiceCapture: () -> Unit,
     onSendPrompt: () -> Unit,
+    onSubmitSuggestedPrompt: (String) -> Unit,
 ) {
     Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
@@ -2174,12 +2208,25 @@ private fun ChatComposerCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = "Conversation",
-                style = MaterialTheme.typography.titleMedium,
-                color = ClawInk,
-                fontWeight = FontWeight.SemiBold,
-            )
+            if (quickPrompts.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    quickPrompts.forEach { prompt ->
+                        AssistChip(
+                            onClick = { onSubmitSuggestedPrompt(prompt.prompt) },
+                            label = { Text(prompt.label) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = ClawGreen.copy(alpha = 0.12f),
+                                labelColor = ClawInk,
+                            ),
+                        )
+                    }
+                }
+            }
             OutlinedTextField(
                 value = draft,
                 onValueChange = onUpdateDraft,
@@ -5935,6 +5982,10 @@ private const val promptOpenSettingsAndResources = "Open settings and show my co
 private const val promptShowDashboardAndApprovals = "Show my dashboard and pending approvals"
 private const val promptShowDashboard = "Show my dashboard"
 private const val promptPlanDailyAutomation = "Every morning send a notification digest automation"
+private const val promptActivateLatestAutomation = "Activate the latest automation"
+private const val promptRunLatestAutomationNow = "Run the latest automation now"
+private const val promptConnectMcpBridge = "Connect the MCP bridge"
+private const val promptSyncMcpSkills = "Update MCP skills from the MCP bridge"
 private const val promptCheckCompanionHealth = "Check companion health"
 private const val promptSendDesktopNotification = "Send a desktop notification"
 private const val promptRunOpenLatestActionWorkflow = "Run the open latest action workflow"
@@ -5944,6 +5995,7 @@ private const val promptOpenLatestActionFolder = "Open the latest action folder"
 private const val promptOpenLatestTransferFolder = "Open the latest transfer folder"
 private const val promptOpenCompanionInbox = "Open the companion inbox"
 private const val promptOpenActionsFolder = "Open the actions folder"
+private const val mcpBridgeEndpointIdForChat = "companion-mcp-bridge"
 private const val filesTransferActionKeyForChat = "files.transfer.execute"
 private const val companionHealthProbeActionKeyForChat = "devices.health_probe"
 private const val companionSessionNotifyActionKeyForChat = "devices.session_notify"

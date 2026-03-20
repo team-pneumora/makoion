@@ -289,7 +289,7 @@ class PersistentScheduledAutomationRepository(
 }
 
 internal fun buildScheduledAutomationSummary(plan: ScheduledAutomationPlan): String {
-    return "Runs ${plan.scheduleLabel.lowercase()} via ${plan.deliveryLabel}."
+    return "Runs ${plan.scheduleLabel} via ${plan.deliveryLabel}."
 }
 
 private fun decorateScheduledAutomationSummary(
