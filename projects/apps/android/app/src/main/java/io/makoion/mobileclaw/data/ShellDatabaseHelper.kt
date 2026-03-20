@@ -7,6 +7,23 @@ import android.database.sqlite.SQLiteOpenHelper
 class ShellDatabaseHelper(
     context: Context,
 ) : SQLiteOpenHelper(context, databaseName, null, databaseVersion) {
+    fun ensureScheduledAutomationSchema() {
+        val db = writableDatabase
+        createScheduledAutomationTables(db)
+        addColumnIfMissing(
+            db,
+            tableName = "scheduled_automation_records",
+            columnName = "last_run_at",
+            columnDefinition = "INTEGER",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "scheduled_automation_records",
+            columnName = "next_run_at",
+            columnDefinition = "INTEGER",
+        )
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         createApprovalTables(db)
         createAuditTables(db)
@@ -283,6 +300,20 @@ class ShellDatabaseHelper(
                 tableName = "code_generation_projects",
                 columnName = "generator_label",
                 columnDefinition = "TEXT NOT NULL DEFAULT ''",
+            )
+        }
+        if (oldVersion < 25) {
+            addColumnIfMissing(
+                db,
+                tableName = "scheduled_automation_records",
+                columnName = "last_run_at",
+                columnDefinition = "INTEGER",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "scheduled_automation_records",
+                columnName = "next_run_at",
+                columnDefinition = "INTEGER",
             )
         }
     }
@@ -680,6 +711,8 @@ class ShellDatabaseHelper(
                 delivery_label TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 status TEXT NOT NULL,
+                last_run_at INTEGER,
+                next_run_at INTEGER,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
@@ -728,6 +761,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 24
+        private const val databaseVersion = 25
     }
 }

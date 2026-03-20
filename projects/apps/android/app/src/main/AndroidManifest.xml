@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -39,5 +40,17 @@
             android:name=".service.VoiceCaptureService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <provider
+            android:name=".WorkManagerBootstrapProvider"
+            android:authorities="${applicationId}.workmanager-bootstrap"
+            android:exported="false"
+            android:initOrder="100" />
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="remove" />
     </application>
 </manifest>

@@ -20,6 +20,7 @@ import io.makoion.mobileclaw.data.PersistentOrganizeDebugSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeExecutionRepository
 import io.makoion.mobileclaw.data.PersistentResourceRegistryRepository
 import io.makoion.mobileclaw.data.PersistentScheduledAutomationRepository
+import io.makoion.mobileclaw.data.ScheduledAutomationCoordinator
 import io.makoion.mobileclaw.data.VoiceEntryCoordinator
 import io.makoion.mobileclaw.data.PersistentApprovalInboxRepository
 import io.makoion.mobileclaw.data.PersistentAuditTrailRepository
@@ -75,6 +76,11 @@ class ShellAppContainer(
     )
     val scheduledAutomationRepository = PersistentScheduledAutomationRepository(
         databaseHelper = databaseHelper,
+        auditTrailRepository = auditTrailRepository,
+    )
+    val scheduledAutomationCoordinator = ScheduledAutomationCoordinator(
+        context = application,
+        scheduledAutomationRepository = scheduledAutomationRepository,
         auditTrailRepository = auditTrailRepository,
     )
     val transferBridgeCoordinator = TransferBridgeCoordinator(

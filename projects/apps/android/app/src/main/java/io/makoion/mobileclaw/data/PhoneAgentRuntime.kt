@@ -480,20 +480,22 @@ class LocalPhoneAgentRuntime(
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("반복 작업을 scheduled automation skeleton으로 기록했어요. ")
+                    append("반복 작업을 scheduled automation으로 기록했어요. ")
                     append("주기는 ${record.scheduleLabel}, 전달 방식은 ${record.deliveryLabel}로 해석했고, Dashboard에서 바로 확인할 수 있습니다. ")
-                    append("현재 scheduler worker와 실제 delivery executor는 아직 연결 전이라 바로 자동 실행되지는 않습니다. ")
-                    append("기록된 automation은 총 ${recordedCount}건이고, mock-ready delivery channel은 ${connectedDeliveryChannels}개입니다.")
+                    append("Dashboard에서 활성화하면 로컬 scheduler가 주기 실행을 예약하고, 'Run once'로 즉시 검증할 수도 있습니다. ")
+                    append("현재는 on-device audit/notification delivery까지 연결돼 있고, mock-ready delivery channel은 ${connectedDeliveryChannels}개입니다. ")
+                    append("기록된 automation은 총 ${recordedCount}건입니다.")
                     if (browserLinked) {
                         append(" 이 요청은 이후 browser/news research capability와 연결될 수 있게 남겨뒀습니다.")
                     }
                 }
             } else {
                 buildString {
-                    append("I recorded this recurring request as a scheduled automation skeleton. ")
+                    append("I recorded this recurring request as a scheduled automation. ")
                     append("The schedule was interpreted as ${record.scheduleLabel} and the delivery channel as ${record.deliveryLabel}, and you can review it on Dashboard. ")
-                    append("The scheduler worker and real delivery executor are not wired yet, so it will not run end-to-end today. ")
-                    append("There are now $recordedCount recorded automation skeleton(s), and $connectedDeliveryChannels delivery channel(s) are currently mock-ready.")
+                    append("Once you activate it on Dashboard, the local scheduler will queue recurring runs, and you can also use Run once for immediate validation. ")
+                    append("On-device audit and notification delivery are wired now, and $connectedDeliveryChannels delivery channel(s) are currently mock-ready. ")
+                    append("There are now $recordedCount recorded automation(s).")
                     if (browserLinked) {
                         append(" I also kept it aligned with the upcoming browser/news research capability.")
                     }
@@ -503,11 +505,11 @@ class LocalPhoneAgentRuntime(
             taskTitle = taskTitle(prompt),
             taskActionKey = scheduledAutomationPlanActionKey,
             taskSummary = if (prefersKorean(prompt)) {
-                "${record.scheduleLabel} / ${record.deliveryLabel} automation skeleton을 기록했습니다."
+                "${record.scheduleLabel} / ${record.deliveryLabel} automation을 기록했습니다."
             } else {
-                "Recorded a ${record.scheduleLabel} / ${record.deliveryLabel} automation skeleton."
+                "Recorded a ${record.scheduleLabel} / ${record.deliveryLabel} automation."
             },
-            taskStatus = AgentTaskStatus.WaitingResource,
+            taskStatus = AgentTaskStatus.Succeeded,
         )
     }
 
@@ -1835,7 +1837,7 @@ class LocalPhoneAgentRuntime(
                     intent = AgentIntent.PlanScheduledAutomation,
                     auditResult = "scheduled_automation_planned",
                     mode = AgentPlannerMode.Plan,
-                    summary = "Capture a recurring or scheduled request and persist it as an automation skeleton until the scheduler executor is wired.",
+                    summary = "Capture a recurring request, persist it as a scheduled automation, and stage it for local dashboard activation.",
                     capabilities = listOf("automation.schedule.plan"),
                     resources = listOf("task.runtime", "notifications.delivery", "audit.history"),
                 )

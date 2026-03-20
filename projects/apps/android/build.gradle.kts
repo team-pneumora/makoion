@@ -7,11 +7,14 @@ plugins {
 val localAppData = System.getenv("LOCALAPPDATA")?.takeIf { it.isNotBlank() }
 val customBuildRoot = System.getenv("MAKOION_ANDROID_BUILD_ROOT")?.takeIf { it.isNotBlank() }
 val shouldUseExternalBuildRoot =
-    rootDir.absolutePath.contains("OneDrive", ignoreCase = true) &&
-        (customBuildRoot != null || localAppData != null)
+    customBuildRoot != null ||
+        (
+            rootDir.absolutePath.contains("OneDrive", ignoreCase = true) &&
+                localAppData != null
+        )
 
 if (shouldUseExternalBuildRoot) {
-    // OneDrive frequently locks Gradle outputs on Windows, so keep build artifacts outside the synced repo.
+    // Allow an explicit override anywhere, while still defaulting OneDrive worktrees to a safer external build root.
     val externalBuildRoot = customBuildRoot ?: "$localAppData\\Makoion\\android-gradle-build"
     layout.buildDirectory.set(file(externalBuildRoot).resolve(rootProject.name))
     subprojects {

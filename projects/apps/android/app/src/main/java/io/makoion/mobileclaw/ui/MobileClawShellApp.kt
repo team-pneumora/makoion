@@ -10,6 +10,8 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -56,7 +58,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -209,6 +215,14 @@ fun MobileClawShellApp(
             NavigationBar {
                 ShellSection.entries.forEach { section ->
                     NavigationBarItem(
+                        modifier = Modifier.testTag(
+                            when (section) {
+                                ShellSection.Chat -> ShellTestTags.navChat
+                                ShellSection.Dashboard -> ShellTestTags.navDashboard
+                                ShellSection.History -> ShellTestTags.navHistory
+                                ShellSection.Settings -> ShellTestTags.navSettings
+                            },
+                        ),
                         selected = uiState.selectedSection == section,
                         onClick = { shellViewModel.openSection(section) },
                         icon = {
@@ -243,6 +257,7 @@ fun MobileClawShellApp(
                 onDeny = shellViewModel::deny,
                 onActivateAutomation = shellViewModel::activateScheduledAutomation,
                 onPauseAutomation = shellViewModel::pauseScheduledAutomation,
+                onRunAutomationNow = shellViewModel::runScheduledAutomationNow,
                 onSetCodeGenerationProjectStatus = shellViewModel::setCodeGenerationProjectStatus,
                 onOpenHistory = { shellViewModel.openSection(ShellSection.History) },
                 onOpenSettings = { shellViewModel.openSection(ShellSection.Settings) },
@@ -378,7 +393,9 @@ private fun ChatScreen(
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag(ShellTestTags.chatScreenList),
         contentPadding = PaddingValues(
             start = 20.dp,
             top = innerPadding.calculateTopPadding() + 16.dp,
@@ -475,6 +492,12 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
             ChatQuickPrompt(
                 label = "Refresh resources",
                 prompt = promptRefreshResources,
+            ),
+        )
+        add(
+            ChatQuickPrompt(
+                label = "Record daily automation",
+                prompt = promptPlanDailyAutomation,
             ),
         )
         if (uiState.fileIndexState.permissionGranted && uiState.fileIndexState.indexedItems.isNotEmpty()) {
@@ -815,6 +838,7 @@ private fun DashboardScreen(
     onDeny: (String) -> Unit,
     onActivateAutomation: (String) -> Unit,
     onPauseAutomation: (String) -> Unit,
+    onRunAutomationNow: (String) -> Unit,
     onSetCodeGenerationProjectStatus: (String, CodeGenerationProjectStatus) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -900,14 +924,14 @@ private fun DashboardScreen(
             item {
                 EmptyStateCard(
                     title = "No recorded automations",
-                    summary = "Recurring chat requests will be stored here as durable automation skeletons before the scheduler worker is fully wired.",
+                    summary = "Recurring chat requests will be stored here as durable automation plans that you can activate and run from Dashboard.",
                 )
             }
         } else {
             item {
                 SectionHeader(
                     title = "Scheduled automations",
-                    subtitle = "Recurring requests stay visible here with placeholder status until background scheduling and delivery executors are fully implemented.",
+                    subtitle = "Recurring requests stay visible here with local scheduling, audit history, and on-device delivery.",
                 )
             }
             items(
@@ -918,6 +942,7 @@ private fun DashboardScreen(
                     automation = automation,
                     onActivate = { onActivateAutomation(automation.id) },
                     onPause = { onPauseAutomation(automation.id) },
+                    onRunNow = { onRunAutomationNow(automation.id) },
                 )
             }
         }
@@ -2159,8 +2184,23 @@ private fun ChatComposerCard(
                 value = draft,
                 onValueChange = onUpdateDraft,
                 enabled = !isProcessing,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag(ShellTestTags.chatComposerInput),
                 minLines = 3,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    autoCorrectEnabled = true,
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Send,
+                ),
+                keyboardActions = KeyboardActions(
+                    onSend = {
+                        if (!isProcessing && draft.isNotBlank()) {
+                            onSendPrompt()
+                        }
+                    },
+                ),
                 placeholder = {
                     Text("Ask Makoion to use your connected resources.")
                 },
@@ -2184,7 +2224,9 @@ private fun ChatComposerCard(
                 FilledTonalButton(
                     onClick = onSendPrompt,
                     enabled = !isProcessing && draft.isNotBlank(),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(ShellTestTags.chatComposerSend),
                 ) {
                     Text(if (isProcessing) "Working..." else "Send")
                 }
@@ -5892,6 +5934,7 @@ private const val promptOrganizeFilesByType = "Organize my files by type"
 private const val promptOpenSettingsAndResources = "Open settings and show my connected resources"
 private const val promptShowDashboardAndApprovals = "Show my dashboard and pending approvals"
 private const val promptShowDashboard = "Show my dashboard"
+private const val promptPlanDailyAutomation = "Every morning send a notification digest automation"
 private const val promptCheckCompanionHealth = "Check companion health"
 private const val promptSendDesktopNotification = "Send a desktop notification"
 private const val promptRunOpenLatestActionWorkflow = "Run the open latest action workflow"
@@ -6153,8 +6196,10 @@ private fun ScheduledAutomationCard(
     automation: ScheduledAutomationRecord,
     onActivate: () -> Unit,
     onPause: () -> Unit,
+    onRunNow: () -> Unit,
 ) {
     Card(
+        modifier = Modifier.testTag(ShellTestTags.scheduledAutomationCard(automation.id)),
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
@@ -6213,6 +6258,20 @@ private fun ScheduledAutomationCard(
                     onClick = {},
                     label = { Text("Updated ${automation.updatedAtLabel}") },
                 )
+                automation.lastRunAtLabel?.let { lastRunAtLabel ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("Last run $lastRunAtLabel") },
+                    )
+                }
+                if (automation.status == ScheduledAutomationStatus.Active) {
+                    automation.nextRunAtLabel?.let { nextRunAtLabel ->
+                        AssistChip(
+                            onClick = {},
+                            label = { Text("Next $nextRunAtLabel") },
+                        )
+                    }
+                }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -6223,16 +6282,39 @@ private fun ScheduledAutomationCard(
                         onClick = onPause,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text("Pause placeholder")
+                        Text("Pause schedule")
                     }
                 } else {
                     FilledTonalButton(
                         onClick = onActivate,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(ShellTestTags.scheduledAutomationActivateButton(automation.id)),
                     ) {
-                        Text("Activate placeholder")
+                        Text("Activate schedule")
                     }
                 }
+                OutlinedButton(
+                    onClick = onRunNow,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag(ShellTestTags.scheduledAutomationRunButton(automation.id)),
+                ) {
+                    Text(
+                        if (automation.status == ScheduledAutomationStatus.Active) {
+                            "Run now"
+                        } else {
+                            "Run once"
+                        },
+                    )
+                }
+            }
+            if (automation.deliveryLabel == "Email" || automation.deliveryLabel == "Telegram") {
+                Text(
+                    text = "External delivery is still staged, so runs currently stay on-device with audit + notification delivery.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -6459,7 +6541,7 @@ private fun scheduledAutomationStatusColor(status: ScheduledAutomationStatus): C
 private fun scheduledAutomationStatusLabel(status: ScheduledAutomationStatus): String {
     return when (status) {
         ScheduledAutomationStatus.Planned -> "Planned"
-        ScheduledAutomationStatus.Active -> "Placeholder active"
+        ScheduledAutomationStatus.Active -> "Active"
         ScheduledAutomationStatus.Paused -> "Paused"
     }
 }

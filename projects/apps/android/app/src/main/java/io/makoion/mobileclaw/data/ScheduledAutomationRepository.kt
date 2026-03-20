@@ -29,6 +29,10 @@ data class ScheduledAutomationRecord(
     val createdAtEpochMillis: Long,
     val createdAtLabel: String,
     val updatedAtLabel: String,
+    val lastRunAtEpochMillis: Long?,
+    val lastRunAtLabel: String?,
+    val nextRunAtEpochMillis: Long?,
+    val nextRunAtLabel: String?,
 )
 
 interface ScheduledAutomationRepository {
@@ -42,6 +46,19 @@ interface ScheduledAutomationRepository {
     suspend fun setStatus(
         automationId: String,
         status: ScheduledAutomationStatus,
+    ): ScheduledAutomationRecord?
+
+    suspend fun findById(automationId: String): ScheduledAutomationRecord?
+
+    suspend fun updateScheduleWindow(
+        automationId: String,
+        nextRunAtEpochMillis: Long?,
+    ): ScheduledAutomationRecord?
+
+    suspend fun noteExecution(
+        automationId: String,
+        lastRunAtEpochMillis: Long,
+        nextRunAtEpochMillis: Long?,
     ): ScheduledAutomationRecord?
 
     suspend fun refresh()
@@ -70,6 +87,7 @@ class PersistentScheduledAutomationRepository(
         val now = System.currentTimeMillis()
         val summary = buildScheduledAutomationSummary(plan)
         withContext(Dispatchers.IO) {
+            databaseHelper.ensureScheduledAutomationSchema()
             databaseHelper.writableDatabase.insert(
                 automationTable,
                 null,
@@ -83,13 +101,15 @@ class PersistentScheduledAutomationRepository(
                     put("status", ScheduledAutomationStatus.Planned.name)
                     put("created_at", now)
                     put("updated_at", now)
+                    putNull("last_run_at")
+                    putNull("next_run_at")
                 },
             )
         }
         auditTrailRepository.logAction(
             action = "automation.schedule",
             result = "planned",
-            details = "Recorded automation skeleton ${plan.title} (${plan.scheduleLabel}, ${plan.deliveryLabel}).",
+            details = "Recorded automation ${plan.title} (${plan.scheduleLabel}, ${plan.deliveryLabel}).",
         )
         refresh()
         return _automations.value.first { it.id == automationId }
@@ -100,6 +120,7 @@ class PersistentScheduledAutomationRepository(
         status: ScheduledAutomationStatus,
     ): ScheduledAutomationRecord? {
         withContext(Dispatchers.IO) {
+            databaseHelper.ensureScheduledAutomationSchema()
             databaseHelper.writableDatabase.update(
                 automationTable,
                 ContentValues().apply {
@@ -119,61 +140,146 @@ class PersistentScheduledAutomationRepository(
         return _automations.value.firstOrNull { it.id == automationId }
     }
 
+    override suspend fun findById(automationId: String): ScheduledAutomationRecord? {
+        refresh()
+        return _automations.value.firstOrNull { it.id == automationId }
+    }
+
+    override suspend fun updateScheduleWindow(
+        automationId: String,
+        nextRunAtEpochMillis: Long?,
+    ): ScheduledAutomationRecord? {
+        withContext(Dispatchers.IO) {
+            databaseHelper.ensureScheduledAutomationSchema()
+            databaseHelper.writableDatabase.update(
+                automationTable,
+                ContentValues().apply {
+                    if (nextRunAtEpochMillis == null) {
+                        putNull("next_run_at")
+                    } else {
+                        put("next_run_at", nextRunAtEpochMillis)
+                    }
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "id = ?",
+                arrayOf(automationId),
+            )
+        }
+        refresh()
+        return _automations.value.firstOrNull { it.id == automationId }
+    }
+
+    override suspend fun noteExecution(
+        automationId: String,
+        lastRunAtEpochMillis: Long,
+        nextRunAtEpochMillis: Long?,
+    ): ScheduledAutomationRecord? {
+        withContext(Dispatchers.IO) {
+            databaseHelper.ensureScheduledAutomationSchema()
+            databaseHelper.writableDatabase.update(
+                automationTable,
+                ContentValues().apply {
+                    put("last_run_at", lastRunAtEpochMillis)
+                    if (nextRunAtEpochMillis == null) {
+                        putNull("next_run_at")
+                    } else {
+                        put("next_run_at", nextRunAtEpochMillis)
+                    }
+                    put("updated_at", lastRunAtEpochMillis)
+                },
+                "id = ?",
+                arrayOf(automationId),
+            )
+        }
+        refresh()
+        return _automations.value.firstOrNull { it.id == automationId }
+    }
+
     override suspend fun refresh() {
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
-            _automations.value = databaseHelper.readableDatabase.query(
-                automationTable,
-                arrayOf(
-                    "id",
-                    "title",
-                    "prompt",
-                    "schedule_label",
-                    "delivery_label",
-                    "summary",
-                    "status",
-                    "created_at",
-                    "updated_at",
-                ),
-                null,
-                null,
-                null,
-                null,
-                "updated_at DESC",
-            ).use { cursor ->
-                buildList {
-                    while (cursor.moveToNext()) {
-                        val createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("created_at"))
-                        val updatedAt = cursor.getLong(cursor.getColumnIndexOrThrow("updated_at"))
-                        add(
-                            ScheduledAutomationRecord(
-                                id = cursor.getString(cursor.getColumnIndexOrThrow("id")),
-                                title = cursor.getString(cursor.getColumnIndexOrThrow("title")),
-                                prompt = cursor.getString(cursor.getColumnIndexOrThrow("prompt")),
-                                scheduleLabel = cursor.getString(cursor.getColumnIndexOrThrow("schedule_label")),
-                                deliveryLabel = cursor.getString(cursor.getColumnIndexOrThrow("delivery_label")),
-                                summary = cursor.getString(cursor.getColumnIndexOrThrow("summary")),
-                                status = runCatching {
-                                    ScheduledAutomationStatus.valueOf(
-                                        cursor.getString(cursor.getColumnIndexOrThrow("status")),
-                                    )
-                                }.getOrDefault(ScheduledAutomationStatus.Planned),
-                                createdAtEpochMillis = createdAt,
-                                createdAtLabel = DateUtils.getRelativeTimeSpanString(
-                                    createdAt,
-                                    now,
-                                    DateUtils.MINUTE_IN_MILLIS,
-                                ).toString(),
-                                updatedAtLabel = DateUtils.getRelativeTimeSpanString(
-                                    updatedAt,
-                                    now,
-                                    DateUtils.MINUTE_IN_MILLIS,
-                                ).toString(),
-                            ),
-                        )
+            _automations.value = runCatching {
+                databaseHelper.ensureScheduledAutomationSchema()
+                databaseHelper.readableDatabase.query(
+                    automationTable,
+                    arrayOf(
+                        "id",
+                        "title",
+                        "prompt",
+                        "schedule_label",
+                        "delivery_label",
+                        "summary",
+                        "status",
+                        "created_at",
+                        "updated_at",
+                        "last_run_at",
+                        "next_run_at",
+                    ),
+                    null,
+                    null,
+                    null,
+                    null,
+                    "updated_at DESC",
+                ).use { cursor ->
+                    buildList {
+                        while (cursor.moveToNext()) {
+                            val createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("created_at"))
+                            val updatedAt = cursor.getLong(cursor.getColumnIndexOrThrow("updated_at"))
+                            val status = runCatching {
+                                ScheduledAutomationStatus.valueOf(
+                                    cursor.getString(cursor.getColumnIndexOrThrow("status")),
+                                )
+                            }.getOrDefault(ScheduledAutomationStatus.Planned)
+                            val lastRunAt = cursor.optLong("last_run_at")
+                            val nextRunAt = cursor.optLong("next_run_at")
+                            add(
+                                ScheduledAutomationRecord(
+                                    id = cursor.getString(cursor.getColumnIndexOrThrow("id")),
+                                    title = cursor.getString(cursor.getColumnIndexOrThrow("title")),
+                                    prompt = cursor.getString(cursor.getColumnIndexOrThrow("prompt")),
+                                    scheduleLabel = cursor.getString(cursor.getColumnIndexOrThrow("schedule_label")),
+                                    deliveryLabel = cursor.getString(cursor.getColumnIndexOrThrow("delivery_label")),
+                                    summary = decorateScheduledAutomationSummary(
+                                        baseSummary = cursor.getString(cursor.getColumnIndexOrThrow("summary")),
+                                        status = status,
+                                        now = now,
+                                        lastRunAt = lastRunAt,
+                                        nextRunAt = nextRunAt,
+                                    ),
+                                    status = status,
+                                    createdAtEpochMillis = createdAt,
+                                    createdAtLabel = DateUtils.getRelativeTimeSpanString(
+                                        createdAt,
+                                        now,
+                                        DateUtils.MINUTE_IN_MILLIS,
+                                    ).toString(),
+                                    updatedAtLabel = DateUtils.getRelativeTimeSpanString(
+                                        updatedAt,
+                                        now,
+                                        DateUtils.MINUTE_IN_MILLIS,
+                                    ).toString(),
+                                    lastRunAtEpochMillis = lastRunAt,
+                                    lastRunAtLabel = lastRunAt?.let { timestamp ->
+                                        DateUtils.getRelativeTimeSpanString(
+                                            timestamp,
+                                            now,
+                                            DateUtils.MINUTE_IN_MILLIS,
+                                        ).toString()
+                                    },
+                                    nextRunAtEpochMillis = nextRunAt,
+                                    nextRunAtLabel = nextRunAt?.let { timestamp ->
+                                        DateUtils.getRelativeTimeSpanString(
+                                            timestamp,
+                                            now,
+                                            DateUtils.MINUTE_IN_MILLIS,
+                                        ).toString()
+                                    },
+                                ),
+                            )
+                        }
                     }
                 }
-            }
+            }.getOrElse { emptyList() }
         }
     }
 
@@ -183,5 +289,51 @@ class PersistentScheduledAutomationRepository(
 }
 
 internal fun buildScheduledAutomationSummary(plan: ScheduledAutomationPlan): String {
-    return "Recorded ${plan.scheduleLabel} delivery via ${plan.deliveryLabel}. Scheduler execution is still pending implementation."
+    return "Runs ${plan.scheduleLabel.lowercase()} via ${plan.deliveryLabel}."
+}
+
+private fun decorateScheduledAutomationSummary(
+    baseSummary: String,
+    status: ScheduledAutomationStatus,
+    now: Long,
+    lastRunAt: Long?,
+    nextRunAt: Long?,
+): String {
+    val details = buildList {
+        if (lastRunAt != null) {
+            add(
+                "Last run ${
+                    DateUtils.getRelativeTimeSpanString(
+                        lastRunAt,
+                        now,
+                        DateUtils.MINUTE_IN_MILLIS,
+                    )
+                }.",
+            )
+        }
+        if (status == ScheduledAutomationStatus.Active && nextRunAt != null) {
+            add(
+                "Next run ${
+                    DateUtils.getRelativeTimeSpanString(
+                        nextRunAt,
+                        now,
+                        DateUtils.MINUTE_IN_MILLIS,
+                    )
+                }.",
+            )
+        }
+    }
+    return if (details.isEmpty()) {
+        baseSummary
+    } else {
+        "$baseSummary ${details.joinToString(" ")}"
+    }
+}
+
+private fun android.database.Cursor.optLong(columnName: String): Long? {
+    val index = getColumnIndex(columnName)
+    if (index < 0 || isNull(index)) {
+        return null
+    }
+    return getLong(index)
 }

@@ -1,0 +1,233 @@
+package io.makoion.mobileclaw.data
+
+import android.content.Context
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import io.makoion.mobileclaw.notifications.ShellNotificationCenter
+import io.makoion.mobileclaw.sync.ScheduledAutomationWorker
+import java.time.DayOfWeek
+import java.time.Duration
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
+class ScheduledAutomationCoordinator(
+    private val context: Context,
+    private val scheduledAutomationRepository: ScheduledAutomationRepository,
+    private val auditTrailRepository: AuditTrailRepository,
+) {
+    private val coordinatorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun start() {
+        coordinatorScope.launch {
+            syncScheduledWork()
+        }
+    }
+
+    suspend fun activateAutomation(automationId: String): ScheduledAutomationRecord? {
+        val updated = scheduledAutomationRepository.setStatus(
+            automationId = automationId,
+            status = ScheduledAutomationStatus.Active,
+        ) ?: return null
+        val schedule = scheduleFor(updated)
+        enqueueScheduledWork(updated.id, schedule)
+        return scheduledAutomationRepository.updateScheduleWindow(
+            automationId = updated.id,
+            nextRunAtEpochMillis = schedule.initialRunAtEpochMillis,
+        )
+    }
+
+    suspend fun pauseAutomation(automationId: String): ScheduledAutomationRecord? {
+        WorkManager.getInstance(context).cancelUniqueWork(ScheduledAutomationWorker.workName(automationId))
+        val updated = scheduledAutomationRepository.setStatus(
+            automationId = automationId,
+            status = ScheduledAutomationStatus.Paused,
+        ) ?: return null
+        return scheduledAutomationRepository.updateScheduleWindow(
+            automationId = updated.id,
+            nextRunAtEpochMillis = null,
+        )
+    }
+
+    suspend fun runAutomationNow(automationId: String): ScheduledAutomationRecord? {
+        return executeAutomation(automationId, manualTrigger)
+    }
+
+    suspend fun syncScheduledWork() {
+        scheduledAutomationRepository.refresh()
+        scheduledAutomationRepository.automations.value.forEach { automation ->
+            if (automation.status == ScheduledAutomationStatus.Active) {
+                val schedule = scheduleFor(automation)
+                enqueueScheduledWork(automation.id, schedule)
+                scheduledAutomationRepository.updateScheduleWindow(
+                    automationId = automation.id,
+                    nextRunAtEpochMillis = schedule.initialRunAtEpochMillis,
+                )
+            } else {
+                WorkManager.getInstance(context).cancelUniqueWork(
+                    ScheduledAutomationWorker.workName(automation.id),
+                )
+                if (automation.nextRunAtEpochMillis != null) {
+                    scheduledAutomationRepository.updateScheduleWindow(
+                        automationId = automation.id,
+                        nextRunAtEpochMillis = null,
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun executeAutomation(
+        automationId: String,
+        trigger: String,
+    ): ScheduledAutomationRecord? {
+        val automation = scheduledAutomationRepository.findById(automationId) ?: return null
+        if (trigger == scheduledTrigger && automation.status != ScheduledAutomationStatus.Active) {
+            auditTrailRepository.logAction(
+                action = "automation.execute",
+                result = "skipped",
+                details = "Skipped scheduled run for ${automation.title} because it is ${automation.status.name.lowercase()}.",
+                requestId = automation.id,
+            )
+            return automation
+        }
+
+        val schedule = scheduleFor(automation)
+        val executedAt = System.currentTimeMillis()
+        val nextRunAt = if (automation.status == ScheduledAutomationStatus.Active) {
+            executedAt + schedule.repeatIntervalMs
+        } else {
+            automation.nextRunAtEpochMillis
+        }
+        val updated = scheduledAutomationRepository.noteExecution(
+            automationId = automation.id,
+            lastRunAtEpochMillis = executedAt,
+            nextRunAtEpochMillis = nextRunAt,
+        ) ?: automation
+        val deliveryMode = resolveDeliveryMode(updated.deliveryLabel)
+        ShellNotificationCenter.showAutomationExecution(
+            context = context,
+            automation = updated,
+            deliveryMode = deliveryMode,
+            trigger = trigger,
+        )
+        auditTrailRepository.logAction(
+            action = "automation.execute",
+            result = deliveryMode.auditResult,
+            details = buildExecutionDetails(
+                automation = updated,
+                deliveryMode = deliveryMode,
+                trigger = trigger,
+            ),
+            requestId = updated.id,
+        )
+        return updated
+    }
+
+    private fun enqueueScheduledWork(
+        automationId: String,
+        schedule: AutomationSchedule,
+    ) {
+        val request = PeriodicWorkRequestBuilder<ScheduledAutomationWorker>(
+            schedule.repeatIntervalMs,
+            TimeUnit.MILLISECONDS,
+        )
+            .setInitialDelay(schedule.initialDelayMs, TimeUnit.MILLISECONDS)
+            .setInputData(workDataOf(ScheduledAutomationWorker.inputAutomationId to automationId))
+            .build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            ScheduledAutomationWorker.workName(automationId),
+            ExistingPeriodicWorkPolicy.KEEP,
+            request,
+        )
+    }
+
+    private fun scheduleFor(automation: ScheduledAutomationRecord): AutomationSchedule {
+        val repeatIntervalMs = when (automation.scheduleLabel) {
+            "Hourly" -> Duration.ofHours(1).toMillis()
+            "Weekly" -> Duration.ofDays(7).toMillis()
+            "Daily morning" -> Duration.ofDays(1).toMillis()
+            else -> Duration.ofDays(1).toMillis()
+        }
+        val initialRunAt = when (automation.scheduleLabel) {
+            "Hourly" -> nextHourBoundary()
+            "Weekly" -> nextWeeklyWindow()
+            "Daily morning" -> nextDailyMorningWindow()
+            else -> System.currentTimeMillis() + Duration.ofMinutes(15).toMillis()
+        }
+        return AutomationSchedule(
+            repeatIntervalMs = repeatIntervalMs,
+            initialDelayMs = (initialRunAt - System.currentTimeMillis()).coerceAtLeast(0L),
+            initialRunAtEpochMillis = initialRunAt,
+        )
+    }
+
+    private fun nextHourBoundary(): Long {
+        val now = ZonedDateTime.now(ZoneId.systemDefault())
+        return now.plusHours(1).withMinute(0).withSecond(0).withNano(0).toInstant().toEpochMilli()
+    }
+
+    private fun nextDailyMorningWindow(): Long {
+        val now = ZonedDateTime.now(ZoneId.systemDefault())
+        var next = now.withHour(9).withMinute(0).withSecond(0).withNano(0)
+        if (!next.isAfter(now)) {
+            next = next.plusDays(1)
+        }
+        return next.toInstant().toEpochMilli()
+    }
+
+    private fun nextWeeklyWindow(): Long {
+        val now = ZonedDateTime.now(ZoneId.systemDefault())
+        var next = now.with(DayOfWeek.MONDAY).withHour(9).withMinute(0).withSecond(0).withNano(0)
+        if (!next.isAfter(now)) {
+            next = next.plusWeeks(1)
+        }
+        return next.toInstant().toEpochMilli()
+    }
+
+    private fun resolveDeliveryMode(deliveryLabel: String): AutomationDeliveryMode {
+        return when (deliveryLabel) {
+            "Email",
+            "Telegram" -> AutomationDeliveryMode.LocalFallback
+            else -> AutomationDeliveryMode.LocalNotification
+        }
+    }
+
+    private fun buildExecutionDetails(
+        automation: ScheduledAutomationRecord,
+        deliveryMode: AutomationDeliveryMode,
+        trigger: String,
+    ): String {
+        val deliveryDetails = when (deliveryMode) {
+            AutomationDeliveryMode.LocalNotification ->
+                "Delivered through the on-device notification channel."
+            AutomationDeliveryMode.LocalFallback ->
+                "Requested external delivery is still staged, so the run was surfaced through the local notification channel."
+        }
+        return "Executed ${automation.title} via ${automation.scheduleLabel} ($trigger trigger). $deliveryDetails"
+    }
+
+    companion object {
+        private const val manualTrigger = "manual"
+        private const val scheduledTrigger = "scheduled"
+    }
+}
+
+private data class AutomationSchedule(
+    val repeatIntervalMs: Long,
+    val initialDelayMs: Long,
+    val initialRunAtEpochMillis: Long,
+)
+
+enum class AutomationDeliveryMode(
+    val auditResult: String,
+) {
+    LocalNotification("delivered"),
+    LocalFallback("local_fallback"),
+}

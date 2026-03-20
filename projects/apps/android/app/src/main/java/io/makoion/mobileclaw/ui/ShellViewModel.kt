@@ -358,6 +358,13 @@ class ShellViewModel(
     )
     val deleteConsentPrompts: SharedFlow<DeleteConsentPrompt> = _deleteConsentPrompts.asSharedFlow()
 
+    init {
+        viewModelScope.launch {
+            appContainer.shellRecoveryCoordinator.start()
+            appContainer.scheduledAutomationCoordinator.start()
+        }
+    }
+
     val uiState: StateFlow<ShellUiState> = combine(
         combine(
             combine(
@@ -1002,19 +1009,20 @@ class ShellViewModel(
 
     fun activateScheduledAutomation(automationId: String) {
         viewModelScope.launch {
-            appContainer.scheduledAutomationRepository.setStatus(
-                automationId = automationId,
-                status = ScheduledAutomationStatus.Active,
-            )
+            appContainer.scheduledAutomationCoordinator.activateAutomation(automationId)
         }
     }
 
     fun pauseScheduledAutomation(automationId: String) {
         viewModelScope.launch {
-            appContainer.scheduledAutomationRepository.setStatus(
-                automationId = automationId,
-                status = ScheduledAutomationStatus.Paused,
-            )
+            appContainer.scheduledAutomationCoordinator.pauseAutomation(automationId)
+        }
+    }
+
+    fun runScheduledAutomationNow(automationId: String) {
+        viewModelScope.launch {
+            appContainer.scheduledAutomationCoordinator.runAutomationNow(automationId)
+            appContainer.auditTrailRepository.refresh()
         }
     }
 

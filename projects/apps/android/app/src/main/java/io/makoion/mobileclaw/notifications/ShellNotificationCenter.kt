@@ -14,9 +14,11 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import io.makoion.mobileclaw.MobileClawApplication
 import io.makoion.mobileclaw.MainActivity
 import io.makoion.mobileclaw.R
+import io.makoion.mobileclaw.data.AutomationDeliveryMode
 import io.makoion.mobileclaw.data.AgentTaskStatus
 import io.makoion.mobileclaw.data.ApprovalInboxStatus
 import io.makoion.mobileclaw.data.AgentTaskRecord
+import io.makoion.mobileclaw.data.ScheduledAutomationRecord
 import io.makoion.mobileclaw.data.TaskFollowUpPresentation
 import io.makoion.mobileclaw.service.VoiceCaptureService
 import io.makoion.mobileclaw.ui.ShellSection
@@ -40,6 +42,7 @@ object ShellNotificationCenter {
     private const val quickActionsChannelId = "shell_quick_actions"
     private const val voiceChannelId = "voice_capture"
     private const val taskFollowUpChannelId = "task_follow_ups"
+    private const val automationChannelId = "scheduled_automations"
     private const val taskFollowUpPreferencesName = "makoion_task_follow_up_notifications"
     private const val taskFollowUpKeyName = "posted_keys"
 
@@ -103,6 +106,24 @@ object ShellNotificationCenter {
         taskId: String,
     ) {
         NotificationManagerCompat.from(context).cancel(taskNotificationId(taskId))
+    }
+
+    fun showAutomationExecution(
+        context: Context,
+        automation: ScheduledAutomationRecord,
+        deliveryMode: AutomationDeliveryMode,
+        trigger: String,
+    ) {
+        ensureChannels(context)
+        NotificationManagerCompat.from(context).notify(
+            automationNotificationId(automation.id),
+            buildAutomationExecutionNotification(
+                context = context,
+                automation = automation,
+                deliveryMode = deliveryMode,
+                trigger = trigger,
+            ),
+        )
     }
 
     private fun buildQuickActionsNotification(context: Context): Notification {
@@ -182,6 +203,32 @@ object ShellNotificationCenter {
         }
 
         return builder.build()
+    }
+
+    private fun buildAutomationExecutionNotification(
+        context: Context,
+        automation: ScheduledAutomationRecord,
+        deliveryMode: AutomationDeliveryMode,
+        trigger: String,
+    ): Notification {
+        val contentText = when (deliveryMode) {
+            AutomationDeliveryMode.LocalNotification ->
+                "${automation.scheduleLabel} automation delivered to the local notification channel."
+            AutomationDeliveryMode.LocalFallback ->
+                "${automation.deliveryLabel} is still staged, so this run stayed on-device."
+        }
+        return NotificationCompat.Builder(context, automationChannelId)
+            .setSmallIcon(R.drawable.ic_notification_status)
+            .setContentTitle("Automation run: ${automation.title}")
+            .setContentText(contentText)
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "$contentText Trigger: $trigger. Prompt: ${automation.prompt.take(180)}",
+                ),
+            )
+            .setContentIntent(mainActivityPendingIntent(context, ShellSection.Dashboard))
+            .setAutoCancel(true)
+            .build()
     }
 
     private fun mainActivityPendingIntent(
@@ -272,13 +319,25 @@ object ShellNotificationCenter {
             "Task follow-ups",
             NotificationManager.IMPORTANCE_DEFAULT,
         )
+        val automationChannel = NotificationChannel(
+            automationChannelId,
+            "Scheduled automations",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        )
         manager.createNotificationChannel(quickActionsChannel)
         manager.createNotificationChannel(voiceChannel)
         manager.createNotificationChannel(taskFollowUpChannel)
+        manager.createNotificationChannel(automationChannel)
     }
 
     private fun taskNotificationId(taskId: String): Int {
         return 5_000 + taskId.hashCode().let { hash ->
+            if (hash == Int.MIN_VALUE) 0 else kotlin.math.abs(hash)
+        }
+    }
+
+    private fun automationNotificationId(automationId: String): Int {
+        return 7_000 + automationId.hashCode().let { hash ->
             if (hash == Int.MIN_VALUE) 0 else kotlin.math.abs(hash)
         }
     }
