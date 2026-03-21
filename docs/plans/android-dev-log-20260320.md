@@ -249,3 +249,39 @@
   - approvals and retries were already in chat
   - scheduled automation lifecycle control is now also in chat
   - MCP bridge setup and skill catalog updates are now also in chat
+
+## Follow-up Session: Chat Recovery Instrumentation Hardening
+
+### Scope
+
+- Add explicit emulator coverage for chat-thread recovery across activity recreation.
+- Lock down the "phone is the source of truth" behavior for the active conversation state before moving on to deeper process-death recovery.
+
+### Changes applied
+
+- Added `ChatRecoveryFlowTest.kt` in `projects/apps/android/app/src/androidTest/java/io/makoion/mobileclaw/ui/`.
+- The new test uses the installed app's real `chatTranscriptRepository` to:
+  - create a new thread
+  - append user and assistant messages
+  - mark that thread as active
+  - recreate `MainActivity`
+  - assert the active-thread title is restored from persisted state
+  - assert the assistant reply is rendered again after recreation
+- Tightened the assertion strategy after the first run exposed a false negative:
+  - the thread title string appears in more than one visible node
+  - the test now validates restored repository state plus assistant-message visibility instead of assuming a single title node
+
+### Emulator validation results
+
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest` passed with:
+  - `ScheduledAutomationFlowTest`
+  - `McpSkillChatFlowTest`
+  - `ChatRecoveryFlowTest`
+
+### Product effect
+
+- Active chat-thread recovery is now explicitly covered on the emulator instead of being inferred from repository code alone.
+- This reduces the risk of regressing conversation continuity while the shell keeps moving toward an agent-first chat surface.
