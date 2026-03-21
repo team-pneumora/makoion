@@ -285,3 +285,41 @@
 
 - Active chat-thread recovery is now explicitly covered on the emulator instead of being inferred from repository code alone.
 - This reduces the risk of regressing conversation continuity while the shell keeps moving toward an agent-first chat surface.
+
+## Follow-up Session: Shell Recovery Chat Transcript Integration
+
+### Scope
+
+- Promote chat transcript state into the same recovery path that already owns approvals, tasks, automations, and transfer recovery.
+- Make recovery diagnostics reflect the active conversation so chat-first state is not treated as a side-effect.
+
+### Changes applied
+
+- Extended `ShellRecoveryCoordinator.kt` to refresh `chatTranscriptRepository` as an explicit recovery step.
+- Updated shell recovery copy so the default/running/success states now describe chat transcript refresh as part of foreground/manual recovery.
+- Expanded recovery detail output to include:
+  - total chat thread count
+  - restored active thread title
+  - restored active thread message count
+- Wired `ShellAppContainer.kt` so the recovery coordinator receives the shared chat transcript repository.
+- Expanded `ChatRecoveryFlowTest.kt`:
+  - recreate the activity
+  - verify the active thread still resolves correctly
+  - trigger manual shell recovery on the installed app
+  - verify recovery finishes in `Success`
+  - verify recovery detail mentions the restored active chat thread
+
+### Emulator validation results
+
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest` passed with:
+  - `ScheduledAutomationFlowTest`
+  - `McpSkillChatFlowTest`
+  - `ChatRecoveryFlowTest`
+
+### Product effect
+
+- Shell recovery now treats the active conversation as a first-class durable runtime surface instead of leaving chat refresh implicit.
+- Recovery diagnostics now tell the next operator which conversation came back, which is useful when chasing lifecycle and process-death issues.

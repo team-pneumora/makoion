@@ -25,7 +25,7 @@ data class ShellRecoveryState(
     val triggerLabel: String? = null,
     val updatedAtLabel: String? = null,
     val summary: String = "Foreground recovery has not run yet.",
-    val detail: String = "The shell refreshes approvals, tasks, scheduled automations, devices, organize executions, audit events, and transfer recovery whenever the app comes back to the foreground.",
+    val detail: String = "The shell refreshes chat transcripts, approvals, tasks, scheduled automations, devices, organize executions, audit events, and transfer recovery whenever the app comes back to the foreground.",
 )
 
 class ShellRecoveryCoordinator(
@@ -33,6 +33,7 @@ class ShellRecoveryCoordinator(
     private val agentTaskRepository: AgentTaskRepository,
     private val agentTaskRetryCoordinator: AgentTaskRetryCoordinator,
     private val auditTrailRepository: AuditTrailRepository,
+    private val chatTranscriptRepository: ChatTranscriptRepository,
     private val devicePairingRepository: DevicePairingRepository,
     private val organizeExecutionRepository: OrganizeExecutionRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
@@ -78,7 +79,7 @@ class ShellRecoveryCoordinator(
             triggerLabel = trigger.label,
             updatedAtLabel = relativeTimeLabel(now),
             summary = "${trigger.label} recovery is refreshing shell state.",
-            detail = "Refreshing approvals, tasks, scheduled automations, paired devices, organize executions, audit events, and transfer recovery.",
+            detail = "Refreshing chat transcripts, approvals, tasks, scheduled automations, paired devices, organize executions, audit events, and transfer recovery.",
         )
         recoveryJob?.cancel()
         recoveryJob = scope.launch {
@@ -86,6 +87,9 @@ class ShellRecoveryCoordinator(
             var transferRecoverySnapshot = TransferRecoverySnapshot()
             var taskRecoverySnapshot = AgentTaskRecoverySnapshot()
             var automationSyncSnapshot = ScheduledAutomationSyncSnapshot()
+            refreshStep("chat transcripts", failures) {
+                chatTranscriptRepository.refresh()
+            }
             refreshStep("approvals", failures) {
                 approvalInboxRepository.refresh()
             }
@@ -132,7 +136,7 @@ class ShellRecoveryCoordinator(
                     status = ShellRecoveryStatus.Success,
                     triggerLabel = trigger.label,
                     updatedAtLabel = relativeTimeLabel(completedAt),
-                    summary = "${trigger.label} recovery refreshed approvals, tasks, automations, devices, organize, audit, and transfer recovery.",
+                    summary = "${trigger.label} recovery refreshed chat, approvals, tasks, automations, devices, organize, audit, and transfer recovery.",
                     detail = recoveryDetails,
                 )
                 _state.value = successState
@@ -186,6 +190,7 @@ class ShellRecoveryCoordinator(
         taskRecoverySnapshot: AgentTaskRecoverySnapshot,
         automationSyncSnapshot: ScheduledAutomationSyncSnapshot,
     ): String {
+        val chatThreadCount = chatTranscriptRepository.threads.value.size
         val approvalCount = approvalInboxRepository.items.value.size
         val taskCount = agentTaskRepository.tasks.value.size
         val automationCount = scheduledAutomationRepository.automations.value.size
@@ -198,6 +203,8 @@ class ShellRecoveryCoordinator(
         }
         return buildString {
             append("Loaded ")
+            append(chatThreadCount)
+            append(" chat thread(s), ")
             append(approvalCount)
             append(" approval(s), ")
             append(taskCount)
@@ -210,6 +217,8 @@ class ShellRecoveryCoordinator(
             append(", and ")
             append(auditCount)
             append(" audit event(s). ")
+            append(buildChatRecoverySummary())
+            append(" ")
             append(buildAutomationRecoverySummary(automationSyncSnapshot))
             append(" ")
             append(buildTaskRecoverySummary(taskRecoverySnapshot))
@@ -219,6 +228,15 @@ class ShellRecoveryCoordinator(
                     transferRecoverySnapshot = transferRecoverySnapshot,
                 ),
             )
+        }
+    }
+
+    private fun buildChatRecoverySummary(): String {
+        val activeThread = chatTranscriptRepository.activeThread.value
+        return if (activeThread == null) {
+            "Chat recovery did not find an active thread."
+        } else {
+            "Chat recovery restored active thread ${activeThread.title} with ${activeThread.messageCount} message(s)."
         }
     }
 

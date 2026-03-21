@@ -153,6 +153,7 @@ class ShellAppContainer(
         agentTaskRepository = agentTaskRepository,
         agentTaskRetryCoordinator = agentTaskRetryCoordinator,
         auditTrailRepository = auditTrailRepository,
+        chatTranscriptRepository = chatTranscriptRepository,
         devicePairingRepository = devicePairingRepository,
         organizeExecutionRepository = organizeExecutionRepository,
         scheduledAutomationRepository = scheduledAutomationRepository,
