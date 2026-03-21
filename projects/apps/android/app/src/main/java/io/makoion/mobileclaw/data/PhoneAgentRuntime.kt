@@ -51,7 +51,9 @@ class LocalPhoneAgentRuntime(
     private val fileGraphActionPlanner: LocalFileGraphActionPlanner,
     private val approvalInboxRepository: ApprovalInboxRepository,
     private val auditTrailRepository: AuditTrailRepository,
+    private val cloudDriveConnectionRepository: CloudDriveConnectionRepository,
     private val devicePairingRepository: DevicePairingRepository,
+    private val deliveryChannelRepository: DeliveryChannelRegistryRepository,
     private val externalEndpointRepository: ExternalEndpointRegistryRepository,
     private val mcpSkillRepository: McpSkillRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
@@ -74,9 +76,16 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowDashboard -> buildDashboardResponse(trimmedPrompt, context)
             AgentIntent.ShowHistory -> buildHistoryResponse(trimmedPrompt, context)
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
+            AgentIntent.ShowResourceStack -> showResourceStack(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
             AgentIntent.RunShellRecovery -> runShellRecovery(trimmedPrompt)
             AgentIntent.ShowShellRecoveryStatus -> showShellRecoveryStatus(trimmedPrompt)
+            is AgentIntent.StageCloudDrive -> stageCloudDrive(trimmedPrompt, intent.provider)
+            is AgentIntent.ConnectCloudDrive -> connectCloudDrive(trimmedPrompt, intent.provider)
+            is AgentIntent.StageExternalEndpoint -> stageExternalEndpoint(trimmedPrompt, intent.endpointId)
+            is AgentIntent.ConnectExternalEndpoint -> connectExternalEndpoint(trimmedPrompt, intent.endpointId)
+            is AgentIntent.StageDeliveryChannel -> stageDeliveryChannel(trimmedPrompt, intent.channelId)
+            is AgentIntent.ConnectDeliveryChannel -> connectDeliveryChannel(trimmedPrompt, intent.channelId)
             AgentIntent.PlanScheduledAutomation -> planScheduledAutomation(trimmedPrompt, context)
             is AgentIntent.ActivateScheduledAutomation -> activateScheduledAutomation(trimmedPrompt, context, intent.automationId)
             is AgentIntent.PauseScheduledAutomation -> pauseScheduledAutomation(trimmedPrompt, context, intent.automationId)
@@ -989,6 +998,230 @@ class LocalPhoneAgentRuntime(
         )
     }
 
+    private fun showResourceStack(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val connectedCloudDrives = context.cloudDriveConnections.filter {
+            it.status == CloudDriveConnectionStatus.Connected
+        }
+        val stagedCloudDrives = context.cloudDriveConnections.filter {
+            it.status == CloudDriveConnectionStatus.Staged
+        }
+        val connectedEndpoints = context.externalEndpoints.filter {
+            it.status == ExternalEndpointStatus.Connected
+        }
+        val stagedEndpoints = context.externalEndpoints.filter {
+            it.status == ExternalEndpointStatus.Staged
+        }
+        val connectedChannels = context.deliveryChannels.filter {
+            it.status == DeliveryChannelStatus.Connected
+        }
+        val stagedChannels = context.deliveryChannels.filter {
+            it.status == DeliveryChannelStatus.Staged
+        }
+        val installedMcpSkills = mcpSkillRepository.skills.value
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                buildString {
+                    append("현재 resource stack 요약입니다.\n")
+                    append("cloud drive: 연결 ${connectedCloudDrives.size}개, staged ${stagedCloudDrives.size}개\n")
+                    append("external endpoint: 연결 ${connectedEndpoints.size}개, staged ${stagedEndpoints.size}개\n")
+                    append("delivery channel: 연결 ${connectedChannels.size}개, staged ${stagedChannels.size}개\n")
+                    append("paired companion: ${context.pairedDevices.size}대, MCP skill: ${installedMcpSkills.size}개\n")
+                    append("연결된 항목: ")
+                    append(
+                        (
+                            connectedCloudDrives.map { it.provider.displayName } +
+                                connectedEndpoints.map { it.displayName } +
+                                connectedChannels.map { it.displayName }
+                            ).ifEmpty { listOf("없음") }.joinToString(),
+                    )
+                    if (stagedEndpoints.isNotEmpty() || stagedChannels.isNotEmpty() || stagedCloudDrives.isNotEmpty()) {
+                        append("\nstaged 항목: ")
+                        append(
+                            (
+                                stagedCloudDrives.map { it.provider.displayName } +
+                                    stagedEndpoints.map { it.displayName } +
+                                    stagedChannels.map { it.displayName }
+                                ).joinToString(),
+                        )
+                    }
+                }
+            } else {
+                buildString {
+                    append("Here is the current resource stack.\n")
+                    append("Cloud drives: ${connectedCloudDrives.size} connected, ${stagedCloudDrives.size} staged\n")
+                    append("External endpoints: ${connectedEndpoints.size} connected, ${stagedEndpoints.size} staged\n")
+                    append("Delivery channels: ${connectedChannels.size} connected, ${stagedChannels.size} staged\n")
+                    append("Paired companions: ${context.pairedDevices.size}, MCP skills: ${installedMcpSkills.size}\n")
+                    append("Connected items: ")
+                    append(
+                        (
+                            connectedCloudDrives.map { it.provider.displayName } +
+                                connectedEndpoints.map { it.displayName } +
+                                connectedChannels.map { it.displayName }
+                            ).ifEmpty { listOf("none") }.joinToString(),
+                    )
+                    if (stagedEndpoints.isNotEmpty() || stagedChannels.isNotEmpty() || stagedCloudDrives.isNotEmpty()) {
+                        append("\nStaged items: ")
+                        append(
+                            (
+                                stagedCloudDrives.map { it.provider.displayName } +
+                                    stagedEndpoints.map { it.displayName } +
+                                    stagedChannels.map { it.displayName }
+                                ).joinToString(),
+                        )
+                    }
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceStackShowActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "현재 resource stack을 채팅에 요약했습니다."
+            } else {
+                "Summarized the current resource stack in chat."
+            },
+        )
+    }
+
+    private suspend fun stageCloudDrive(
+        prompt: String,
+        provider: CloudDriveProviderKind,
+    ): AgentTurnResult {
+        cloudDriveConnectionRepository.stageConnection(provider)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "${provider.displayName} connector를 staged 상태로 기록했어요. 실제 OAuth와 토큰 보관 연동은 아직 남아 있습니다."
+            } else {
+                "I staged the ${provider.displayName} connector. Real OAuth handoff and token storage are still pending."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceCloudDriveStageActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "${provider.displayName} connector를 staged로 전환했습니다."
+            } else {
+                "Marked the cloud drive connector as staged."
+            },
+        )
+    }
+
+    private suspend fun connectCloudDrive(
+        prompt: String,
+        provider: CloudDriveProviderKind,
+    ): AgentTurnResult {
+        val accountLabel = "${provider.displayName} placeholder"
+        cloudDriveConnectionRepository.markConnected(provider, accountLabel)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "${provider.displayName} connector를 mock-ready로 연결했어요. 계정 라벨은 $accountLabel 로 기록했습니다."
+            } else {
+                "I marked the ${provider.displayName} connector as mock-ready and recorded $accountLabel as its placeholder account."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceCloudDriveConnectActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "${provider.displayName} connector를 채팅에서 연결 상태로 기록했습니다."
+            } else {
+                "Marked the cloud drive connector as connected from chat."
+            },
+        )
+    }
+
+    private suspend fun stageExternalEndpoint(
+        prompt: String,
+        endpointId: String,
+    ): AgentTurnResult {
+        externalEndpointRepository.stageEndpoint(endpointId)
+        val endpointLabel = externalEndpointDisplayName(endpointId)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "$endpointLabel endpoint를 staged 상태로 기록했어요. 실제 auth/transport wiring은 아직 남아 있습니다."
+            } else {
+                "I staged the $endpointLabel endpoint. Real auth and transport wiring are still pending."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceEndpointStageActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "$endpointLabel endpoint를 staged로 전환했습니다."
+            } else {
+                "Marked the external endpoint as staged."
+            },
+        )
+    }
+
+    private suspend fun connectExternalEndpoint(
+        prompt: String,
+        endpointId: String,
+    ): AgentTurnResult {
+        val endpointLabel = "${externalEndpointDisplayName(endpointId)} placeholder"
+        externalEndpointRepository.markConnected(endpointId, endpointLabel)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "${externalEndpointDisplayName(endpointId)} endpoint를 mock-ready로 연결했어요."
+            } else {
+                "I marked ${externalEndpointDisplayName(endpointId)} as a mock-ready endpoint."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceEndpointConnectActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "외부 endpoint 연결 상태를 채팅에서 갱신했습니다."
+            } else {
+                "Updated the external endpoint connection state from chat."
+            },
+        )
+    }
+
+    private suspend fun stageDeliveryChannel(
+        prompt: String,
+        channelId: String,
+    ): AgentTurnResult {
+        deliveryChannelRepository.stageChannel(channelId)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "${deliveryChannelDisplayName(channelId)} delivery를 staged 상태로 기록했어요."
+            } else {
+                "I staged ${deliveryChannelDisplayName(channelId)} as a delivery target."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceDeliveryStageActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "delivery channel을 staged로 전환했습니다."
+            } else {
+                "Marked the delivery channel as staged."
+            },
+        )
+    }
+
+    private suspend fun connectDeliveryChannel(
+        prompt: String,
+        channelId: String,
+    ): AgentTurnResult {
+        val destinationLabel = "${deliveryChannelDisplayName(channelId)} placeholder"
+        deliveryChannelRepository.markConnected(channelId, destinationLabel)
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                "${deliveryChannelDisplayName(channelId)} delivery를 mock-ready로 연결했어요."
+            } else {
+                "I marked ${deliveryChannelDisplayName(channelId)} as a mock-ready delivery target."
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = resourceDeliveryConnectActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "delivery channel 연결 상태를 채팅에서 갱신했습니다."
+            } else {
+                "Updated the delivery channel connection state from chat."
+            },
+        )
+    }
+
     private suspend fun runShellRecovery(prompt: String): AgentTurnResult {
         shellRecoveryCoordinator.requestManualRecovery()
         val recoveryState = awaitRecoveryCompletion()
@@ -1618,7 +1851,7 @@ class LocalPhoneAgentRuntime(
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열네 가지예요.\n")
+                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열다섯 가지예요.\n")
                     append("1. 인덱싱된 파일 요약 (${indexedCount}개 감지)\n")
                     append("2. 파일 정리 dry-run 계획 생성 후 승인 요청\n")
                     append("3. companion 전송 approval 생성\n")
@@ -1626,23 +1859,24 @@ class LocalPhoneAgentRuntime(
                     append("5. 실패한 organize task 재시도 (${retryableTasks}건 가능)\n")
                     append("6. Dashboard / History / Settings로 이동\n")
                     append("7. shell recovery 실행 및 최근 recovery 상태 확인\n")
-                    append("8. 연결된 companion surface 열기 (${pairedDevices}대 연결)\n")
-                    append("9. companion health snapshot 새로고침\n")
-                    append("10. desktop companion notification 보내기\n")
-                    append("11. allowlisted desktop workflow 실행\n")
-                    append("12. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
-                    append("13. MCP bridge 연결 및 MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
-                    append("14. code/app/automation starter scaffold 생성\n")
+                    append("8. resource stack 요약과 cloud/endpoint/delivery staged 또는 connect 제어\n")
+                    append("9. 연결된 companion surface 열기 (${pairedDevices}대 연결)\n")
+                    append("10. companion health snapshot 새로고침\n")
+                    append("11. desktop companion notification 보내기\n")
+                    append("12. allowlisted desktop workflow 실행\n")
+                    append("13. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
+                    append("14. MCP bridge 연결 및 MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
+                    append("15. code/app/automation starter scaffold 생성\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
                     append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
                     append("delivery channel은 staged ${stagedDeliveryChannels}개, mock-ready ${connectedDeliveryChannels}개입니다.\n")
-                    append("예시: 'shell recovery 실행해', 'recovery 상태 보여줘', '최근 automation 활성화해', 'MCP skill 업데이트해'.\n")
+                    append("예시: 'resource stack 보여줘', 'Google Drive 연결해', 'browser automation profile 준비해', 'shell recovery 실행해'.\n")
                     append("기본 모델 선호도는 $preferredProviderLabel 입니다.")
                 }
             } else {
                 buildString {
-                    append("This first chat loop can do fourteen things right now.\n")
+                    append("This first chat loop can do fifteen things right now.\n")
                     append("1. Summarize indexed files ($indexedCount detected)\n")
                     append("2. Create an organize dry-run and submit it for approval\n")
                     append("3. Create a companion transfer approval\n")
@@ -1650,18 +1884,19 @@ class LocalPhoneAgentRuntime(
                     append("5. Retry a failed organize task ($retryableTasks retryable)\n")
                     append("6. Route you to Dashboard, History, or Settings\n")
                     append("7. Run shell recovery and inspect the latest recovery status\n")
-                    append("8. Open a paired companion surface ($pairedDevices paired)\n")
-                    append("9. Refresh the companion health snapshot\n")
-                    append("10. Send a desktop companion notification\n")
-                    append("11. Run an allowlisted desktop workflow\n")
-                    append("12. Record, activate, pause, and run scheduled automations\n")
-                    append("13. Connect the MCP bridge and update MCP skills ($installedMcpSkills installed)\n")
-                    append("14. Generate a code, app, or automation starter scaffold\n")
+                    append("8. Inspect the resource stack and stage/connect cloud, endpoint, and delivery profiles\n")
+                    append("9. Open a paired companion surface ($pairedDevices paired)\n")
+                    append("10. Refresh the companion health snapshot\n")
+                    append("11. Send a desktop companion notification\n")
+                    append("12. Run an allowlisted desktop workflow\n")
+                    append("13. Record, activate, pause, and run scheduled automations\n")
+                    append("14. Connect the MCP bridge and update MCP skills ($installedMcpSkills installed)\n")
+                    append("15. Generate a code, app, or automation starter scaffold\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
                     append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
                     append("Delivery channels staged: $stagedDeliveryChannels, mock-ready: $connectedDeliveryChannels.\n")
-                    append("Examples: 'run shell recovery now', 'show shell recovery status', 'activate the latest automation', 'update MCP skills'.\n")
+                    append("Examples: 'show resource stack', 'connect Google Drive', 'stage browser automation profile', 'run shell recovery now'.\n")
                     append("The current model preference is $preferredProviderLabel.")
                 }
             },
@@ -2026,6 +2261,25 @@ class LocalPhoneAgentRuntime(
         }
     }
 
+    private fun externalEndpointDisplayName(endpointId: String): String {
+        return when (endpointId) {
+            mcpBridgeEndpointId -> "Companion MCP bridge"
+            browserAutomationEndpointId -> "Browser automation profile"
+            thirdPartyApiEndpointId -> "Third-party API profile"
+            else -> endpointId
+        }
+    }
+
+    private fun deliveryChannelDisplayName(channelId: String): String {
+        return when (channelId) {
+            localNotificationChannelId -> "Phone local notification"
+            telegramDeliveryChannelId -> "Telegram bot relay"
+            desktopCompanionDeliveryChannelId -> "Desktop companion relay"
+            webhookDeliveryChannelId -> "Custom webhook relay"
+            else -> channelId
+        }
+    }
+
     private fun planTurn(prompt: String): AgentPlannerOutput {
         val normalized = prompt.lowercase()
         val approvalId = approvalIdFromPrompt(prompt)
@@ -2097,6 +2351,39 @@ class LocalPhoneAgentRuntime(
             "복구 상태",
             "리커버리 상태",
             "복구 보여",
+        )
+        val wantsShowResourceStack = containsAny(
+            normalized,
+            "resource stack",
+            "connected resources",
+            "resource summary",
+            "resource status",
+            "리소스 스택",
+            "연결 자원",
+            "자원 상태",
+            "리소스 상태",
+        )
+        val cloudDriveProvider = cloudDriveProviderFromPrompt(normalized)
+        val externalEndpointId = externalEndpointIdFromPrompt(normalized)
+        val deliveryChannelId = deliveryChannelIdFromPrompt(normalized)
+        val wantsStageResource = containsAny(
+            normalized,
+            "stage",
+            "prepare",
+            "seed",
+            "reserve",
+            "준비",
+            "스테이지",
+            "스테이징",
+        )
+        val wantsConnectResource = containsAny(
+            normalized,
+            "connect",
+            "enable",
+            "activate",
+            "mock-ready",
+            "연결",
+            "활성화",
         )
         val mentionsAutomation = containsAny(
             normalized,
@@ -2214,6 +2501,69 @@ class LocalPhoneAgentRuntime(
                     summary = "Summarize the most recent shell recovery status and detail in chat.",
                     capabilities = listOf("shell.recovery.read"),
                     resources = listOf("task.runtime", "audit.history"),
+                )
+            wantsShowResourceStack ->
+                plannerOutput(
+                    intent = AgentIntent.ShowResourceStack,
+                    auditResult = "resource_stack_shown",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Summarize the current connected and staged resource stack from chat.",
+                    capabilities = listOf("resource.stack.read"),
+                    resources = listOf("resource.stack"),
+                )
+            cloudDriveProvider != null && wantsStageResource ->
+                plannerOutput(
+                    intent = AgentIntent.StageCloudDrive(cloudDriveProvider),
+                    auditResult = "cloud_drive_staged_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Stage a cloud drive connector profile from chat.",
+                    capabilities = listOf("cloud.connectors.stage"),
+                    resources = listOf("cloud.drives"),
+                )
+            cloudDriveProvider != null && wantsConnectResource ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectCloudDrive(cloudDriveProvider),
+                    auditResult = "cloud_drive_connected_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Mark a cloud drive connector as mock-ready from chat.",
+                    capabilities = listOf("cloud.connectors.connect"),
+                    resources = listOf("cloud.drives"),
+                )
+            externalEndpointId != null && wantsStageResource ->
+                plannerOutput(
+                    intent = AgentIntent.StageExternalEndpoint(externalEndpointId),
+                    auditResult = "external_endpoint_staged_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Stage an external endpoint profile from chat.",
+                    capabilities = listOf("external.endpoint.stage"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            externalEndpointId != null && wantsConnectResource ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectExternalEndpoint(externalEndpointId),
+                    auditResult = "external_endpoint_connected_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Mark an external endpoint profile as mock-ready from chat.",
+                    capabilities = listOf("external.endpoint.connect"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            deliveryChannelId != null && wantsStageResource ->
+                plannerOutput(
+                    intent = AgentIntent.StageDeliveryChannel(deliveryChannelId),
+                    auditResult = "delivery_channel_staged_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Stage a delivery channel profile from chat.",
+                    capabilities = listOf("delivery.channel.stage"),
+                    resources = listOf("delivery.channels"),
+                )
+            deliveryChannelId != null && wantsConnectResource ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectDeliveryChannel(deliveryChannelId),
+                    auditResult = "delivery_channel_connected_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Mark a delivery channel profile as mock-ready from chat.",
+                    capabilities = listOf("delivery.channel.connect"),
+                    resources = listOf("delivery.channels"),
                 )
             wantsRunAutomationNow ->
                 plannerOutput(
@@ -2568,6 +2918,44 @@ class LocalPhoneAgentRuntime(
         return automationIdPattern.find(prompt)?.value
     }
 
+    private fun cloudDriveProviderFromPrompt(normalizedPrompt: String): CloudDriveProviderKind? {
+        return when {
+            containsAny(normalizedPrompt, "google drive", "gdrive", "구글 드라이브") ->
+                CloudDriveProviderKind.GoogleDrive
+            containsAny(normalizedPrompt, "onedrive", "원드라이브") ->
+                CloudDriveProviderKind.OneDrive
+            containsAny(normalizedPrompt, "dropbox", "드롭박스") ->
+                CloudDriveProviderKind.Dropbox
+            else -> null
+        }
+    }
+
+    private fun externalEndpointIdFromPrompt(normalizedPrompt: String): String? {
+        return when {
+            containsAny(normalizedPrompt, "mcp bridge", "mcp server", "mcp 브리지", "mcp 서버") ->
+                mcpBridgeEndpointId
+            containsAny(normalizedPrompt, "browser automation", "browser profile", "브라우저 자동화") ->
+                browserAutomationEndpointId
+            containsAny(normalizedPrompt, "third-party api", "third party api", "api profile", "외부 api") ->
+                thirdPartyApiEndpointId
+            else -> null
+        }
+    }
+
+    private fun deliveryChannelIdFromPrompt(normalizedPrompt: String): String? {
+        return when {
+            containsAny(normalizedPrompt, "phone notification", "local notification", "폰 알림", "로컬 알림") ->
+                localNotificationChannelId
+            containsAny(normalizedPrompt, "telegram", "텔레그램") ->
+                telegramDeliveryChannelId
+            containsAny(normalizedPrompt, "desktop companion relay", "desktop relay", "데스크톱 릴레이") ->
+                desktopCompanionDeliveryChannelId
+            containsAny(normalizedPrompt, "webhook", "웹훅") ->
+                webhookDeliveryChannelId
+            else -> null
+        }
+    }
+
     private fun approvalReply(
         prompt: String,
         approval: ApprovalInboxItem,
@@ -2758,6 +3146,13 @@ class LocalPhoneAgentRuntime(
         private const val approvalsDenyActionKey = "approvals.deny"
         private const val manualTaskRetryActionKey = "agent.task.retry.manual"
         private const val shellRefreshActionKey = "shell.refresh"
+        private const val resourceStackShowActionKey = "resource.stack.show"
+        private const val resourceCloudDriveStageActionKey = "resource.cloud.stage"
+        private const val resourceCloudDriveConnectActionKey = "resource.cloud.connect"
+        private const val resourceEndpointStageActionKey = "resource.endpoint.stage"
+        private const val resourceEndpointConnectActionKey = "resource.endpoint.connect"
+        private const val resourceDeliveryStageActionKey = "resource.delivery.stage"
+        private const val resourceDeliveryConnectActionKey = "resource.delivery.connect"
         private const val shellRecoveryRunActionKey = "shell.recovery.run"
         private const val shellRecoveryShowActionKey = "shell.recovery.show"
         private const val scheduledAutomationPlanActionKey = "automation.schedule.plan"
@@ -2779,6 +3174,12 @@ class LocalPhoneAgentRuntime(
         private const val desktopWorkflowIdOpenLatestAction = "open_latest_action"
         private const val desktopWorkflowIdOpenLatestTransfer = "open_latest_transfer"
         private const val desktopWorkflowIdOpenActionsFolder = "open_actions_folder"
+        private const val browserAutomationEndpointId = "browser-automation-profile"
+        private const val thirdPartyApiEndpointId = "third-party-api-profile"
+        private const val localNotificationChannelId = "phone-local-notification"
+        private const val telegramDeliveryChannelId = "telegram-bot-delivery"
+        private const val desktopCompanionDeliveryChannelId = "desktop-companion-delivery"
+        private const val webhookDeliveryChannelId = "custom-webhook-delivery"
         private const val mcpBridgeEndpointId = "companion-mcp-bridge"
         private const val explainCapabilitiesActionKey = "agent.capabilities.explain"
         private const val shellRecoveryPollAttempts = 50
@@ -2808,9 +3209,28 @@ private sealed interface AgentIntent {
     data object ShowDashboard : AgentIntent
     data object ShowHistory : AgentIntent
     data object ShowSettings : AgentIntent
+    data object ShowResourceStack : AgentIntent
     data object RefreshResources : AgentIntent
     data object RunShellRecovery : AgentIntent
     data object ShowShellRecoveryStatus : AgentIntent
+    data class StageCloudDrive(
+        val provider: CloudDriveProviderKind,
+    ) : AgentIntent
+    data class ConnectCloudDrive(
+        val provider: CloudDriveProviderKind,
+    ) : AgentIntent
+    data class StageExternalEndpoint(
+        val endpointId: String,
+    ) : AgentIntent
+    data class ConnectExternalEndpoint(
+        val endpointId: String,
+    ) : AgentIntent
+    data class StageDeliveryChannel(
+        val channelId: String,
+    ) : AgentIntent
+    data class ConnectDeliveryChannel(
+        val channelId: String,
+    ) : AgentIntent
     data object PlanScheduledAutomation : AgentIntent
     data class ActivateScheduledAutomation(
         val automationId: String? = null,

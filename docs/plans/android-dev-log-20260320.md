@@ -367,3 +367,52 @@
 
 - Shell recovery is now another agent skill available directly from the conversation loop instead of being hidden behind diagnostics UI.
 - The chat surface moved closer to the intended “control everything by conversation” model while still preserving recovery visibility for operators.
+
+## Follow-up Session: Resource Stack Control From Chat
+
+### Scope
+
+- Extend the chat-first loop beyond task/recovery control so connected resource profiles can also be inspected and updated from conversation.
+- Keep the new controls inside the already-seeded placeholder model: stage/mock-ready transitions only, no fake OAuth or hidden transport execution.
+
+### Changes applied
+
+- Injected the cloud drive and delivery channel repositories into `LocalPhoneAgentRuntime`.
+- Added new chat intents and handlers in `PhoneAgentRuntime.kt` for:
+  - `ShowResourceStack`
+  - `StageCloudDrive`
+  - `ConnectCloudDrive`
+  - `StageExternalEndpoint`
+  - `ConnectExternalEndpoint`
+  - `StageDeliveryChannel`
+  - `ConnectDeliveryChannel`
+- Added prompt routing for conversation requests such as:
+  - `Show resource stack`
+  - `Connect Google Drive`
+  - `Stage browser automation profile`
+  - `Connect desktop companion relay`
+- Added resource-stack summaries directly in chat so the agent can now report:
+  - connected/staged cloud drives
+  - connected/staged external endpoints
+  - connected/staged delivery channels
+  - paired companions
+  - installed MCP skill count
+- Updated the capability explanation copy so resource-profile staging/connection is now part of the advertised chat control surface.
+- Added `ResourceStackChatFlowTest.kt` to validate chat-driven resource profile control on the installed emulator app.
+
+### Emulator validation results
+
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest` passed with:
+  - `ScheduledAutomationFlowTest`
+  - `McpSkillChatFlowTest`
+  - `ChatRecoveryFlowTest`
+  - `ShellRecoveryChatFlowTest`
+  - `ResourceStackChatFlowTest`
+
+### Product effect
+
+- The shell can now inspect and update more of the seeded resource stack from conversation instead of forcing Settings-first operator flows.
+- This moves the Android MVP closer to the intended agent model where files, drives, MCP endpoints, and delivery targets sit behind the chat loop as controllable resources.
