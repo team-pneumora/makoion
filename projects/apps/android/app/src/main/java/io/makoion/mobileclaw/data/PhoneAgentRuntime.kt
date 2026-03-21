@@ -1,5 +1,7 @@
 package io.makoion.mobileclaw.data
 
+import kotlinx.coroutines.delay
+
 data class AgentTurnContext(
     val fileIndexState: FileIndexState,
     val approvals: List<ApprovalInboxItem>,
@@ -54,6 +56,7 @@ class LocalPhoneAgentRuntime(
     private val mcpSkillRepository: McpSkillRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
     private val scheduledAutomationCoordinator: ScheduledAutomationCoordinator,
+    private val shellRecoveryCoordinator: ShellRecoveryCoordinator,
     private val codeGenerationProjectRepository: CodeGenerationProjectRepository,
     private val codeGenerationWorkspaceExecutor: CodeGenerationWorkspaceExecutor,
     private val phoneAgentActionCoordinator: PhoneAgentActionCoordinator,
@@ -72,6 +75,8 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowHistory -> buildHistoryResponse(trimmedPrompt, context)
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
+            AgentIntent.RunShellRecovery -> runShellRecovery(trimmedPrompt)
+            AgentIntent.ShowShellRecoveryStatus -> showShellRecoveryStatus(trimmedPrompt)
             AgentIntent.PlanScheduledAutomation -> planScheduledAutomation(trimmedPrompt, context)
             is AgentIntent.ActivateScheduledAutomation -> activateScheduledAutomation(trimmedPrompt, context, intent.automationId)
             is AgentIntent.PauseScheduledAutomation -> pauseScheduledAutomation(trimmedPrompt, context, intent.automationId)
@@ -984,6 +989,104 @@ class LocalPhoneAgentRuntime(
         )
     }
 
+    private suspend fun runShellRecovery(prompt: String): AgentTurnResult {
+        shellRecoveryCoordinator.requestManualRecovery()
+        val recoveryState = awaitRecoveryCompletion()
+        val taskStatus = when (recoveryState.status) {
+            ShellRecoveryStatus.Success -> AgentTaskStatus.Succeeded
+            ShellRecoveryStatus.Failed -> AgentTaskStatus.Failed
+            ShellRecoveryStatus.Running -> AgentTaskStatus.WaitingResource
+            ShellRecoveryStatus.Idle -> AgentTaskStatus.WaitingResource
+        }
+        return AgentTurnResult(
+            reply = shellRecoveryReply(prompt, recoveryState),
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = shellRecoveryRunActionKey,
+            taskSummary = when (recoveryState.status) {
+                ShellRecoveryStatus.Success -> if (prefersKorean(prompt)) {
+                    "채팅에서 수동 shell recovery를 완료했습니다."
+                } else {
+                    "Completed a manual shell recovery from chat."
+                }
+                ShellRecoveryStatus.Failed -> if (prefersKorean(prompt)) {
+                    "채팅에서 요청한 shell recovery가 실패했습니다."
+                } else {
+                    "The shell recovery requested from chat failed."
+                }
+                else -> if (prefersKorean(prompt)) {
+                    "채팅에서 shell recovery를 요청했고 아직 진행 중입니다."
+                } else {
+                    "Requested shell recovery from chat and it is still running."
+                }
+            },
+            taskStatus = taskStatus,
+        )
+    }
+
+    private fun showShellRecoveryStatus(prompt: String): AgentTurnResult {
+        val recoveryState = shellRecoveryCoordinator.state.value
+        return AgentTurnResult(
+            reply = shellRecoveryReply(prompt, recoveryState),
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = shellRecoveryShowActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "현재 shell recovery 상태를 채팅에 요약했습니다."
+            } else {
+                "Summarized the current shell recovery state in chat."
+            },
+        )
+    }
+
+    private suspend fun awaitRecoveryCompletion(): ShellRecoveryState {
+        repeat(shellRecoveryPollAttempts) {
+            val state = shellRecoveryCoordinator.state.value
+            if (state.triggerLabel == "Manual" && state.status != ShellRecoveryStatus.Running) {
+                return state
+            }
+            delay(shellRecoveryPollIntervalMs)
+        }
+        return shellRecoveryCoordinator.state.value
+    }
+
+    private fun shellRecoveryReply(
+        prompt: String,
+        recoveryState: ShellRecoveryState,
+    ): String {
+        return if (prefersKorean(prompt)) {
+            buildString {
+                append("Shell recovery 상태는 ")
+                append(shellRecoveryStatusLabel(prompt, recoveryState.status))
+                append(" 입니다.")
+                recoveryState.triggerLabel?.let { trigger ->
+                    append(" 최근 트리거는 ")
+                    append(trigger)
+                    append("입니다.")
+                }
+                append("\n")
+                append(recoveryState.summary)
+                append("\n")
+                append(recoveryState.detail)
+            }
+        } else {
+            buildString {
+                append("Shell recovery is ")
+                append(shellRecoveryStatusLabel(prompt, recoveryState.status))
+                append(".")
+                recoveryState.triggerLabel?.let { trigger ->
+                    append(" Latest trigger: ")
+                    append(trigger)
+                    append(".")
+                }
+                append("\n")
+                append(recoveryState.summary)
+                append("\n")
+                append(recoveryState.detail)
+            }
+        }
+    }
+
     private fun buildDashboardResponse(
         prompt: String,
         context: AgentTurnContext,
@@ -1515,48 +1618,50 @@ class LocalPhoneAgentRuntime(
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열세 가지예요.\n")
+                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열네 가지예요.\n")
                     append("1. 인덱싱된 파일 요약 (${indexedCount}개 감지)\n")
                     append("2. 파일 정리 dry-run 계획 생성 후 승인 요청\n")
                     append("3. companion 전송 approval 생성\n")
                     append("4. 채팅에서 최신 승인 요청 승인 또는 거절\n")
                     append("5. 실패한 organize task 재시도 (${retryableTasks}건 가능)\n")
                     append("6. Dashboard / History / Settings로 이동\n")
-                    append("7. 연결된 companion surface 열기 (${pairedDevices}대 연결)\n")
-                    append("8. companion health snapshot 새로고침\n")
-                    append("9. desktop companion notification 보내기\n")
-                    append("10. allowlisted desktop workflow 실행\n")
-                    append("11. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
-                    append("12. MCP bridge 연결 및 MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
-                    append("13. code/app/automation starter scaffold 생성\n")
+                    append("7. shell recovery 실행 및 최근 recovery 상태 확인\n")
+                    append("8. 연결된 companion surface 열기 (${pairedDevices}대 연결)\n")
+                    append("9. companion health snapshot 새로고침\n")
+                    append("10. desktop companion notification 보내기\n")
+                    append("11. allowlisted desktop workflow 실행\n")
+                    append("12. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
+                    append("13. MCP bridge 연결 및 MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
+                    append("14. code/app/automation starter scaffold 생성\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
                     append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
                     append("delivery channel은 staged ${stagedDeliveryChannels}개, mock-ready ${connectedDeliveryChannels}개입니다.\n")
-                    append("예시: '최근 automation 활성화해', '지금 automation 실행해', 'MCP skill 업데이트해'.\n")
+                    append("예시: 'shell recovery 실행해', 'recovery 상태 보여줘', '최근 automation 활성화해', 'MCP skill 업데이트해'.\n")
                     append("기본 모델 선호도는 $preferredProviderLabel 입니다.")
                 }
             } else {
                 buildString {
-                    append("This first chat loop can do thirteen things right now.\n")
+                    append("This first chat loop can do fourteen things right now.\n")
                     append("1. Summarize indexed files ($indexedCount detected)\n")
                     append("2. Create an organize dry-run and submit it for approval\n")
                     append("3. Create a companion transfer approval\n")
                     append("4. Approve or deny the latest pending approval from chat\n")
                     append("5. Retry a failed organize task ($retryableTasks retryable)\n")
                     append("6. Route you to Dashboard, History, or Settings\n")
-                    append("7. Open a paired companion surface ($pairedDevices paired)\n")
-                    append("8. Refresh the companion health snapshot\n")
-                    append("9. Send a desktop companion notification\n")
-                    append("10. Run an allowlisted desktop workflow\n")
-                    append("11. Record, activate, pause, and run scheduled automations\n")
-                    append("12. Connect the MCP bridge and update MCP skills ($installedMcpSkills installed)\n")
-                    append("13. Generate a code, app, or automation starter scaffold\n")
+                    append("7. Run shell recovery and inspect the latest recovery status\n")
+                    append("8. Open a paired companion surface ($pairedDevices paired)\n")
+                    append("9. Refresh the companion health snapshot\n")
+                    append("10. Send a desktop companion notification\n")
+                    append("11. Run an allowlisted desktop workflow\n")
+                    append("12. Record, activate, pause, and run scheduled automations\n")
+                    append("13. Connect the MCP bridge and update MCP skills ($installedMcpSkills installed)\n")
+                    append("14. Generate a code, app, or automation starter scaffold\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
                     append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
                     append("Delivery channels staged: $stagedDeliveryChannels, mock-ready: $connectedDeliveryChannels.\n")
-                    append("Examples: 'activate the latest automation', 'run the latest automation now', 'update MCP skills'.\n")
+                    append("Examples: 'run shell recovery now', 'show shell recovery status', 'activate the latest automation', 'update MCP skills'.\n")
                     append("The current model preference is $preferredProviderLabel.")
                 }
             },
@@ -1964,6 +2069,35 @@ class LocalPhoneAgentRuntime(
             "다시 실행",
             "다시 해",
         )
+        val mentionsRecovery = containsAny(
+            normalized,
+            "recovery",
+            "recover",
+            "shell recovery",
+            "복구",
+            "리커버리",
+        )
+        val wantsRunShellRecovery = mentionsRecovery && containsAny(
+            normalized,
+            "run recovery",
+            "start recovery",
+            "recover now",
+            "refresh shell state",
+            "run shell recovery",
+            "복구 실행",
+            "복구해",
+            "리커버리 실행",
+        )
+        val wantsShowShellRecoveryStatus = mentionsRecovery && containsAny(
+            normalized,
+            "recovery status",
+            "show recovery",
+            "show shell recovery",
+            "recovery detail",
+            "복구 상태",
+            "리커버리 상태",
+            "복구 보여",
+        )
         val mentionsAutomation = containsAny(
             normalized,
             "automation",
@@ -2062,6 +2196,24 @@ class LocalPhoneAgentRuntime(
                     summary = "Retry a previously failed or waiting task from chat.",
                     capabilities = listOf("task.retry"),
                     resources = listOf("task.runtime"),
+                )
+            wantsRunShellRecovery ->
+                plannerOutput(
+                    intent = AgentIntent.RunShellRecovery,
+                    auditResult = "shell_recovery_requested_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Run manual shell recovery from the chat loop and wait for the latest state to settle.",
+                    capabilities = listOf("shell.recovery.run"),
+                    resources = listOf("task.runtime", "audit.history"),
+                )
+            wantsShowShellRecoveryStatus ->
+                plannerOutput(
+                    intent = AgentIntent.ShowShellRecoveryStatus,
+                    auditResult = "shell_recovery_status_shown",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Summarize the most recent shell recovery status and detail in chat.",
+                    capabilities = listOf("shell.recovery.read"),
+                    resources = listOf("task.runtime", "audit.history"),
                 )
             wantsRunAutomationNow ->
                 plannerOutput(
@@ -2557,6 +2709,27 @@ class LocalPhoneAgentRuntime(
         }
     }
 
+    private fun shellRecoveryStatusLabel(
+        prompt: String,
+        status: ShellRecoveryStatus,
+    ): String {
+        return if (prefersKorean(prompt)) {
+            when (status) {
+                ShellRecoveryStatus.Idle -> "대기"
+                ShellRecoveryStatus.Running -> "실행 중"
+                ShellRecoveryStatus.Success -> "성공"
+                ShellRecoveryStatus.Failed -> "실패"
+            }
+        } else {
+            when (status) {
+                ShellRecoveryStatus.Idle -> "idle"
+                ShellRecoveryStatus.Running -> "running"
+                ShellRecoveryStatus.Success -> "successful"
+                ShellRecoveryStatus.Failed -> "failed"
+            }
+        }
+    }
+
     private fun approvalStatusLabel(
         prompt: String,
         status: ApprovalInboxStatus,
@@ -2585,6 +2758,8 @@ class LocalPhoneAgentRuntime(
         private const val approvalsDenyActionKey = "approvals.deny"
         private const val manualTaskRetryActionKey = "agent.task.retry.manual"
         private const val shellRefreshActionKey = "shell.refresh"
+        private const val shellRecoveryRunActionKey = "shell.recovery.run"
+        private const val shellRecoveryShowActionKey = "shell.recovery.show"
         private const val scheduledAutomationPlanActionKey = "automation.schedule.plan"
         private const val scheduledAutomationActivateActionKey = "automation.schedule.activate"
         private const val scheduledAutomationPauseActionKey = "automation.schedule.pause"
@@ -2606,6 +2781,8 @@ class LocalPhoneAgentRuntime(
         private const val desktopWorkflowIdOpenActionsFolder = "open_actions_folder"
         private const val mcpBridgeEndpointId = "companion-mcp-bridge"
         private const val explainCapabilitiesActionKey = "agent.capabilities.explain"
+        private const val shellRecoveryPollAttempts = 50
+        private const val shellRecoveryPollIntervalMs = 200L
         private val approvalIdPattern = Regex("""approval-[A-Za-z0-9-]+""")
         private val taskIdPattern = Regex("""task-[A-Za-z0-9-]+""")
         private val automationIdPattern = Regex("""automation-[A-Za-z0-9-]+""")
@@ -2632,6 +2809,8 @@ private sealed interface AgentIntent {
     data object ShowHistory : AgentIntent
     data object ShowSettings : AgentIntent
     data object RefreshResources : AgentIntent
+    data object RunShellRecovery : AgentIntent
+    data object ShowShellRecoveryStatus : AgentIntent
     data object PlanScheduledAutomation : AgentIntent
     data class ActivateScheduledAutomation(
         val automationId: String? = null,

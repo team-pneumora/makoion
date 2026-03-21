@@ -323,3 +323,47 @@
 
 - Shell recovery now treats the active conversation as a first-class durable runtime surface instead of leaving chat refresh implicit.
 - Recovery diagnostics now tell the next operator which conversation came back, which is useful when chasing lifecycle and process-death issues.
+
+## Follow-up Session: Chat-Controlled Shell Recovery
+
+### Scope
+
+- Extend the chat-first agent loop so shell recovery can be run and inspected without leaving conversation.
+- Verify those commands against the installed emulator app through the real `AgentTaskEngine`.
+
+### Changes applied
+
+- Reordered `ShellAppContainer.kt` so `ShellRecoveryCoordinator` is constructed before `LocalPhoneAgentRuntime`.
+- Injected `ShellRecoveryCoordinator` into `LocalPhoneAgentRuntime`.
+- Added new chat intents in `PhoneAgentRuntime.kt`:
+  - `RunShellRecovery`
+  - `ShowShellRecoveryStatus`
+- Added planner routing for prompts such as:
+  - `Run shell recovery now`
+  - `Show shell recovery status`
+  - Korean recovery/status variants
+- Added runtime handlers that:
+  - trigger manual shell recovery
+  - wait for the recovery state to settle
+  - summarize the latest recovery trigger, summary, and detail directly in chat
+- Expanded the capability explanation copy so the chat surface now advertises shell recovery control as part of the agent envelope.
+- Added `ShellRecoveryChatFlowTest.kt` to validate:
+  - chat-triggered manual shell recovery
+  - successful completion on the installed app
+  - follow-up status summarization from chat
+
+### Emulator validation results
+
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest` passed with:
+  - `ScheduledAutomationFlowTest`
+  - `McpSkillChatFlowTest`
+  - `ChatRecoveryFlowTest`
+  - `ShellRecoveryChatFlowTest`
+
+### Product effect
+
+- Shell recovery is now another agent skill available directly from the conversation loop instead of being hidden behind diagnostics UI.
+- The chat surface moved closer to the intended “control everything by conversation” model while still preserving recovery visibility for operators.

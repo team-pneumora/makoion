@@ -129,25 +129,6 @@ class ShellAppContainer(
         agentTaskRetryCoordinator = agentTaskRetryCoordinator,
     )
     val voiceEntryCoordinator = VoiceEntryCoordinator(application)
-    val phoneAgentRuntime = LocalPhoneAgentRuntime(
-        fileIndexRepository = fileIndexRepository,
-        fileGraphActionPlanner = fileGraphActionPlanner,
-        approvalInboxRepository = approvalInboxRepository,
-        auditTrailRepository = auditTrailRepository,
-        devicePairingRepository = devicePairingRepository,
-        externalEndpointRepository = externalEndpointRepository,
-        mcpSkillRepository = mcpSkillRepository,
-        scheduledAutomationRepository = scheduledAutomationRepository,
-        scheduledAutomationCoordinator = scheduledAutomationCoordinator,
-        codeGenerationProjectRepository = codeGenerationProjectRepository,
-        codeGenerationWorkspaceExecutor = codeGenerationWorkspaceExecutor,
-        phoneAgentActionCoordinator = phoneAgentActionCoordinator,
-    )
-    val agentTaskEngine = AgentTaskEngine(
-        agentTaskRepository = agentTaskRepository,
-        phoneAgentRuntime = phoneAgentRuntime,
-        auditTrailRepository = auditTrailRepository,
-    )
     val shellRecoveryCoordinator = ShellRecoveryCoordinator(
         approvalInboxRepository = approvalInboxRepository,
         agentTaskRepository = agentTaskRepository,
@@ -159,5 +140,25 @@ class ShellAppContainer(
         scheduledAutomationRepository = scheduledAutomationRepository,
         scheduledAutomationCoordinator = scheduledAutomationCoordinator,
         transferBridgeCoordinator = transferBridgeCoordinator,
+    )
+    val phoneAgentRuntime = LocalPhoneAgentRuntime(
+        fileIndexRepository = fileIndexRepository,
+        fileGraphActionPlanner = fileGraphActionPlanner,
+        approvalInboxRepository = approvalInboxRepository,
+        auditTrailRepository = auditTrailRepository,
+        devicePairingRepository = devicePairingRepository,
+        externalEndpointRepository = externalEndpointRepository,
+        mcpSkillRepository = mcpSkillRepository,
+        scheduledAutomationRepository = scheduledAutomationRepository,
+        scheduledAutomationCoordinator = scheduledAutomationCoordinator,
+        shellRecoveryCoordinator = shellRecoveryCoordinator,
+        codeGenerationProjectRepository = codeGenerationProjectRepository,
+        codeGenerationWorkspaceExecutor = codeGenerationWorkspaceExecutor,
+        phoneAgentActionCoordinator = phoneAgentActionCoordinator,
+    )
+    val agentTaskEngine = AgentTaskEngine(
+        agentTaskRepository = agentTaskRepository,
+        phoneAgentRuntime = phoneAgentRuntime,
+        auditTrailRepository = auditTrailRepository,
     )
 }
