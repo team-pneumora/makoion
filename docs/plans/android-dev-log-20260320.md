@@ -416,3 +416,68 @@
 
 - The shell can now inspect and update more of the seeded resource stack from conversation instead of forcing Settings-first operator flows.
 - This moves the Android MVP closer to the intended agent model where files, drives, MCP endpoints, and delivery targets sit behind the chat loop as controllable resources.
+
+## Follow-up Session: Lifecycle Recovery Validation Hardening
+
+### Scope
+
+- Resume the blocked lifecycle/process-death validation work on the emulator and remove the local-environment assumptions that made the script fail before it reached real app behavior.
+- Harden the Android shell so foreground resume can reliably recover queued transfer work after the app comes back from the background.
+
+### Changes applied
+
+- Hardened `projects/apps/desktop-companion/run-companion.ps1` so the desktop companion resolves `java.exe` and `javac.exe` from:
+  - `JAVA_HOME`
+  - `JDK_HOME`
+  - Android Studio `jbr`
+  - common `Program Files/Java` installs
+- Hardened `projects/apps/android/scripts/bootstrap-transport-validation.ps1` so it now:
+  - prefers the active custom Gradle build root under `%LOCALAPPDATA%\Makoion\android-gradle-build` when present
+  - avoids the stale repo-local APK path that had been last built on 2026-03-12
+  - detects `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+  - uninstalls the conflicting package and retries the install automatically
+  - checks `adb install` results explicitly instead of ignoring failures
+  - includes `--include-stopped-packages` when sending the debug bootstrap broadcast
+- Added richer companion startup diagnostics in `projects/apps/android/scripts/validate-shell-lifecycle-recovery.ps1`:
+  - detect exited companion processes early
+  - surface stdout/stderr excerpts in failures
+  - allow longer `/health` readiness waits
+- Removed the host-side Python dependency from lifecycle validation:
+  - added `dump_validation_state` to `DebugTransportReceiver.kt`
+  - the receiver now writes a JSON validation snapshot into app-private storage
+  - the PowerShell script now pulls that JSON directly from the installed app
+- Made the debug transport receiver deterministic for adb automation:
+  - switched the receiver from `goAsync` coroutine fire-and-forget handling to synchronous `runBlocking(Dispatchers.IO)`
+  - added debug marker files for the last received command and validation dump failures
+- Hardened foreground recovery in the Android shell:
+  - `ShellRecoveryCoordinator` now schedules deferred foreground recovery instead of silently dropping requests inside the cooldown window
+  - foreground transfer recovery now drains immediately when stale/due drafts are found during shell recovery
+  - `MainActivity` now requests foreground refresh on real background-to-foreground returns and task re-entry through `onNewIntent`
+  - foreground refresh now also kicks `TransferBridgeCoordinator.scheduleRecovery()`
+- Updated the lifecycle validation script scenario flow:
+  - manual shell recovery requests no longer reopen the Devices surface during validation
+  - stale-sending validation force-stops the app immediately after inserting the synthetic interrupted draft, preventing the new foreground recovery path from consuming the draft before process-death is exercised
+
+### Emulator validation results
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-shell-lifecycle-recovery.ps1 -Serial emulator-5554 -EndpointPreset emulator_host` passed.
+- Validation scenarios completed successfully on `emulator-5554`:
+  - `process_death_stale_sending`
+  - `background_due_retry_resilience`
+  - `process_death_delayed_retry`
+- `:app:testDebugUnitTest` passed.
+- `:app:connectedDebugAndroidTest` passed with:
+  - `ScheduledAutomationFlowTest`
+  - `McpSkillChatFlowTest`
+  - `ChatRecoveryFlowTest`
+  - `ShellRecoveryChatFlowTest`
+  - `ResourceStackChatFlowTest`
+
+### Product effect
+
+- Lifecycle validation is now runnable on this machine without requiring a globally installed Python or manually curated Java PATH.
+- The emulator validation path now proves that shell recovery can restore:
+  - interrupted sending drafts after process death
+  - due queued drafts after returning the app to the foreground
+  - delayed queued drafts after relaunch and scheduled retry time
+- Foreground resume is less brittle because returning to the shell now explicitly re-arms transfer recovery instead of relying on a single lifecycle observer path.

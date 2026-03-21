@@ -17,6 +17,7 @@ class MainActivity : ComponentActivity() {
     private var requestedSection by mutableStateOf(ShellSection.Chat)
     private var requestedTaskId by mutableStateOf<String?>(null)
     private var requestedTaskFollowUpKey by mutableStateOf<String?>(null)
+    private var hasCompletedInitialResume = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +42,24 @@ class MainActivity : ComponentActivity() {
         requestedSection = resolveSection(intent)
         requestedTaskId = resolveTaskId(intent)
         requestedTaskFollowUpKey = resolveTaskFollowUpKey(intent)
+        if (hasCompletedInitialResume) {
+            requestForegroundRefresh()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (hasCompletedInitialResume) {
+            requestForegroundRefresh()
+        } else {
+            hasCompletedInitialResume = true
+        }
+    }
+
+    private fun requestForegroundRefresh() {
+        val appContainer = (application as MobileClawApplication).appContainer
+        appContainer.transferBridgeCoordinator.scheduleRecovery()
+        appContainer.shellRecoveryCoordinator.requestForegroundRecovery()
     }
 
     private fun resolveSection(intent: Intent?): ShellSection {

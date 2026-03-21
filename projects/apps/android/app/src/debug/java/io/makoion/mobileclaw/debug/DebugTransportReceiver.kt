@@ -23,10 +23,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.util.UUID
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -39,17 +37,12 @@ class DebugTransportReceiver : BroadcastReceiver() {
             return
         }
         val application = context.applicationContext as MobileClawApplication
-        val pendingResult = goAsync()
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            try {
-                handleCommand(
-                    context = context,
-                    application = application,
-                    intent = intent,
-                )
-            } finally {
-                pendingResult.finish()
-            }
+        runBlocking(Dispatchers.IO) {
+            handleCommand(
+                context = context,
+                application = application,
+                intent = intent,
+            )
         }
     }
 
@@ -59,6 +52,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
         intent: Intent,
     ) {
         val command = intent.getStringExtra(extraCommand)?.trim()?.lowercase() ?: return
+        File(context.filesDir, lastCommandFileName).writeText(command)
         val appContainer = application.appContainer
         val deviceRepository = appContainer.devicePairingRepository
         val auditRepository = appContainer.auditTrailRepository
@@ -309,6 +303,9 @@ class DebugTransportReceiver : BroadcastReceiver() {
                 if (shouldOpenDevices(intent)) {
                     openDevices(context)
                 }
+            }
+            commandDumpValidationState -> {
+                dumpValidationState(context)
             }
             commandDrainOutbox -> {
                 appContainer.transferBridgeCoordinator.scheduleDrain()
@@ -600,6 +597,136 @@ class DebugTransportReceiver : BroadcastReceiver() {
         }
     }
 
+    private fun dumpValidationState(context: Context) {
+        val outputFile = File(context.filesDir, validationStateFileName)
+        val errorFile = File(context.filesDir, validationStateErrorFileName)
+        try {
+            val databaseHelper = ShellDatabaseHelper(context)
+            val payload = JSONObject().apply {
+                put(
+                    "latest_device",
+                    databaseHelper.readableDatabase.rawQuery(
+                        """
+                        SELECT id, name, role, status, transport_mode, endpoint_url, validation_mode, paired_at
+                        FROM paired_devices
+                        ORDER BY paired_at DESC
+                        LIMIT 1
+                        """.trimIndent(),
+                        null,
+                    ).use { cursor ->
+                        if (!cursor.moveToFirst()) {
+                            null
+                        } else {
+                            JSONObject().apply {
+                                put("id", cursor.getString(cursor.getColumnIndexOrThrow("id")))
+                                put("name", cursor.getString(cursor.getColumnIndexOrThrow("name")))
+                                put("role", cursor.getString(cursor.getColumnIndexOrThrow("role")))
+                                put("status", cursor.getString(cursor.getColumnIndexOrThrow("status")))
+                                put("transport_mode", cursor.getString(cursor.getColumnIndexOrThrow("transport_mode")))
+                                put("endpoint_url", cursor.getString(cursor.getColumnIndexOrThrow("endpoint_url")))
+                                put("validation_mode", cursor.getString(cursor.getColumnIndexOrThrow("validation_mode")))
+                                put("paired_at", cursor.getLong(cursor.getColumnIndexOrThrow("paired_at")))
+                            }
+                        }
+                    },
+                )
+                put(
+                    "recent_devices",
+                    databaseHelper.readableDatabase.rawQuery(
+                        """
+                        SELECT id, name, role, status, transport_mode, endpoint_url, validation_mode, paired_at
+                        FROM paired_devices
+                        ORDER BY paired_at DESC
+                        LIMIT 32
+                        """.trimIndent(),
+                        null,
+                    ).use { cursor ->
+                        JSONArray().apply {
+                            while (cursor.moveToNext()) {
+                                put(
+                                    JSONObject().apply {
+                                        put("id", cursor.getString(cursor.getColumnIndexOrThrow("id")))
+                                        put("name", cursor.getString(cursor.getColumnIndexOrThrow("name")))
+                                        put("role", cursor.getString(cursor.getColumnIndexOrThrow("role")))
+                                        put("status", cursor.getString(cursor.getColumnIndexOrThrow("status")))
+                                        put("transport_mode", cursor.getString(cursor.getColumnIndexOrThrow("transport_mode")))
+                                        put("endpoint_url", cursor.getString(cursor.getColumnIndexOrThrow("endpoint_url")))
+                                        put("validation_mode", cursor.getString(cursor.getColumnIndexOrThrow("validation_mode")))
+                                        put("paired_at", cursor.getLong(cursor.getColumnIndexOrThrow("paired_at")))
+                                    },
+                                )
+                            }
+                        }
+                    },
+                )
+                put(
+                    "recent_transfers",
+                    databaseHelper.readableDatabase.rawQuery(
+                        """
+                        SELECT id, device_id, device_name, status, attempt_count, file_names_json, next_attempt_at,
+                               last_error, created_at, updated_at
+                        FROM transfer_outbox
+                        ORDER BY created_at DESC
+                        LIMIT 32
+                        """.trimIndent(),
+                        null,
+                    ).use { cursor ->
+                        JSONArray().apply {
+                            while (cursor.moveToNext()) {
+                                put(
+                                    JSONObject().apply {
+                                        put("id", cursor.getString(cursor.getColumnIndexOrThrow("id")))
+                                        put("device_id", cursor.getString(cursor.getColumnIndexOrThrow("device_id")))
+                                        put("device_name", cursor.getString(cursor.getColumnIndexOrThrow("device_name")))
+                                        put("status", cursor.getString(cursor.getColumnIndexOrThrow("status")))
+                                        put("attempt_count", cursor.getInt(cursor.getColumnIndexOrThrow("attempt_count")))
+                                        put("file_names", JSONArray(cursor.getString(cursor.getColumnIndexOrThrow("file_names_json"))))
+                                        put("next_attempt_at", cursor.getLong(cursor.getColumnIndexOrThrow("next_attempt_at")))
+                                        put("last_error", cursor.getString(cursor.getColumnIndexOrThrow("last_error")))
+                                        put("created_at", cursor.getLong(cursor.getColumnIndexOrThrow("created_at")))
+                                        put("updated_at", cursor.getLong(cursor.getColumnIndexOrThrow("updated_at")))
+                                    },
+                                )
+                            }
+                        }
+                    },
+                )
+                put(
+                    "recent_audits",
+                    databaseHelper.readableDatabase.rawQuery(
+                        """
+                        SELECT action, result, details, created_at
+                        FROM audit_events
+                        ORDER BY created_at DESC
+                        LIMIT 64
+                        """.trimIndent(),
+                        null,
+                    ).use { cursor ->
+                        JSONArray().apply {
+                            while (cursor.moveToNext()) {
+                                put(
+                                    JSONObject().apply {
+                                        put("action", cursor.getString(cursor.getColumnIndexOrThrow("action")))
+                                        put("result", cursor.getString(cursor.getColumnIndexOrThrow("result")))
+                                        put("details", cursor.getString(cursor.getColumnIndexOrThrow("details")))
+                                        put("created_at", cursor.getLong(cursor.getColumnIndexOrThrow("created_at")))
+                                    },
+                                )
+                            }
+                        }
+                    },
+                )
+            }
+            outputFile.writeText(payload.toString())
+            if (errorFile.exists()) {
+                errorFile.delete()
+            }
+        } catch (error: Throwable) {
+            errorFile.writeText(error.stackTraceToString())
+            throw error
+        }
+    }
+
     private fun buildDebugArchiveTransferFiles(
         context: Context,
         prefix: String,
@@ -700,6 +827,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
         const val commandQueueStaleSendingDraft = "queue_stale_sending_draft"
         const val commandQueueDueRetryDraft = "queue_due_retry_draft"
         const val commandQueueDelayedRetryDraft = "queue_delayed_retry_draft"
+        const val commandDumpValidationState = "dump_validation_state"
         const val commandDrainOutbox = "drain_outbox"
         const val commandCleanupValidationDevice = "cleanup_validation_device"
         const val commandRequeueFailed = "requeue_failed"
@@ -732,5 +860,8 @@ class DebugTransportReceiver : BroadcastReceiver() {
         private const val minDebugArchiveFileSizeKiB = 4
         private const val maxDebugArchiveFileSizeKiB = 20 * 1024
         private const val debugArchiveDirName = "debug-transfer-payloads"
+        private const val lastCommandFileName = "debug-last-command.txt"
+        private const val validationStateFileName = "debug-validation-state.json"
+        private const val validationStateErrorFileName = "debug-validation-state.error.txt"
     }
 }

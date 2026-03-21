@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +44,7 @@ class ShellRecoveryCoordinator(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val _state = MutableStateFlow(ShellRecoveryState())
     private var recoveryJob: Job? = null
+    private var deferredRecoveryJob: Job? = null
     private var lastRecoveryAtEpochMillis: Long = 0L
     private var started = false
 
@@ -61,6 +63,10 @@ class ShellRecoveryCoordinator(
         requestRecovery(trigger = RecoveryTrigger.ManualRefresh, force = true)
     }
 
+    fun requestForegroundRecovery() {
+        requestRecovery(trigger = RecoveryTrigger.ForegroundResume, force = true)
+    }
+
     override fun onStart(owner: LifecycleOwner) {
         requestRecovery(trigger = RecoveryTrigger.ForegroundResume)
     }
@@ -70,9 +76,18 @@ class ShellRecoveryCoordinator(
         force: Boolean = false,
     ) {
         val now = System.currentTimeMillis()
-        if (!force && now - lastRecoveryAtEpochMillis < minRecoveryIntervalMs) {
+        val remainingIntervalMs = minRecoveryIntervalMs - (now - lastRecoveryAtEpochMillis)
+        if (!force && remainingIntervalMs > 0L) {
+            if (deferredRecoveryJob?.isActive != true) {
+                deferredRecoveryJob = scope.launch {
+                    delay(remainingIntervalMs)
+                    requestRecovery(trigger = trigger, force = true)
+                }
+            }
             return
         }
+        deferredRecoveryJob?.cancel()
+        deferredRecoveryJob = null
         lastRecoveryAtEpochMillis = now
         _state.value = ShellRecoveryState(
             status = ShellRecoveryStatus.Running,
@@ -122,6 +137,9 @@ class ShellRecoveryCoordinator(
             }
             refreshStep("transfer recovery", failures) {
                 transferRecoverySnapshot = transferBridgeCoordinator.recoverShellState()
+                if (transferRecoverySnapshot.immediateDrainRequested) {
+                    transferBridgeCoordinator.drainOutbox()
+                }
                 devicePairingRepository.refresh()
                 auditTrailRepository.refresh()
             }

@@ -18,6 +18,51 @@ $debugAction = "$packageName.DEBUG_TRANSPORT"
 $debugReceiver = "$packageName/io.makoion.mobileclaw.debug.DebugTransportReceiver"
 $mainActivity = "$packageName/io.makoion.mobileclaw.MainActivity"
 
+function Invoke-AdbProcess {
+    param([string[]]$Arguments)
+
+    $stdoutPath = Join-Path $env:TEMP ("makoion-bootstrap-adb-{0}.stdout" -f ([guid]::NewGuid()))
+    $stderrPath = Join-Path $env:TEMP ("makoion-bootstrap-adb-{0}.stderr" -f ([guid]::NewGuid()))
+    try {
+        $process = Start-Process $adbPath -ArgumentList $Arguments -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -Wait -PassThru -NoNewWindow
+        $output = @()
+        if (Test-Path $stdoutPath) {
+            $output += Get-Content -Raw $stdoutPath
+        }
+        if (Test-Path $stderrPath) {
+            $output += Get-Content -Raw $stderrPath
+        }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = ($output -join [Environment]::NewLine).Trim()
+        }
+    } finally {
+        Remove-Item $stdoutPath,$stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-DebugApk {
+    param([string]$TargetSerial, [string]$ResolvedApkPath)
+
+    $installAttempt = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "install", "-r", $ResolvedApkPath)
+    if ($installAttempt.ExitCode -eq 0) {
+        return
+    }
+
+    $installText = $installAttempt.Output
+    if ($installText -like "*INSTALL_FAILED_UPDATE_INCOMPATIBLE*") {
+        & $adbPath -s $TargetSerial uninstall $packageName | Out-Null
+        $reinstallAttempt = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "install", $ResolvedApkPath)
+        if ($reinstallAttempt.ExitCode -eq 0) {
+            return
+        }
+        $reinstallText = $reinstallAttempt.Output
+        throw "Debug APK reinstall failed after uninstalling conflicting package. $reinstallText".Trim()
+    }
+
+    throw "Debug APK install failed. $installText".Trim()
+}
+
 function Resolve-DebugApkPath {
     $candidatePaths = [System.Collections.Generic.List[string]]::new()
     $settingsGradlePath = Join-Path $androidProjectDir "settings.gradle.kts"
@@ -31,6 +76,12 @@ function Resolve-DebugApkPath {
     }
 
     $customBuildRoot = $env:MAKOION_ANDROID_BUILD_ROOT
+    if ([string]::IsNullOrWhiteSpace($customBuildRoot) -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $defaultBuildRoot = Join-Path $env:LOCALAPPDATA "Makoion\android-gradle-build"
+        if (Test-Path $defaultBuildRoot) {
+            $customBuildRoot = $defaultBuildRoot
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($customBuildRoot) -and $androidProjectDir -like "*OneDrive*" -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         $customBuildRoot = Join-Path $env:LOCALAPPDATA "Makoion\android-gradle-build"
     }
@@ -43,10 +94,12 @@ function Resolve-DebugApkPath {
         (Join-Path $androidProjectDir "app\build\outputs\apk\debug\app-debug.apk")
     ) | Out-Null
 
-    $existingCandidates = $candidatePaths |
-        Where-Object { Test-Path $_ } |
-        Sort-Object { (Get-Item $_).LastWriteTimeUtc } -Descending
-    if ($existingCandidates) {
+    $existingCandidates = @(
+        $candidatePaths |
+            Where-Object { Test-Path $_ } |
+            Sort-Object { (Get-Item $_).LastWriteTimeUtc } -Descending
+    )
+    if ($existingCandidates.Count -gt 0) {
         return $existingCandidates[0]
     }
     return $candidatePaths[0]
@@ -87,9 +140,10 @@ if ($EndpointPreset -eq "adb_reverse") {
     $endpoint = "http://10.0.2.2:$Port/api/v1/transfers"
 }
 
-& $adbPath -s $targetSerial install -r $apkPath | Out-Null
+Install-DebugApk -TargetSerial $targetSerial -ResolvedApkPath $apkPath
 & $adbPath -s $targetSerial shell am broadcast `
     -a $debugAction `
+    --include-stopped-packages `
     -n $debugReceiver `
     --es command bootstrap_direct_http_device `
     --es endpoint_preset $EndpointPreset `

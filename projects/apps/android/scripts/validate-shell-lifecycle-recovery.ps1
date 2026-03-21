@@ -3,6 +3,7 @@ param(
     [ValidateSet("adb_reverse", "emulator_host")]
     [string]$EndpointPreset = "adb_reverse",
     [int]$Port = 8807,
+    [int]$CompanionHealthTimeoutSeconds = 60,
     [int]$PollIntervalSeconds = 2,
     [int]$RecoveryDelaySeconds = 15,
     [int]$BackgroundPauseSeconds = 4,
@@ -25,87 +26,7 @@ $inboxPath = Join-Path $companionDir "inbox-validate-shell-lifecycle-recovery-$s
 $stdoutLog = Join-Path $companionDir "shell-lifecycle-recovery-$sessionTag.log"
 $stderrLog = Join-Path $companionDir "shell-lifecycle-recovery-$sessionTag.err"
 $traceLog = Join-Path $companionDir "shell-lifecycle-recovery-$sessionTag.trace.log"
-$pythonScript = @'
-import json
-import sqlite3
-import sys
-
-db_path = sys.argv[1]
-
-connection = sqlite3.connect(db_path)
-connection.row_factory = sqlite3.Row
-
-def row_to_dict(row):
-    if row is None:
-        return None
-    return {key: row[key] for key in row.keys()}
-
-def parse_file_names(file_names_json):
-    if not file_names_json:
-        return []
-    try:
-        return json.loads(file_names_json)
-    except Exception:
-        return []
-
-latest_device = row_to_dict(
-    connection.execute(
-        """
-        SELECT id, name, role, status, transport_mode, endpoint_url, validation_mode, paired_at
-        FROM paired_devices
-        ORDER BY paired_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-)
-
-recent_devices = [
-    row_to_dict(row)
-    for row in connection.execute(
-        """
-        SELECT id, name, role, status, transport_mode, endpoint_url, validation_mode, paired_at
-        FROM paired_devices
-        ORDER BY paired_at DESC
-        LIMIT 32
-        """
-    ).fetchall()
-]
-
-recent_transfers = []
-for row in connection.execute(
-    """
-    SELECT id, device_id, device_name, status, attempt_count, file_names_json, next_attempt_at,
-           last_error, created_at, updated_at
-    FROM transfer_outbox
-    ORDER BY created_at DESC
-    LIMIT 32
-    """
-).fetchall():
-    transfer = row_to_dict(row)
-    transfer["file_names"] = parse_file_names(transfer.pop("file_names_json"))
-    recent_transfers.append(transfer)
-
-recent_audits = [
-    row_to_dict(row)
-    for row in connection.execute(
-        """
-        SELECT action, result, details, created_at
-        FROM audit_events
-        ORDER BY created_at DESC
-        LIMIT 64
-        """
-    ).fetchall()
-]
-
-connection.close()
-
-print(json.dumps({
-    "latest_device": latest_device,
-    "recent_devices": recent_devices,
-    "recent_transfers": recent_transfers,
-    "recent_audits": recent_audits,
-}))
-'@
+$validationStateRemotePath = "files/debug-validation-state.json"
 
 if (-not (Test-Path $adbPath)) {
     throw "adb.exe was not found at $adbPath"
@@ -160,27 +81,54 @@ function Write-ValidationStep {
     Add-Content -Path $traceLog -Value $line
 }
 
+function Get-LogExcerpt {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+
+    return ((Get-Content -Path $Path -Tail 40) -join [Environment]::NewLine).Trim()
+}
+
 function Wait-CompanionHealth {
-    param([int]$PortNumber)
+    param(
+        [int]$PortNumber,
+        [System.Diagnostics.Process]$Process,
+        [string]$StdoutPath,
+        [string]$StderrPath,
+        [int]$TimeoutSeconds
+    )
 
     $lastError = $null
-    for ($index = 0; $index -lt 25; $index++) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if ($Process -and $Process.HasExited) {
+            $stderr = Get-LogExcerpt -Path $StderrPath
+            $stdout = Get-LogExcerpt -Path $StdoutPath
+            throw "Companion process exited before /health became ready (exit code $($Process.ExitCode)). stderr: $stderr stdout: $stdout".Trim()
+        }
         try {
             return Invoke-RestMethod -Uri "http://127.0.0.1:$PortNumber/health" -TimeoutSec 2
         } catch {
             $lastError = $_.Exception.Message
-            Start-Sleep -Milliseconds 400
+            Start-Sleep -Milliseconds 500
         }
     }
-    throw "Companion health check on 127.0.0.1:$PortNumber did not become ready. Last error: $lastError"
+    $stderr = Get-LogExcerpt -Path $StderrPath
+    $stdout = Get-LogExcerpt -Path $StdoutPath
+    throw "Companion health check on 127.0.0.1:$PortNumber did not become ready within $TimeoutSeconds seconds. Last error: $lastError stderr: $stderr stdout: $stdout".Trim()
 }
 
 function Start-ValidationCompanion {
     param([int]$PortNumber, [string]$InboxDirectory)
 
     New-Item -ItemType Directory -Force -Path $InboxDirectory | Out-Null
-    $process = Start-Process pwsh -ArgumentList @(
+    $powerShellPath = (Get-Process -Id $PID).Path
+    $process = Start-Process $powerShellPath -ArgumentList @(
         "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
         "-File",
         $companionScript,
         "--host",
@@ -190,7 +138,12 @@ function Start-ValidationCompanion {
         "--inbox-dir",
         $InboxDirectory
     ) -WorkingDirectory $companionDir -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
-    $health = Wait-CompanionHealth -PortNumber $PortNumber
+    $health = Wait-CompanionHealth `
+        -PortNumber $PortNumber `
+        -Process $process `
+        -StdoutPath $stdoutLog `
+        -StderrPath $stderrLog `
+        -TimeoutSeconds $CompanionHealthTimeoutSeconds
     return [pscustomobject]@{
         Process = $process
         Health = $health
@@ -225,6 +178,7 @@ function Invoke-DebugTransportCommand {
         "shell",
         "am",
         "broadcast",
+        "--include-stopped-packages",
         "-a",
         "$packageName.DEBUG_TRANSPORT",
         "-n",
@@ -259,8 +213,11 @@ function Background-MobileClaw {
     & $adbPath -s $script:ResolvedSerial shell input keyevent 3 | Out-Null
 }
 
-function Pull-MobileClawDatabase {
-    param([string]$DestinationPath)
+function Pull-AppFileFromDevice {
+    param(
+        [string]$RemotePath,
+        [string]$DestinationPath
+    )
 
     if (Test-Path $DestinationPath) {
         Remove-Item $DestinationPath -Force
@@ -274,10 +231,10 @@ function Pull-MobileClawDatabase {
             "run-as",
             $packageName,
             "cat",
-            "databases/mobileclaw_shell.db"
+            $RemotePath
         ) -RedirectStandardOutput $DestinationPath -RedirectStandardError "$DestinationPath.err" -Wait -PassThru -NoNewWindow
 
-        if ($process.ExitCode -eq 0) {
+        if ($process.ExitCode -eq 0 -and (Test-Path $DestinationPath) -and (Get-Item $DestinationPath).Length -gt 0) {
             if (Test-Path "$DestinationPath.err") {
                 Remove-Item "$DestinationPath.err" -Force
             }
@@ -292,38 +249,36 @@ function Pull-MobileClawDatabase {
         if (Test-Path "$DestinationPath.err") {
             Remove-Item "$DestinationPath.err" -Force
         }
-        if ($attempt -lt 3 -and $stderr -match "device '.*' not found|no devices/emulators found") {
+        if ($attempt -lt 3 -and $stderr -match "device '.*' not found|no devices/emulators found|No such file or directory") {
             Start-Sleep -Seconds 2
             continue
         }
-        throw "Failed to pull mobileclaw_shell.db from the device. $stderr".Trim()
+        throw "Failed to pull $RemotePath from the device. $stderr".Trim()
     }
 }
 
 function Read-ValidationState {
     $lastError = $null
     for ($attempt = 1; $attempt -le 5; $attempt++) {
-        $dbPath = Join-Path $env:TEMP ("makoion-shell-lifecycle-{0}.db" -f ([guid]::NewGuid()))
-        $stderrPath = "$dbPath.stderr"
+        $jsonPath = Join-Path $env:TEMP ("makoion-shell-lifecycle-{0}.json" -f ([guid]::NewGuid()))
+        $stderrPath = "$jsonPath.stderr"
         try {
-            Pull-MobileClawDatabase -DestinationPath $dbPath
-            $stateJson = $pythonScript | python - $dbPath 2> $stderrPath
-            if ($LASTEXITCODE -ne 0) {
-                $stderr = if (Test-Path $stderrPath) { Get-Content -Raw $stderrPath } else { "" }
-                throw "Failed to inspect validation database snapshot. $stderr".Trim()
-            }
+            Invoke-DebugTransportCommand -Command "dump_validation_state" -BoolExtras @{ open_devices_after_command = $false }
+            Start-Sleep -Milliseconds 300
+            Pull-AppFileFromDevice -RemotePath $validationStateRemotePath -DestinationPath $jsonPath
+            $stateJson = Get-Content -Raw $jsonPath
             if ([string]::IsNullOrWhiteSpace($stateJson)) {
-                throw "Validation database snapshot was empty."
+                throw "Validation state snapshot was empty."
             }
-            return $stateJson | ConvertFrom-Json -Depth 8
+            return $stateJson | ConvertFrom-Json
         } catch {
             $lastError = $_.Exception.Message
             if ($attempt -lt 5) {
                 Start-Sleep -Milliseconds 300
             }
         } finally {
-            if (Test-Path $dbPath) {
-                Remove-Item $dbPath -Force
+            if (Test-Path $jsonPath) {
+                Remove-Item $jsonPath -Force
             }
             if (Test-Path $stderrPath) {
                 Remove-Item $stderrPath -Force
@@ -499,18 +454,21 @@ function Validate-ProcessDeathStaleSending {
         file_prefix = $filePrefix
     } -IntExtras @{
         file_count = 1
+    } -BoolExtras @{
+        open_devices_after_command = $false
     }
 
-    $queuedState = Wait-ForState -Description "stale sending draft queued" -TimeoutSeconds 20 -Predicate {
+    $queuedState = Wait-ForState -Description "stale sending draft queued" -TimeoutSeconds 10 -Predicate {
         param($State)
         $transfer = Find-TransferByFileName -State $State -FileName $targetFileName
-        $transfer -and $transfer.status -eq "Sending"
+        $null -ne $transfer
     }
     $beforeRecoveredAudit = Get-LatestAuditTimestamp -State $queuedState -Action "files.send_to_device"
 
-    Write-ValidationStep "Force-stopping the app and relaunching for stale sending recovery"
+    Write-ValidationStep "Force-stopping the app immediately after queueing stale sending draft"
     Force-StopMobileClaw
     Start-Sleep -Seconds 1
+    Write-ValidationStep "Relaunching the app for stale sending recovery"
     Launch-MobileClawDevices
 
     $recoveredAudit = Wait-ForAuditEvent -Action "files.send_to_device" -ExpectedResults @("recovered") -AfterCreatedAt $beforeRecoveredAudit -DetailsNeedle "" -TimeoutSeconds 25
@@ -654,7 +612,9 @@ try {
 
     $beforeBootstrapRecoveryAudit = Get-LatestAuditTimestamp -State $bootstrappedState -Action "shell.recovery"
     Write-ValidationStep "Requesting shell recovery to refresh runtime state before companion probe"
-    Invoke-DebugTransportCommand -Command "request_shell_recovery"
+    Invoke-DebugTransportCommand -Command "request_shell_recovery" -BoolExtras @{
+        open_devices_after_command = $false
+    }
     $bootstrapRecoveryAudit = Wait-ForAuditEvent -Action "shell.recovery" -ExpectedResults @("passed") -AfterCreatedAt $beforeBootstrapRecoveryAudit -DetailsNeedle "" -TimeoutSeconds 30
 
     $beforeProbeAudit = Get-LatestAuditTimestamp -State $bootstrappedState -Action "devices.health_probe"
