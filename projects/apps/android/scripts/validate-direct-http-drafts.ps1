@@ -360,6 +360,46 @@ function Wait-UntilRetryIsDue {
     Start-Sleep -Milliseconds $delayMs
 }
 
+function Wait-ForDeliveredRetryRecovery {
+    param(
+        [string]$Description,
+        [string]$FileName,
+        [int]$TimeoutSeconds,
+        [int]$MinimumAttemptCount = 2
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastState = $null
+    while ((Get-Date) -lt $deadline) {
+        $lastState = Read-ValidationState
+        $transfer = Find-TransferByFileName -State $lastState -FileName $FileName
+        if (
+            $transfer -and
+            $transfer.status -eq "Delivered" -and
+            [int]$transfer.attempt_count -ge $MinimumAttemptCount -and
+            $lastState.latest_device.status -eq "Bridge active"
+        ) {
+            return $lastState
+        }
+
+        if ($transfer -and $transfer.status -eq "Queued" -and [long]$transfer.next_attempt_at -gt 0) {
+            Wait-UntilRetryIsDue -State ([pscustomobject]@{
+                latest_transfer = $transfer
+                recent_transfers = @($transfer)
+            })
+            Invoke-DebugTransportCommand -Command "drain_outbox"
+            Start-Sleep -Seconds 1
+            continue
+        }
+
+        Start-Sleep -Seconds $PollIntervalSeconds
+    }
+
+    $lastTransfer = if ($lastState) { Find-TransferByFileName -State $lastState -FileName $FileName } else { $null }
+    $lastTransferJson = if ($lastTransfer) { $lastTransfer | ConvertTo-Json -Compress -Depth 6 } else { "{}" }
+    throw "Timed out while waiting for $Description. Last matched transfer state: $lastTransferJson"
+}
+
 function Invoke-BootstrapValidation {
     param([string]$Mode)
 
@@ -448,14 +488,7 @@ try {
                     $companion = Restart-ValidationCompanion -Companion $companion -PortNumber $Port
                     $companionRestarted = $true
                 }
-                Wait-UntilRetryIsDue -State $retryState
-                Invoke-DebugTransportCommand -Command "drain_outbox"
-                $state = Wait-ForState -Description "retry_once recovery delivery" -TimeoutSeconds 40 -Predicate {
-                    param($State)
-                    $transfer = Find-TransferByFileName -State $State -FileName "$filePrefix-1.txt"
-                    $transfer -and $transfer.status -eq "Delivered" -and [int]$transfer.attempt_count -ge 2 -and $State.latest_device.status -eq "Bridge active"
-                }
-                $state
+                Wait-ForDeliveredRetryRecovery -Description "retry_once recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 90
             }
             "timeout_once" {
                 $retryState = Wait-ForState -Description "retry scheduling for timeout_once" -TimeoutSeconds 25 -Predicate {
@@ -467,14 +500,7 @@ try {
                     $companion = Restart-ValidationCompanion -Companion $companion -PortNumber $Port
                     $companionRestarted = $true
                 }
-                Wait-UntilRetryIsDue -State $retryState
-                Invoke-DebugTransportCommand -Command "drain_outbox"
-                $state = Wait-ForState -Description "timeout_once recovery delivery" -TimeoutSeconds 40 -Predicate {
-                    param($State)
-                    $transfer = Find-TransferByFileName -State $State -FileName "$filePrefix-1.txt"
-                    $transfer -and $transfer.status -eq "Delivered" -and [int]$transfer.attempt_count -ge 2 -and $State.latest_device.status -eq "Bridge active"
-                }
-                $state
+                Wait-ForDeliveredRetryRecovery -Description "timeout_once recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 120
             }
             "disconnect_once" {
                 $retryState = Wait-ForState -Description "retry scheduling for disconnect_once" -TimeoutSeconds 25 -Predicate {
@@ -486,14 +512,7 @@ try {
                     $companion = Restart-ValidationCompanion -Companion $companion -PortNumber $Port
                     $companionRestarted = $true
                 }
-                Wait-UntilRetryIsDue -State $retryState
-                Invoke-DebugTransportCommand -Command "drain_outbox"
-                $state = Wait-ForState -Description "disconnect_once recovery delivery" -TimeoutSeconds 40 -Predicate {
-                    param($State)
-                    $transfer = Find-TransferByFileName -State $State -FileName "$filePrefix-1.txt"
-                    $transfer -and $transfer.status -eq "Delivered" -and [int]$transfer.attempt_count -ge 2 -and $State.latest_device.status -eq "Bridge active"
-                }
-                $state
+                Wait-ForDeliveredRetryRecovery -Description "disconnect_once recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 120
             }
             "delayed_ack" {
                 $retryState = Wait-ForState -Description "retry scheduling for delayed_ack" -TimeoutSeconds 25 -Predicate {
@@ -509,14 +528,7 @@ try {
                     $companion = Restart-ValidationCompanion -Companion $companion -PortNumber $Port
                     $companionRestarted = $true
                 }
-                Wait-UntilRetryIsDue -State $retryState
-                Invoke-DebugTransportCommand -Command "drain_outbox"
-                $state = Wait-ForState -Description "delayed_ack recovery delivery" -TimeoutSeconds 45 -Predicate {
-                    param($State)
-                    $transfer = Find-TransferByFileName -State $State -FileName "$filePrefix-1.txt"
-                    $transfer -and $transfer.status -eq "Delivered" -and [int]$transfer.attempt_count -ge 2 -and $State.latest_device.status -eq "Bridge active"
-                }
-                $state
+                Wait-ForDeliveredRetryRecovery -Description "delayed_ack recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 120
             }
             default {
                 throw "Unsupported validation mode $mode"

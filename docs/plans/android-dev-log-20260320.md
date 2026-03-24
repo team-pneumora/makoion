@@ -560,3 +560,46 @@
 
 - The Android validation toolchain now covers the missing "retry scheduled draft drains after companion recovery" scenario instead of only same-process retry delivery.
 - Direct HTTP validation on this machine is no longer blocked by PowerShell compatibility gaps or in-tree Gradle resource lockups.
+
+## Follow-up Session: Combined Agent Runtime Soak Harness
+
+### Scope
+
+- Add a single unattended soak entry point that exercises the Android shell's recovery stack and Direct HTTP retry recovery together.
+- Verify that manual recovery, lifecycle/process-death recovery, and companion-restart transport recovery can all run in one emulator-backed iteration without operator intervention.
+
+### Changes applied
+
+- Added `projects/apps/android/scripts/validate-agent-runtime-soak.ps1` as a combined harness over:
+  - `validate-shell-recovery.ps1`
+  - `validate-shell-lifecycle-recovery.ps1`
+  - `validate-direct-http-drafts.ps1`
+- Hardened the new harness output parser so PowerShell log lines such as `[validate-...]` are not misidentified as JSON arrays.
+- Reworked `validate-direct-http-drafts.ps1` retry-mode assertions to handle repeated queued retry windows:
+  - `timeout_once`
+  - `disconnect_once`
+  - `delayed_ack`
+  - `retry_once`
+- The Direct HTTP validator now keeps re-waiting for the next due retry and re-requesting `drain_outbox` until the transfer is actually delivered, instead of assuming a single retry cycle.
+
+### Emulator validation results
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\projects\apps\android\scripts\validate-agent-runtime-soak.ps1 -Serial emulator-5554 -EndpointPreset emulator_host -Iterations 1 -BasePort 8850 -StepTimeoutMinutes 20` passed.
+- Combined soak summary:
+  - `1 iteration`
+  - `3 checks`
+  - `0 failures`
+  - total duration `683.711s`
+- Combined checks that passed in one run:
+  - `manual_recovery`
+  - `lifecycle_recovery`
+  - `direct_http_recovery`
+- Parsed scenario coverage from the combined summary:
+  - manual recovery: `stale_sending`, `due_retry`, `delayed_retry`
+  - lifecycle recovery: `process_death_stale_sending`, `background_due_retry_resilience`, `process_death_delayed_retry`
+  - Direct HTTP recovery: `normal`, `partial_receipt`, `malformed_receipt`, `retry_once`, `timeout_once`, `disconnect_once`, `delayed_ack`
+
+### Product effect
+
+- The project now has a single emulator soak command that exercises the most failure-prone recovery surfaces together instead of validating them in isolation.
+- This closes the biggest remaining gap before true multi-hour unattended runs: the harness now proves that companion restarts and Android recovery paths can coexist in one continuous validation loop.
