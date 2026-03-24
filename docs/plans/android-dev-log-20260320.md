@@ -481,3 +481,43 @@
   - due queued drafts after returning the app to the foreground
   - delayed queued drafts after relaunch and scheduled retry time
 - Foreground resume is less brittle because returning to the shell now explicitly re-arms transfer recovery instead of relying on a single lifecycle observer path.
+
+## Follow-up Session: Emulator Soak Harness Alignment
+
+### Scope
+
+- Move from single-run recovery validation to the duration/iteration soak harness on the Android emulator.
+- Align the older manual-recovery validator and soak summary parser with the newer lifecycle validator so the harness reflects real pass/fail state instead of local host tooling quirks.
+
+### Changes applied
+
+- Upgraded `projects/apps/android/scripts/validate-shell-recovery.ps1` to the same local-host assumptions as the lifecycle validator:
+  - removed host Python/SQLite inspection and switched to app-private JSON validation state dumps
+  - added stopped-package-safe debug broadcasts
+  - added companion startup diagnostics and longer readiness timeouts
+  - used the current PowerShell executable plus `-ExecutionPolicy Bypass` for child companion startup
+  - added trace logging parity with the lifecycle validator
+- Hardened `projects/apps/android/scripts/validate-shell-recovery-soak.ps1`:
+  - removed `ConvertFrom-Json -Depth` dependency from the soak output parser for Windows PowerShell compatibility
+  - normalized child `stdout` / `stderr` handling so empty files no longer cause null `.Trim()` failures
+  - switched child validator launch to the current PowerShell executable with `-ExecutionPolicy Bypass`
+  - taught the harness to accept a validator run as passed when it emits a valid success payload even if the child process reports a missing/null exit code through `Start-Process`
+  - surfaced parsed scenario names and endpoints correctly in `summary.json`
+
+### Emulator validation results
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-shell-recovery-soak.ps1 -Serial emulator-5554 -EndpointPreset emulator_host -Iterations 2 -BasePort 8830` passed.
+- Emulator soak summary:
+  - `2 iterations`
+  - `4 checks`
+  - `0 failures`
+  - `manual_recovery` passed twice
+  - `lifecycle_recovery` passed twice
+- Per-check scenario parsing in soak artifacts now resolves:
+  - manual recovery: `stale_sending`, `due_retry`, `delayed_retry`
+  - lifecycle recovery: `process_death_stale_sending`, `background_due_retry_resilience`, `process_death_delayed_retry`
+
+### Product effect
+
+- The emulator now has a repeatable combined soak loop instead of only one-off recovery scripts.
+- The soak harness can be trusted for unattended iteration/duration runs on this machine because local PowerShell compatibility and validator parsing drift have been removed.
