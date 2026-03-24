@@ -521,3 +521,42 @@
 
 - The emulator now has a repeatable combined soak loop instead of only one-off recovery scripts.
 - The soak harness can be trusted for unattended iteration/duration runs on this machine because local PowerShell compatibility and validator parsing drift have been removed.
+
+## Follow-up Session: Direct HTTP Recovery Validation Hardening
+
+### Scope
+
+- Close the next validation gap after shell recovery soak by proving that Direct HTTP retry flows still drain after the desktop companion is restarted.
+- Make the Direct HTTP draft validator runnable on this Windows/PowerShell environment without depending on the old Python/SQLite inspection path.
+
+### Changes applied
+
+- Reworked `projects/apps/android/scripts/validate-direct-http-drafts.ps1` around the app's existing JSON validation dump instead of host-side Python database parsing.
+- Hardened the validator to use the current PowerShell executable with `-ExecutionPolicy Bypass`, `--include-stopped-packages` adb broadcasts, device reconnect handling, and companion `/health` startup diagnostics.
+- Added explicit companion restart coverage for retry-oriented modes:
+  - `retry_once`
+  - `timeout_once`
+  - `disconnect_once`
+  - `delayed_ack`
+- Relaxed the probe-health step from a brittle blocking gate into a captured signal, while keeping the transport delivery and retry assertions strict.
+- Standardized local Android builds in this environment by using `MAKOION_ANDROID_BUILD_ROOT=C:\Users\jjck5\AppData\Local\Makoion\android-gradle-build-codex` together with Android Studio's bundled JBR to avoid locked in-tree Gradle intermediates.
+
+### Emulator validation results
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -Command "& '.\projects\apps\android\scripts\validate-direct-http-drafts.ps1' -Serial emulator-5554 -EndpointPreset emulator_host -ValidationModes @('normal','partial_receipt','malformed_receipt','retry_once','timeout_once','disconnect_once','delayed_ack') -Port 8791"` passed.
+- Direct HTTP validation modes passed on `emulator-5554`:
+  - `normal`
+  - `partial_receipt`
+  - `malformed_receipt`
+  - `retry_once`
+  - `timeout_once`
+  - `disconnect_once`
+  - `delayed_ack`
+- Retry-oriented modes now explicitly prove companion restart recovery before final delivery.
+- `:app:assembleDebug` passed with the external Gradle build root override.
+- `:app:connectedDebugAndroidTest` passed on `Medium_Phone_API_36.1` with 5 tests completed and 0 failures.
+
+### Product effect
+
+- The Android validation toolchain now covers the missing "retry scheduled draft drains after companion recovery" scenario instead of only same-process retry delivery.
+- Direct HTTP validation on this machine is no longer blocked by PowerShell compatibility gaps or in-tree Gradle resource lockups.
