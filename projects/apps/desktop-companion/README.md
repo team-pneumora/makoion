@@ -5,6 +5,7 @@
 Current scope:
 - JDK-only local server using `com.sun.net.httpserver.HttpServer`
 - `GET /health` readiness endpoint
+- `GET /api/v1/mcp/discovery` MCP connector discovery endpoint for Android chat-first resource sync
 - `POST /api/v1/transfers` receiver for Android transfer manifests
 - `POST /api/v1/session/notify` receiver for desktop notification probes
 - `POST /api/v1/app/open` receiver for `inbox`, `latest_transfer`, and `actions_folder` probes
@@ -32,6 +33,11 @@ Validate `workflow.run` locally:
 ```powershell
 cd projects/apps/desktop-companion
 pwsh -NoProfile -File scripts\validate-workflow-run.ps1 -WorkflowId open_latest_transfer -RunMode best_effort
+```
+
+Inspect MCP discovery locally:
+```powershell
+Invoke-WebRequest http://127.0.0.1:8787/api/v1/mcp/discovery | Select-Object -ExpandProperty Content
 ```
 
 Validate `app.open` targets locally:

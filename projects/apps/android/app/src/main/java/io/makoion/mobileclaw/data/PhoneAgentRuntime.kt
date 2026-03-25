@@ -95,7 +95,7 @@ class LocalPhoneAgentRuntime(
             AgentIntent.SummarizeIndexedFiles -> summarizeIndexedFiles(trimmedPrompt, context)
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
             AgentIntent.TransferIndexedFiles -> transferIndexedFiles(trimmedPrompt, context)
-            AgentIntent.ConnectMcpBridge -> connectMcpBridge(trimmedPrompt)
+            AgentIntent.ConnectMcpBridge -> connectMcpBridge(trimmedPrompt, context)
             AgentIntent.ShowMcpConnectorStatus -> showMcpConnectorStatus(trimmedPrompt)
             AgentIntent.ShowMcpTools -> showMcpTools(trimmedPrompt)
             AgentIntent.SyncMcpSkills -> syncMcpSkills(trimmedPrompt, context)
@@ -680,11 +680,75 @@ class LocalPhoneAgentRuntime(
 
     private suspend fun connectMcpBridge(
         prompt: String,
+        context: AgentTurnContext,
     ): AgentTurnResult {
+        val targetDevice = resolveMcpCompanion(context)
+        if (targetDevice == null) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "Direct HTTP companion이 아직 없어 MCP bridge를 실제로 연결할 수 없어요. Settings에서 companion을 페어링하고 LAN bridge를 먼저 준비해 주세요."
+                } else {
+                    "There is no Direct HTTP companion ready yet, so I cannot connect the MCP bridge for real. Pair a companion and arm the LAN bridge from Settings first."
+                },
+                destination = AgentDestination.Settings,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mcpBridgeConnectActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "Direct HTTP companion이 없어 MCP bridge 연결이 보류되었습니다."
+                } else {
+                    "MCP bridge connection is waiting for a Direct HTTP companion."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+
+        val discovery = devicePairingRepository.discoverMcpBridge(targetDevice.id)
+        if (discovery.status != McpBridgeDiscoveryStatus.Ready) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    buildString {
+                        append("${targetDevice.name}에서 MCP bridge discovery를 완료하지 못했어요. ")
+                        append(discovery.summary)
+                        append(" ")
+                        append(discovery.detail)
+                    }
+                } else {
+                    buildString {
+                        append("I could not finish MCP bridge discovery against ${targetDevice.name}. ")
+                        append(discovery.summary)
+                        append(" ")
+                        append(discovery.detail)
+                    }
+                },
+                destination = if (discovery.status == McpBridgeDiscoveryStatus.Unreachable) {
+                    AgentDestination.Chat
+                } else {
+                    AgentDestination.Settings
+                },
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mcpBridgeConnectActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "실제 MCP bridge discovery가 아직 완료되지 않았습니다."
+                } else {
+                    "The live MCP bridge discovery is not ready yet."
+                },
+                taskStatus = if (discovery.status == McpBridgeDiscoveryStatus.Unreachable) {
+                    AgentTaskStatus.Failed
+                } else {
+                    AgentTaskStatus.WaitingResource
+                },
+            )
+        }
+
         externalEndpointRepository.markConnected(
             mcpBridgeEndpointId,
             ExternalEndpointConnectionSnapshot(
-                endpointLabel = "Companion desktop MCP relay",
+                endpointLabel = discovery.serverLabel ?: targetDevice.name,
+                summary = discovery.summary,
+                transportLabel = discovery.transportLabel,
+                authLabel = discovery.authLabel,
+                toolNames = discovery.toolNames,
+                healthDetails = discovery.detail,
             ),
         )
         externalEndpointRepository.refresh()
@@ -694,7 +758,7 @@ class LocalPhoneAgentRuntime(
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("MCP bridge를 연결했어요.")
+                    append("${targetDevice.name}에서 MCP bridge를 연결했어요.")
                     endpoint?.transportLabel?.let {
                         append(" transport는 ")
                         append(it)
@@ -709,7 +773,7 @@ class LocalPhoneAgentRuntime(
                 }
             } else {
                 buildString {
-                    append("I connected the MCP bridge.")
+                    append("I connected the MCP bridge from ${targetDevice.name}.")
                     endpoint?.transportLabel?.let {
                         append(" The transport is ")
                         append(it)
@@ -727,9 +791,9 @@ class LocalPhoneAgentRuntime(
             taskTitle = taskTitle(prompt),
             taskActionKey = mcpBridgeConnectActionKey,
             taskSummary = if (prefersKorean(prompt)) {
-                "채팅에서 MCP bridge 연결 상태를 갱신했습니다."
+                "채팅에서 companion MCP bridge discovery를 완료했습니다."
             } else {
-                "Marked the MCP bridge as connected from chat."
+                "Completed companion-backed MCP bridge discovery from chat."
             },
         )
     }
@@ -738,7 +802,8 @@ class LocalPhoneAgentRuntime(
         prompt: String,
         context: AgentTurnContext,
     ): AgentTurnResult {
-        val mcpEndpoint = context.externalEndpoints.firstOrNull { it.endpointId == mcpBridgeEndpointId }
+        refreshMcpBridgeFromCompanion(context)
+        val mcpEndpoint = refreshMcpEndpoint()
         val syncResult = mcpSkillRepository.syncFromMcpBridge(mcpEndpoint)
         if (syncResult.updatedSkillCount > 0) {
             externalEndpointRepository.markConnected(
@@ -2473,6 +2538,32 @@ class LocalPhoneAgentRuntime(
         }
     }
 
+    private suspend fun refreshMcpBridgeFromCompanion(context: AgentTurnContext) {
+        val targetDevice = resolveMcpCompanion(context) ?: return
+        val discovery = devicePairingRepository.discoverMcpBridge(targetDevice.id)
+        if (discovery.status != McpBridgeDiscoveryStatus.Ready) {
+            return
+        }
+        externalEndpointRepository.markConnected(
+            mcpBridgeEndpointId,
+            ExternalEndpointConnectionSnapshot(
+                endpointLabel = discovery.serverLabel ?: targetDevice.name,
+                summary = discovery.summary,
+                transportLabel = discovery.transportLabel,
+                authLabel = discovery.authLabel,
+                toolNames = discovery.toolNames,
+                healthDetails = discovery.detail,
+            ),
+        )
+    }
+
+    private fun resolveMcpCompanion(context: AgentTurnContext): PairedDeviceState? {
+        return context.selectedTargetDeviceId?.let { selectedId ->
+            context.pairedDevices.firstOrNull { it.id == selectedId }
+        }?.takeIf { it.transportMode == DeviceTransportMode.DirectHttp }
+            ?: context.pairedDevices.firstOrNull { it.transportMode == DeviceTransportMode.DirectHttp }
+    }
+
     private fun deliveryChannelDisplayName(channelId: String): String {
         return when (channelId) {
             localNotificationChannelId -> "Phone local notification"
@@ -2854,7 +2945,7 @@ class LocalPhoneAgentRuntime(
                     intent = AgentIntent.ConnectMcpBridge,
                     auditResult = "mcp_bridge_connected",
                     mode = AgentPlannerMode.ActionIntent,
-                    summary = "Mark the MCP bridge as mock-ready from the chat loop.",
+                    summary = "Discover the MCP bridge from the selected direct HTTP companion and record its live tool inventory.",
                     capabilities = listOf("mcp.connect"),
                     resources = listOf("mcp.api_endpoints"),
                 )

@@ -36,6 +36,16 @@ public final class Main {
     private static final int RECEIPT_VERSION = 1;
     private static final String SUPPORTED_CAPABILITIES_JSON =
         "[\"files.transfer\",\"session.notify\",\"app.open\",\"workflow.run\"]";
+    private static final String MCP_DISCOVERY_CAPABILITIES_JSON =
+        "[\"mcp.connect\",\"mcp.tools.list\",\"mcp.skills.sync\","
+            + "\"session.notify\",\"app.open\",\"workflow.run\",\"files.transfer\"]";
+    private static final String MCP_DISCOVERY_TOOLS_JSON =
+        "[\"desktop.session.notify\",\"desktop.app.open\",\"desktop.workflow.run\","
+            + "\"files.transfer.receive\",\"browser.research.plan\",\"api.request.ingest\"]";
+    private static final String MCP_DISCOVERY_SKILL_BUNDLES_JSON =
+        "[\"desktop_action_bridge\",\"browser_research_handoff\",\"external_api_ingest\"]";
+    private static final String MCP_DISCOVERY_WORKFLOWS_JSON =
+        "[\"open_latest_transfer\",\"open_actions_folder\",\"open_latest_action\"]";
     private static final Pattern TRANSFER_ID_PATTERN =
         Pattern.compile("\"transfer_id\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern REQUEST_ID_PATTERN =
@@ -80,6 +90,7 @@ public final class Main {
             0
         );
         server.createContext("/health", new HealthHandler(config));
+        server.createContext("/api/v1/mcp/discovery", new McpDiscoveryHandler(config));
         server.createContext("/api/v1/transfers", new TransferHandler(config));
         server.createContext("/api/v1/session/notify", new SessionNotifyHandler(config));
         server.createContext("/api/v1/app/open", new AppOpenHandler(config));
@@ -165,6 +176,47 @@ public final class Main {
             try (var paths = Files.list(inboxDir)) {
                 return paths.filter(Files::isDirectory).count();
             }
+        }
+    }
+
+    private static final class McpDiscoveryHandler implements HttpHandler {
+        private final CompanionConfig config;
+
+        private McpDiscoveryHandler(CompanionConfig config) {
+            this.config = config;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                sendJson(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+                return;
+            }
+
+            Headers headers = exchange.getRequestHeaders();
+            String presentedSecret = headers.getFirst("X-MobileClaw-Trusted-Secret");
+            if (!config.trustedSecret().isBlank() && !config.trustedSecret().equals(presentedSecret)) {
+                sendJson(exchange, 401, "{\"error\":\"invalid_trusted_secret\"}");
+                return;
+            }
+
+            String authLabel = config.trustedSecret().isBlank()
+                ? "Local network policy gate"
+                : "Trusted secret + local policy gate";
+            String response = "{"
+                + "\"status\":\"ok\","
+                + "\"server_label\":\"Makoion desktop companion\","
+                + "\"transport_label\":\"Direct HTTP bridge\","
+                + "\"auth_label\":\"" + escapeJson(authLabel) + "\","
+                + "\"capabilities\":" + MCP_DISCOVERY_CAPABILITIES_JSON + ","
+                + "\"tool_names\":" + MCP_DISCOVERY_TOOLS_JSON + ","
+                + "\"skill_bundles\":" + MCP_DISCOVERY_SKILL_BUNDLES_JSON + ","
+                + "\"workflow_ids\":" + MCP_DISCOVERY_WORKFLOWS_JSON + ","
+                + "\"notification_display_supported\":" + isNotificationDisplaySupported() + ","
+                + "\"inbox_dir\":\"" + escapeJson(config.inboxDir().toAbsolutePath().toString()) + "\","
+                + "\"status_detail\":\"Companion MCP discovery is ready to advertise desktop action, browser handoff, and API ingest tools.\""
+                + "}";
+            sendJson(exchange, 200, response);
         }
     }
 

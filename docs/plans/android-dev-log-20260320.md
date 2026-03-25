@@ -651,3 +651,58 @@
 
 - The MCP connector is no longer a generic staged placeholder. It now behaves like a real resource profile that the phone agent can inspect, summarize, and refresh from chat.
 - Users can keep the app in a simple conversation flow while still controlling MCP connection state, tool inventory, and skill updates without dropping into Settings first.
+
+## Follow-up Session: Live MCP Discovery Handshake
+
+### Scope
+
+- Replace the MCP connector's seeded-only metadata with a live discovery handshake against the desktop companion.
+- Keep the Android shell chat-first by letting `Connect MCP bridge` and `Update MCP skills` refresh connector state from a real companion-backed HTTP discovery route.
+
+### Changes applied
+
+- Added `GET /api/v1/mcp/discovery` to `projects/apps/desktop-companion/src/io/makoion/desktopcompanion/Main.java`.
+- The desktop companion discovery response now advertises:
+  - `server_label`
+  - `transport_label`
+  - `auth_label`
+  - `capabilities`
+  - `tool_names`
+  - `skill_bundles`
+  - `workflow_ids`
+  - `status_detail`
+- Updated `projects/apps/desktop-companion/README.md` with the new MCP discovery route and a local inspection example.
+- Extended `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/DevicePairingRepository.kt` with a real `discoverMcpBridge(deviceId)` path that:
+  - targets `/api/v1/mcp/discovery` on the paired direct-HTTP companion
+  - sends `X-MobileClaw-Trusted-Secret`
+  - persists companion-advertised capabilities back onto the paired device
+  - returns structured MCP discovery metadata for the chat runtime
+- Reworked `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/PhoneAgentRuntime.kt` so:
+  - `Connect MCP bridge` performs live companion discovery before marking the connector connected
+  - `Update MCP skills` refreshes the MCP connector from the paired companion before skill sync
+  - MCP bridge selection resolves from the active direct-HTTP paired device instead of relying on seeded endpoint defaults alone
+- Added `MockWebServer` instrumentation coverage in `projects/apps/android/app/build.gradle.kts`.
+- Reworked `projects/apps/android/app/src/androidTest/java/io/makoion/mobileclaw/ui/McpSkillChatFlowTest.kt` so the emulator test now:
+  - creates and approves a pairing session when no companion exists yet
+  - arms direct HTTP transport
+  - points the paired device at a live mock discovery server
+  - verifies chat-driven MCP connect, status, tool listing, and skill sync against a real HTTP handshake
+
+### Validation notes
+
+- A stale UTP lock file at `app/outputs/androidTest-results/.../utp.0.log.lck` blocked one rerun of `connectedDebugAndroidTest`; removing the stale lock and reinstalling `app-debug-androidTest.apk` restored the emulator runner cleanly.
+- Desktop companion compilation was verified directly with Android Studio JBR `javac` into `projects/apps/desktop-companion/build/codex-javac`.
+
+### Emulator validation results
+
+- `:app:assembleDebug` passed.
+- `:app:testDebugUnitTest` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:installDebugAndroidTest` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.makoion.mobileclaw.ui.McpSkillChatFlowTest` passed.
+- Full `:app:connectedDebugAndroidTest` passed on `emulator-5554` (`Medium_Phone_API_36.1`) with 5 tests completed and 0 failures.
+
+### Product effect
+
+- The MCP connector now has a real companion-backed handshake path instead of only seeded profile metadata.
+- Chat-driven MCP connect and skill sync now refresh from a live companion inventory, which moves the connector closer to a practical resource runtime and away from placeholder state.

@@ -120,6 +120,26 @@ data class CompanionHealthCheckResult(
     val checkedAtLabel: String,
 )
 
+enum class McpBridgeDiscoveryStatus {
+    Ready,
+    Unreachable,
+    Misconfigured,
+    Skipped,
+}
+
+data class McpBridgeDiscoveryResult(
+    val deviceId: String,
+    val status: McpBridgeDiscoveryStatus,
+    val summary: String,
+    val detail: String,
+    val serverLabel: String? = null,
+    val transportLabel: String? = null,
+    val authLabel: String? = null,
+    val toolNames: List<String> = emptyList(),
+    val capabilities: List<String> = emptyList(),
+    val discoveredAtLabel: String,
+)
+
 enum class CompanionSessionNotifyStatus {
     Delivered,
     Failed,
@@ -211,6 +231,8 @@ interface DevicePairingRepository {
         deviceId: String,
         endpointUrl: String,
     )
+
+    suspend fun discoverMcpBridge(deviceId: String): McpBridgeDiscoveryResult
 
     suspend fun probeCompanion(deviceId: String): CompanionHealthCheckResult
 
@@ -516,6 +538,149 @@ class PersistentDevicePairingRepository(
             details = "Updated ${device.name} direct HTTP endpoint to $endpointUrl.",
         )
         refresh()
+    }
+
+    override suspend fun discoverMcpBridge(deviceId: String): McpBridgeDiscoveryResult {
+        val discoveredAt = System.currentTimeMillis()
+        val discoveredAtLabel = DateUtils.getRelativeTimeSpanString(
+            discoveredAt,
+            discoveredAt,
+            DateUtils.SECOND_IN_MILLIS,
+        ).toString()
+        val device = _pairedDevices.value.firstOrNull { it.id == deviceId }
+        if (device == null) {
+            return McpBridgeDiscoveryResult(
+                deviceId = deviceId,
+                status = McpBridgeDiscoveryStatus.Misconfigured,
+                summary = "Selected device is no longer available.",
+                detail = "Refresh paired devices before discovering the MCP bridge again.",
+                discoveredAtLabel = discoveredAtLabel,
+            )
+        }
+        if (device.transportMode != DeviceTransportMode.DirectHttp) {
+            val result = McpBridgeDiscoveryResult(
+                deviceId = device.id,
+                status = McpBridgeDiscoveryStatus.Skipped,
+                summary = "Loopback mode does not expose companion MCP discovery.",
+                detail = "Arm LAN bridge first if you want to discover companion MCP tools over HTTP.",
+                discoveredAtLabel = discoveredAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.mcp_discovery",
+                result = "skipped",
+                details = "Skipped MCP discovery for ${device.name} because loopback transport is active.",
+            )
+            return result
+        }
+        val endpoint = device.endpointLabel
+        if (endpoint.isNullOrBlank()) {
+            val result = McpBridgeDiscoveryResult(
+                deviceId = device.id,
+                status = McpBridgeDiscoveryStatus.Misconfigured,
+                summary = "Companion endpoint is missing.",
+                detail = "Direct HTTP mode needs an endpoint URL before the shell can discover MCP tools.",
+                discoveredAtLabel = discoveredAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.mcp_discovery",
+                result = "misconfigured",
+                details = "MCP discovery could not run for ${device.name} because endpoint_url was missing.",
+            )
+            return result
+        }
+
+        val result = withContext(Dispatchers.IO) {
+            val discoveryUrl = runCatching { mcpDiscoveryUrlFor(endpoint) }.getOrNull()
+            if (discoveryUrl == null) {
+                return@withContext McpBridgeDiscoveryResult(
+                    deviceId = device.id,
+                    status = McpBridgeDiscoveryStatus.Misconfigured,
+                    summary = "Endpoint URL could not be parsed.",
+                    detail = endpoint,
+                    discoveredAtLabel = discoveredAtLabel,
+                )
+            }
+            val trustedSecret = queryTrustedSecret(device.id)
+            runCatching {
+                val connection = (URL(discoveryUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 3_000
+                    readTimeout = 3_000
+                    setRequestProperty("Accept", "application/json")
+                    trustedSecret?.takeIf { it.isNotBlank() }?.let { secret ->
+                        setRequestProperty("X-MobileClaw-Trusted-Secret", secret)
+                    }
+                }
+                val responseCode = connection.responseCode
+                val responseBody = runCatching {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                }.getOrElse {
+                    connection.errorStream?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
+                }
+                connection.disconnect()
+
+                if (responseCode in 200..299) {
+                    val discoveryJson = runCatching { JSONObject(responseBody) }.getOrNull()
+                    val toolNames = jsonArrayToTrimmedList(discoveryJson?.optJSONArray("tool_names"))
+                    val capabilities = jsonArrayToTrimmedList(discoveryJson?.optJSONArray("capabilities"))
+                    if (capabilities.isNotEmpty()) {
+                        updateAdvertisedCapabilities(device.id, capabilities)
+                    }
+                    McpBridgeDiscoveryResult(
+                        deviceId = device.id,
+                        status = McpBridgeDiscoveryStatus.Ready,
+                        summary = buildString {
+                            append("HTTP $responseCode")
+                            append(" • ${toolNames.size} tool(s)")
+                            if (capabilities.isNotEmpty()) {
+                                append(" • ${capabilities.size} capabilities")
+                            }
+                        },
+                        detail = discoveryJson?.optString("status_detail")?.takeIf { it.isNotBlank() }
+                            ?: discoveryUrl,
+                        serverLabel = discoveryJson?.optString("server_label")?.takeIf { it.isNotBlank() },
+                        transportLabel = discoveryJson?.optString("transport_label")?.takeIf { it.isNotBlank() },
+                        authLabel = discoveryJson?.optString("auth_label")?.takeIf { it.isNotBlank() },
+                        toolNames = toolNames,
+                        capabilities = capabilities,
+                        discoveredAtLabel = discoveredAtLabel,
+                    )
+                } else {
+                    McpBridgeDiscoveryResult(
+                        deviceId = device.id,
+                        status = McpBridgeDiscoveryStatus.Unreachable,
+                        summary = "Companion returned HTTP $responseCode for MCP discovery.",
+                        detail = responseBody.take(180).ifBlank { discoveryUrl },
+                        discoveredAtLabel = discoveredAtLabel,
+                    )
+                }
+            }.getOrElse { error ->
+                McpBridgeDiscoveryResult(
+                    deviceId = device.id,
+                    status = McpBridgeDiscoveryStatus.Unreachable,
+                    summary = "Companion MCP discovery could not reach the endpoint.",
+                    detail = directHttpReachabilityDetail(
+                        requestUrl = discoveryUrl,
+                        fallbackUrl = endpoint,
+                        error = error,
+                    ),
+                    discoveredAtLabel = discoveredAtLabel,
+                )
+            }
+        }
+
+        auditTrailRepository.logAction(
+            action = "devices.mcp_discovery",
+            result = when (result.status) {
+                McpBridgeDiscoveryStatus.Ready -> "ok"
+                McpBridgeDiscoveryStatus.Unreachable -> "failed"
+                McpBridgeDiscoveryStatus.Misconfigured -> "misconfigured"
+                McpBridgeDiscoveryStatus.Skipped -> "skipped"
+            },
+            details = "MCP discovery for ${device.name}: ${result.summary} ${result.detail}".trim(),
+        )
+        refresh()
+        return result
     }
 
     override suspend fun probeCompanion(deviceId: String): CompanionHealthCheckResult {
@@ -1580,6 +1745,11 @@ class PersistentDevicePairingRepository(
         return URL(url.protocol, url.host, url.port, "/health").toString()
     }
 
+    private fun mcpDiscoveryUrlFor(endpoint: String): String {
+        val url = URL(endpoint)
+        return URL(url.protocol, url.host, url.port, "/api/v1/mcp/discovery").toString()
+    }
+
     private suspend fun queryTrustedSecret(deviceId: String): String? = withContext(Dispatchers.IO) {
         databaseHelper.readableDatabase.query(
             "paired_devices",
@@ -1612,6 +1782,19 @@ class PersistentDevicePairingRepository(
     private fun workflowRunUrlFor(endpoint: String): String {
         val url = URL(endpoint)
         return URL(url.protocol, url.host, url.port, "/api/v1/workflow/run").toString()
+    }
+
+    private fun jsonArrayToTrimmedList(array: JSONArray?): List<String> {
+        if (array == null) {
+            return emptyList()
+        }
+        return buildList {
+            for (index in 0 until array.length()) {
+                add(array.optString(index))
+            }
+        }.map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
     }
 
     private fun directHttpReachabilityDetail(
