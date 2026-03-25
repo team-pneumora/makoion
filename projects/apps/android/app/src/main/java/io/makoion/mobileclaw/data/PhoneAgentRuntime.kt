@@ -68,7 +68,7 @@ class LocalPhoneAgentRuntime(
         context: AgentTurnContext,
     ): AgentTurnResult {
         val trimmedPrompt = prompt.trim()
-        val plannerOutput = planTurn(trimmedPrompt)
+        val plannerOutput = planTurn(trimmedPrompt, context)
         val rawResult = when (val intent = plannerOutput.intent) {
             is AgentIntent.ApprovePendingApproval -> approvePendingApproval(trimmedPrompt, context, intent.approvalId)
             is AgentIntent.DenyPendingApproval -> denyPendingApproval(trimmedPrompt, context, intent.approvalId)
@@ -2652,11 +2652,17 @@ class LocalPhoneAgentRuntime(
         }
     }
 
-    private fun planTurn(prompt: String): AgentPlannerOutput {
+    private fun planTurn(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentPlannerOutput {
         val normalized = prompt.lowercase()
         val approvalId = approvalIdFromPrompt(prompt)
         val taskId = taskIdFromPrompt(prompt)
         val automationId = automationIdFromPrompt(prompt)
+        val connectedMcpEndpoint = context.externalEndpoints.firstOrNull {
+            it.endpointId == mcpBridgeEndpointId && it.status == ExternalEndpointStatus.Connected
+        }
         val wantsOpen = containsAny(
             normalized,
             "open",
@@ -2987,27 +2993,27 @@ class LocalPhoneAgentRuntime(
                     intent = AgentIntent.SyncMcpSkills,
                     auditResult = "mcp_skills_synced",
                     mode = AgentPlannerMode.ActionIntent,
-                    summary = "Sync the MCP skill catalog from the connected MCP bridge.",
+                    summary = mcpSkillSyncPlannerSummary(connectedMcpEndpoint),
                     capabilities = listOf("mcp.skills.sync"),
-                    resources = listOf("mcp.api_endpoints"),
+                    resources = listOf("mcp.api_endpoints", "mcp.skill_bundles"),
                 )
             wantsShowMcpTools ->
                 plannerOutput(
                     intent = AgentIntent.ShowMcpTools,
                     auditResult = "mcp_tools_listed",
                     mode = AgentPlannerMode.Answer,
-                    summary = "Summarize the currently advertised MCP tool inventory.",
+                    summary = mcpToolPlannerSummary(connectedMcpEndpoint),
                     capabilities = listOf("mcp.tools.list"),
-                    resources = listOf("mcp.api_endpoints"),
+                    resources = listOf("mcp.api_endpoints", "mcp.tool_schemas"),
                 )
             wantsShowMcpConnectorStatus ->
                 plannerOutput(
                     intent = AgentIntent.ShowMcpConnectorStatus,
                     auditResult = "mcp_connector_status_shown",
                     mode = AgentPlannerMode.Answer,
-                    summary = "Summarize the MCP connector transport, auth, and sync status.",
+                    summary = mcpStatusPlannerSummary(connectedMcpEndpoint),
                     capabilities = listOf("mcp.connect", "mcp.tools.list"),
-                    resources = listOf("mcp.api_endpoints"),
+                    resources = listOf("mcp.api_endpoints", "mcp.skill_bundles", "mcp.tool_schemas"),
                 )
             wantsShowMcpSkills ->
                 plannerOutput(
@@ -3023,9 +3029,9 @@ class LocalPhoneAgentRuntime(
                     intent = AgentIntent.ConnectMcpBridge,
                     auditResult = "mcp_bridge_connected",
                     mode = AgentPlannerMode.ActionIntent,
-                    summary = "Discover the MCP bridge from the selected direct HTTP companion and record its live tool inventory.",
+                    summary = mcpConnectPlannerSummary(connectedMcpEndpoint),
                     capabilities = listOf("mcp.connect"),
-                    resources = listOf("mcp.api_endpoints"),
+                    resources = listOf("mcp.api_endpoints", "external.companion"),
                 )
             containsAny(
                 normalized,
@@ -3285,6 +3291,56 @@ class LocalPhoneAgentRuntime(
                 resources = resources,
             ),
         )
+    }
+
+    private fun mcpConnectPlannerSummary(endpoint: ExternalEndpointProfileState?): String {
+        val base = "Discover the MCP bridge from the selected direct HTTP companion and record its live tool inventory."
+        return endpoint?.let { connected ->
+            "$base ${mcpInventoryPlannerHint(connected)}"
+        } ?: base
+    }
+
+    private fun mcpStatusPlannerSummary(endpoint: ExternalEndpointProfileState?): String {
+        val base = "Summarize the MCP connector transport, auth, sync status, and cached execution inventory."
+        return endpoint?.let { connected ->
+            "$base ${mcpInventoryPlannerHint(connected)}"
+        } ?: base
+    }
+
+    private fun mcpToolPlannerSummary(endpoint: ExternalEndpointProfileState?): String {
+        val base = "Summarize the currently advertised MCP tools with schema hints and approval requirements."
+        return endpoint?.let { connected ->
+            "$base ${mcpInventoryPlannerHint(connected)}"
+        } ?: base
+    }
+
+    private fun mcpSkillSyncPlannerSummary(endpoint: ExternalEndpointProfileState?): String {
+        val base = "Sync the MCP skill catalog from the connected MCP bridge, preferring advertised skill bundles before tool-name fallback."
+        return endpoint?.let { connected ->
+            "$base ${mcpInventoryPlannerHint(connected)}"
+        } ?: base
+    }
+
+    private fun mcpInventoryPlannerHint(endpoint: ExternalEndpointProfileState): String {
+        val hintParts = mutableListOf<String>()
+        if (endpoint.toolNames.isNotEmpty()) {
+            hintParts += "Cached tools: ${endpoint.toolNames.take(3).joinToString()}${if (endpoint.toolNames.size > 3) " +" + (endpoint.toolNames.size - 3) else ""}."
+        }
+        val approvalTools = endpoint.toolSchemas
+            .filter { it.requiresConfirmation }
+            .map { it.name }
+        if (approvalTools.isNotEmpty()) {
+            hintParts += "Approval-gated tools: ${approvalTools.joinToString()}."
+        }
+        if (endpoint.skillBundles.isNotEmpty()) {
+            hintParts += "Skill bundles: ${endpoint.skillBundles.joinToString { it.title }}."
+        }
+        if (endpoint.workflowIds.isNotEmpty()) {
+            hintParts += "Workflows: ${endpoint.workflowIds.joinToString()}."
+        }
+        return hintParts.joinToString(" ").ifBlank {
+            "No cached MCP schema inventory is available yet."
+        }
     }
 
     private fun strategyForPrompt(normalizedPrompt: String): FileOrganizeStrategy {

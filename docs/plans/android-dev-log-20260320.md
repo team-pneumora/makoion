@@ -756,3 +756,40 @@
 
 - The MCP connector now behaves more like a usable resource runtime: the phone agent can retain not only tool names but also what each tool is for, which bundles the companion advertises, and which remote workflows are available.
 - Skill sync now has a cleaner contract with the companion because bundle inventory can drive installation intent directly instead of relying only on tool-name heuristics.
+
+## Follow-up Session: Schema-Aware MCP Planning Trace
+
+### Scope
+
+- Make the Android chat planner use the cached MCP schema inventory when it explains or plans MCP-related turns.
+- Keep the planner chat-first, but stop treating MCP turns as static canned summaries once the connector has already discovered live schema and bundle metadata.
+
+### Changes applied
+
+- Reworked `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/PhoneAgentRuntime.kt` so `planTurn(...)` now receives the current `AgentTurnContext`.
+- MCP-related planner summaries now incorporate the live connector cache for:
+  - `Connect MCP bridge`
+  - `Show MCP status`
+  - `List MCP tools`
+  - `Update MCP skills`
+- Added planner-side MCP inventory hints covering:
+  - cached tool names
+  - approval-gated tools
+  - advertised skill bundles
+  - available workflow ids
+- Expanded `projects/apps/android/app/src/androidTest/java/io/makoion/mobileclaw/ui/McpSkillChatFlowTest.kt` so emulator coverage now verifies that MCP turn results carry schema-aware planning trace summaries after discovery.
+
+### Emulator validation results
+
+- `:app:assembleDebug` passed.
+- `:app:testDebugUnitTest` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:installDebugAndroidTest` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.makoion.mobileclaw.ui.McpSkillChatFlowTest` passed.
+- Full `:app:connectedDebugAndroidTest` passed on `emulator-5554` (`Medium_Phone_API_36.1`) with 5 tests completed and 0 failures.
+- Desktop companion `Main.java` still compiled successfully with Android Studio JBR `javac`.
+
+### Product effect
+
+- Once MCP discovery has run, later chat turns no longer plan against a generic MCP placeholder. The planner can now explain the actual cached tool, bundle, and workflow surface it intends to use.
+- This closes another gap between "resource is connected" and "planner understands how that resource can be used" inside the phone-local agent runtime.

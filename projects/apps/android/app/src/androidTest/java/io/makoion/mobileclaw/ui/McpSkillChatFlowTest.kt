@@ -216,8 +216,16 @@ class McpSkillChatFlowTest {
                 statusExecution.turnResult.reply.contains("skill bundle", ignoreCase = true),
             )
             assertTrue(
+                "Expected the MCP status planning trace to mention workflows.",
+                statusExecution.turnResult.planningTrace?.summary?.contains("Workflows:", ignoreCase = true) == true,
+            )
+            assertTrue(
                 "Expected the skill sync reply to mention the connector tool inventory.",
                 syncExecution.turnResult.reply.contains("tool", ignoreCase = true),
+            )
+            assertTrue(
+                "Expected the MCP skill sync planning trace to mention advertised skill bundles.",
+                syncExecution.turnResult.planningTrace?.summary?.contains("Skill bundles:", ignoreCase = true) == true,
             )
             assertTrue(
                 "Expected the MCP tools reply to list desktop.app.open.",
@@ -226,6 +234,10 @@ class McpSkillChatFlowTest {
             assertTrue(
                 "Expected the MCP tools reply to surface tool schema detail.",
                 toolsExecution.turnResult.reply.contains("approved desktop surface", ignoreCase = true),
+            )
+            assertTrue(
+                "Expected the MCP tools planning trace to call out approval-gated tools.",
+                toolsExecution.turnResult.planningTrace?.summary?.contains("Approval-gated tools:", ignoreCase = true) == true,
             )
             assertTrue(
                 "Expected the endpoint profile to persist the synced skill count and last sync time.",
