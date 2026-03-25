@@ -748,6 +748,9 @@ class LocalPhoneAgentRuntime(
                 transportLabel = discovery.transportLabel,
                 authLabel = discovery.authLabel,
                 toolNames = discovery.toolNames,
+                toolSchemas = discovery.toolSchemas,
+                skillBundles = discovery.skillBundles,
+                workflowIds = discovery.workflowIds,
                 healthDetails = discovery.detail,
             ),
         )
@@ -769,6 +772,11 @@ class LocalPhoneAgentRuntime(
                         append(endpoint.toolNames.size)
                         append("개 MCP tool이 광고돼 있어요.")
                     }
+                    if (endpoint?.skillBundles?.isNotEmpty() == true) {
+                        append(" skill bundle은 ")
+                        append(endpoint.skillBundles.size)
+                        append("개입니다.")
+                    }
                     append(" 이제 채팅에서 MCP status, MCP tools, MCP skill 업데이트를 바로 요청할 수 있습니다.")
                 }
             } else {
@@ -783,6 +791,11 @@ class LocalPhoneAgentRuntime(
                         append(" It is advertising ")
                         append(endpoint.toolNames.size)
                         append(" MCP tool(s).")
+                    }
+                    if (endpoint?.skillBundles?.isNotEmpty() == true) {
+                        append(" ")
+                        append(endpoint.skillBundles.size)
+                        append(" skill bundle(s) are available.")
                     }
                     append(" You can now ask for MCP status, MCP tools, or an MCP skill sync from chat.")
                 }
@@ -963,6 +976,9 @@ class LocalPhoneAgentRuntime(
                         append("transport: ${endpoint.transportLabel ?: "미기록"}\n")
                         append("auth: ${endpoint.authLabel ?: "미기록"}\n")
                         append("advertised tools: ${endpoint.toolNames.size}개\n")
+                        append("tool schemas: ${endpoint.toolSchemas.size}개\n")
+                        append("skill bundles: ${endpoint.skillBundles.size}개\n")
+                        append("workflows: ${endpoint.workflowIds.size}개\n")
                         append("synced skills: ${endpoint.syncedSkillCount}개")
                         endpoint.lastSyncAtLabel?.let {
                             append("\nlast sync: ")
@@ -983,6 +999,9 @@ class LocalPhoneAgentRuntime(
                         append("Transport: ${endpoint.transportLabel ?: "not recorded"}\n")
                         append("Auth: ${endpoint.authLabel ?: "not recorded"}\n")
                         append("Advertised tools: ${endpoint.toolNames.size}\n")
+                        append("Tool schemas: ${endpoint.toolSchemas.size}\n")
+                        append("Skill bundles: ${endpoint.skillBundles.size}\n")
+                        append("Workflows: ${endpoint.workflowIds.size}\n")
                         append("Synced skills: ${endpoint.syncedSkillCount}")
                         endpoint.lastSyncAtLabel?.let {
                             append("\nLast sync: ")
@@ -1017,7 +1036,35 @@ class LocalPhoneAgentRuntime(
                 } else {
                     buildString {
                         append("현재 MCP tool ${endpoint.toolNames.size}개입니다.\n")
-                        append(endpoint.toolNames.joinToString(separator = "\n") { "- $it" })
+                        append(
+                            endpoint.toolNames.joinToString(separator = "\n") { toolName ->
+                                val schema = endpoint.toolSchemas.firstOrNull { it.name == toolName }
+                                buildString {
+                                    append("- ")
+                                    append(toolName)
+                                    schema?.let {
+                                        append(": ")
+                                        append(it.summary)
+                                        it.inputSchemaSummary?.let { inputSummary ->
+                                            append(" [")
+                                            append(inputSummary)
+                                            append("]")
+                                        }
+                                        if (it.requiresConfirmation) {
+                                            append(" (approval)")
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                        if (endpoint.skillBundles.isNotEmpty()) {
+                            append("\n\nskill bundles:\n")
+                            append(
+                                endpoint.skillBundles.joinToString(separator = "\n") { bundle ->
+                                    "- ${bundle.title}: ${bundle.summary}"
+                                },
+                            )
+                        }
                     }
                 }
             } else {
@@ -1026,7 +1073,35 @@ class LocalPhoneAgentRuntime(
                 } else {
                     buildString {
                         append("The MCP connector is advertising ${endpoint.toolNames.size} tool(s).\n")
-                        append(endpoint.toolNames.joinToString(separator = "\n") { "- $it" })
+                        append(
+                            endpoint.toolNames.joinToString(separator = "\n") { toolName ->
+                                val schema = endpoint.toolSchemas.firstOrNull { it.name == toolName }
+                                buildString {
+                                    append("- ")
+                                    append(toolName)
+                                    schema?.let {
+                                        append(": ")
+                                        append(it.summary)
+                                        it.inputSchemaSummary?.let { inputSummary ->
+                                            append(" [")
+                                            append(inputSummary)
+                                            append("]")
+                                        }
+                                        if (it.requiresConfirmation) {
+                                            append(" (approval)")
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                        if (endpoint.skillBundles.isNotEmpty()) {
+                            append("\n\nSkill bundles:\n")
+                            append(
+                                endpoint.skillBundles.joinToString(separator = "\n") { bundle ->
+                                    "- ${bundle.title}: ${bundle.summary}"
+                                },
+                            )
+                        }
                     }
                 }
             },
@@ -2552,6 +2627,9 @@ class LocalPhoneAgentRuntime(
                 transportLabel = discovery.transportLabel,
                 authLabel = discovery.authLabel,
                 toolNames = discovery.toolNames,
+                toolSchemas = discovery.toolSchemas,
+                skillBundles = discovery.skillBundles,
+                workflowIds = discovery.workflowIds,
                 healthDetails = discovery.detail,
             ),
         )

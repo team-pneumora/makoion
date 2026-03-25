@@ -136,6 +136,9 @@ data class McpBridgeDiscoveryResult(
     val transportLabel: String? = null,
     val authLabel: String? = null,
     val toolNames: List<String> = emptyList(),
+    val toolSchemas: List<McpToolSchemaProfile> = emptyList(),
+    val skillBundles: List<McpSkillBundleProfile> = emptyList(),
+    val workflowIds: List<String> = emptyList(),
     val capabilities: List<String> = emptyList(),
     val discoveredAtLabel: String,
 )
@@ -622,6 +625,9 @@ class PersistentDevicePairingRepository(
                 if (responseCode in 200..299) {
                     val discoveryJson = runCatching { JSONObject(responseBody) }.getOrNull()
                     val toolNames = jsonArrayToTrimmedList(discoveryJson?.optJSONArray("tool_names"))
+                    val toolSchemas = jsonArrayToToolSchemas(discoveryJson?.optJSONArray("tool_schemas"))
+                    val skillBundles = jsonArrayToSkillBundles(discoveryJson?.optJSONArray("skill_bundles"))
+                    val workflowIds = jsonArrayToTrimmedList(discoveryJson?.optJSONArray("workflow_ids"))
                     val capabilities = jsonArrayToTrimmedList(discoveryJson?.optJSONArray("capabilities"))
                     if (capabilities.isNotEmpty()) {
                         updateAdvertisedCapabilities(device.id, capabilities)
@@ -632,6 +638,12 @@ class PersistentDevicePairingRepository(
                         summary = buildString {
                             append("HTTP $responseCode")
                             append(" • ${toolNames.size} tool(s)")
+                            if (toolSchemas.isNotEmpty()) {
+                                append(" • ${toolSchemas.size} schema(s)")
+                            }
+                            if (skillBundles.isNotEmpty()) {
+                                append(" • ${skillBundles.size} bundle(s)")
+                            }
                             if (capabilities.isNotEmpty()) {
                                 append(" • ${capabilities.size} capabilities")
                             }
@@ -642,6 +654,9 @@ class PersistentDevicePairingRepository(
                         transportLabel = discoveryJson?.optString("transport_label")?.takeIf { it.isNotBlank() },
                         authLabel = discoveryJson?.optString("auth_label")?.takeIf { it.isNotBlank() },
                         toolNames = toolNames,
+                        toolSchemas = toolSchemas,
+                        skillBundles = skillBundles,
+                        workflowIds = workflowIds,
                         capabilities = capabilities,
                         discoveredAtLabel = discoveredAtLabel,
                     )
@@ -1795,6 +1810,80 @@ class PersistentDevicePairingRepository(
         }.map(String::trim)
             .filter(String::isNotBlank)
             .distinct()
+    }
+
+    private fun jsonArrayToToolSchemas(array: JSONArray?): List<McpToolSchemaProfile> {
+        if (array == null) {
+            return emptyList()
+        }
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.opt(index)
+                val json = item as? JSONObject ?: continue
+                val name = json.optString("name").trim()
+                val title = json.optString("title").trim()
+                val summary = json.optString("summary").trim()
+                if (name.isBlank() || title.isBlank() || summary.isBlank()) {
+                    continue
+                }
+                add(
+                    McpToolSchemaProfile(
+                        name = name,
+                        title = title,
+                        summary = summary,
+                        inputSchemaSummary = json.optString("input_schema_summary")
+                            .trim()
+                            .takeIf { it.isNotBlank() },
+                        requiresConfirmation = json.optBoolean("requires_confirmation"),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun jsonArrayToSkillBundles(array: JSONArray?): List<McpSkillBundleProfile> {
+        if (array == null) {
+            return emptyList()
+        }
+        return buildList {
+            for (index in 0 until array.length()) {
+                when (val item = array.opt(index)) {
+                    is JSONObject -> {
+                        val bundleId = item.optString("bundle_id").trim()
+                        val title = item.optString("title").trim()
+                        val summary = item.optString("summary").trim()
+                        if (bundleId.isBlank() || title.isBlank() || summary.isBlank()) {
+                            continue
+                        }
+                        add(
+                            McpSkillBundleProfile(
+                                bundleId = bundleId,
+                                title = title,
+                                summary = summary,
+                                toolNames = jsonArrayToTrimmedList(item.optJSONArray("tool_names")),
+                                versionLabel = item.optString("version_label")
+                                    .trim()
+                                    .takeIf { it.isNotBlank() },
+                            ),
+                        )
+                    }
+                    is String -> {
+                        val bundleId = item.trim()
+                        if (bundleId.isBlank()) {
+                            continue
+                        }
+                        add(
+                            McpSkillBundleProfile(
+                                bundleId = bundleId,
+                                title = bundleId.replace('_', ' ').replaceFirstChar(Char::uppercase),
+                                summary = "Advertised by the paired companion MCP discovery endpoint.",
+                                toolNames = emptyList(),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun directHttpReachabilityDetail(

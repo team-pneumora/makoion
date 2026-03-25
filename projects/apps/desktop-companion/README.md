@@ -5,7 +5,7 @@
 Current scope:
 - JDK-only local server using `com.sun.net.httpserver.HttpServer`
 - `GET /health` readiness endpoint
-- `GET /api/v1/mcp/discovery` MCP connector discovery endpoint for Android chat-first resource sync
+- `GET /api/v1/mcp/discovery` MCP connector discovery endpoint for Android chat-first resource sync, including tool schemas, skill bundles, and workflow inventory
 - `POST /api/v1/transfers` receiver for Android transfer manifests
 - `POST /api/v1/session/notify` receiver for desktop notification probes
 - `POST /api/v1/app/open` receiver for `inbox`, `latest_transfer`, and `actions_folder` probes

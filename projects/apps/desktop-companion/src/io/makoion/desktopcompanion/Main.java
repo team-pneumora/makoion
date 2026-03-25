@@ -43,7 +43,47 @@ public final class Main {
         "[\"desktop.session.notify\",\"desktop.app.open\",\"desktop.workflow.run\","
             + "\"files.transfer.receive\",\"browser.research.plan\",\"api.request.ingest\"]";
     private static final String MCP_DISCOVERY_SKILL_BUNDLES_JSON =
-        "[\"desktop_action_bridge\",\"browser_research_handoff\",\"external_api_ingest\"]";
+        "["
+            + "{\"bundle_id\":\"desktop_action_bridge\",\"title\":\"Desktop action bridge\","
+            + "\"summary\":\"Routes guarded notify, open, and workflow actions through the paired companion.\","
+            + "\"tool_names\":[\"desktop.session.notify\",\"desktop.app.open\",\"desktop.workflow.run\"],"
+            + "\"version_label\":\"2026.03\"},"
+            + "{\"bundle_id\":\"browser_research_handoff\",\"title\":\"Browser research handoff\","
+            + "\"summary\":\"Stages browser research briefs for later guarded execution.\","
+            + "\"tool_names\":[\"browser.research.plan\"],"
+            + "\"version_label\":\"2026.03\"},"
+            + "{\"bundle_id\":\"external_api_ingest\",\"title\":\"External API ingest\","
+            + "\"summary\":\"Registers API ingest work for later guarded execution and parsing.\","
+            + "\"tool_names\":[\"api.request.ingest\"],"
+            + "\"version_label\":\"2026.03\"}"
+            + "]";
+    private static final String MCP_DISCOVERY_TOOL_SCHEMAS_JSON =
+        "["
+            + "{\"name\":\"desktop.session.notify\",\"title\":\"Desktop Session Notify\","
+            + "\"summary\":\"Show a guarded desktop notification on the paired companion.\","
+            + "\"input_schema_summary\":\"title:string, body:string\","
+            + "\"requires_confirmation\":false},"
+            + "{\"name\":\"desktop.app.open\",\"title\":\"Desktop App Open\","
+            + "\"summary\":\"Open an approved desktop surface such as inbox or latest transfer.\","
+            + "\"input_schema_summary\":\"target_kind:string, target_label?:string, open_mode:string\","
+            + "\"requires_confirmation\":true},"
+            + "{\"name\":\"desktop.workflow.run\",\"title\":\"Desktop Workflow Run\","
+            + "\"summary\":\"Run a guarded named workflow through the paired companion.\","
+            + "\"input_schema_summary\":\"workflow_id:string, workflow_label?:string, run_mode:string\","
+            + "\"requires_confirmation\":true},"
+            + "{\"name\":\"files.transfer.receive\",\"title\":\"Receive Transfer Payload\","
+            + "\"summary\":\"Materialize transfer payloads into the companion inbox.\","
+            + "\"input_schema_summary\":\"transfer archive payload\","
+            + "\"requires_confirmation\":false},"
+            + "{\"name\":\"browser.research.plan\",\"title\":\"Browser Research Plan\","
+            + "\"summary\":\"Stage a browser research brief for later guarded execution.\","
+            + "\"input_schema_summary\":\"topic:string, objective:string\","
+            + "\"requires_confirmation\":false},"
+            + "{\"name\":\"api.request.ingest\",\"title\":\"API Request Ingest\","
+            + "\"summary\":\"Register API ingest work for later guarded execution and parsing.\","
+            + "\"input_schema_summary\":\"request template + auth binding\","
+            + "\"requires_confirmation\":false}"
+            + "]";
     private static final String MCP_DISCOVERY_WORKFLOWS_JSON =
         "[\"open_latest_transfer\",\"open_actions_folder\",\"open_latest_action\"]";
     private static final Pattern TRANSFER_ID_PATTERN =
@@ -210,6 +250,7 @@ public final class Main {
                 + "\"auth_label\":\"" + escapeJson(authLabel) + "\","
                 + "\"capabilities\":" + MCP_DISCOVERY_CAPABILITIES_JSON + ","
                 + "\"tool_names\":" + MCP_DISCOVERY_TOOLS_JSON + ","
+                + "\"tool_schemas\":" + MCP_DISCOVERY_TOOL_SCHEMAS_JSON + ","
                 + "\"skill_bundles\":" + MCP_DISCOVERY_SKILL_BUNDLES_JSON + ","
                 + "\"workflow_ids\":" + MCP_DISCOVERY_WORKFLOWS_JSON + ","
                 + "\"notification_display_supported\":" + isNotificationDisplaySupported() + ","

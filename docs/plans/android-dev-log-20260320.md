@@ -706,3 +706,53 @@
 
 - The MCP connector now has a real companion-backed handshake path instead of only seeded profile metadata.
 - Chat-driven MCP connect and skill sync now refresh from a live companion inventory, which moves the connector closer to a practical resource runtime and away from placeholder state.
+
+## Follow-up Session: MCP Schema And Bundle Inventory
+
+### Scope
+
+- Extend MCP discovery beyond raw tool names so the Android shell can retain practical connector metadata for tool schemas, skill bundles, and workflow inventory.
+- Make MCP skill sync prefer the companion's advertised bundle inventory instead of inferring everything from tool-name prefixes alone.
+
+### Changes applied
+
+- Extended `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/ExternalEndpointRegistryRepository.kt` with persisted MCP connector metadata for:
+  - `tool_schemas_json`
+  - `skill_bundles_json`
+  - `workflow_ids_json`
+- Added structured Android-side models for:
+  - MCP tool schemas
+  - MCP skill bundles
+  - workflow inventory
+- Bumped the Android shell database to version `28` in `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/ShellDatabaseHelper.kt` and added the migration for the new connector columns.
+- Reworked `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/DevicePairingRepository.kt` so MCP discovery now parses and returns:
+  - tool schema objects
+  - skill bundle objects
+  - workflow ids
+- Reworked `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/PhoneAgentRuntime.kt` so:
+  - connector status replies include schema, bundle, and workflow counts
+  - MCP tool replies include schema summaries, input-shape hints, and approval hints
+  - companion discovery refresh persists the richer connector inventory into the external endpoint profile
+- Updated `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/McpSkillRepository.kt` so skill sync prefers the companion's advertised bundle ids before falling back to legacy tool-prefix matching.
+- Updated the Settings connector card in `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/ui/MobileClawShellApp.kt` to show bundle/schema/workflow counts and bundle names.
+- Expanded the desktop companion discovery payload in `projects/apps/desktop-companion/src/io/makoion/desktopcompanion/Main.java` with:
+  - `tool_schemas`
+  - structured `skill_bundles`
+  - existing `workflow_ids`
+- Updated `projects/apps/desktop-companion/README.md` to document the richer discovery scope.
+- Expanded `projects/apps/android/app/src/androidTest/java/io/makoion/mobileclaw/ui/McpSkillChatFlowTest.kt` so emulator coverage now verifies schema, bundle, and workflow persistence from the live discovery response.
+
+### Emulator validation results
+
+- `:app:assembleDebug` passed.
+- `:app:testDebugUnitTest` passed.
+- `:app:installDebug` passed on `emulator-5554`.
+- `:app:installDebugAndroidTest` passed on `emulator-5554`.
+- `:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=io.makoion.mobileclaw.ui.McpSkillChatFlowTest` passed.
+- Full `:app:connectedDebugAndroidTest` passed on `emulator-5554` (`Medium_Phone_API_36.1`) with 5 tests completed and 0 failures.
+- Desktop companion `Main.java` compiled successfully with Android Studio JBR `javac`.
+
+### Product effect
+
+- The MCP connector now behaves more like a usable resource runtime: the phone agent can retain not only tool names but also what each tool is for, which bundles the companion advertises, and which remote workflows are available.
+- Skill sync now has a cleaner contract with the companion because bundle inventory can drive installation intent directly instead of relying only on tool-name heuristics.

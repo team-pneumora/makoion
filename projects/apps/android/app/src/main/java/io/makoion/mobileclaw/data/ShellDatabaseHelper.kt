@@ -363,6 +363,26 @@ class ShellDatabaseHelper(
                 columnDefinition = "TEXT",
             )
         }
+        if (oldVersion < 28) {
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "tool_schemas_json",
+                columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "skill_bundles_json",
+                columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "workflow_ids_json",
+                columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
+            )
+        }
     }
 
     private fun createApprovalTables(db: SQLiteDatabase) {
@@ -686,6 +706,9 @@ class ShellDatabaseHelper(
                 transport_label TEXT,
                 auth_label TEXT,
                 tool_names_json TEXT NOT NULL DEFAULT '[]',
+                tool_schemas_json TEXT NOT NULL DEFAULT '[]',
+                skill_bundles_json TEXT NOT NULL DEFAULT '[]',
+                workflow_ids_json TEXT NOT NULL DEFAULT '[]',
                 synced_skill_count INTEGER NOT NULL DEFAULT 0,
                 last_sync_at INTEGER,
                 health_details TEXT,
@@ -839,6 +862,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 27
+        private const val databaseVersion = 28
     }
 }

@@ -43,6 +43,7 @@ data class McpSkillSyncResult(
 
 internal data class SeededMcpSkill(
     val skillId: String,
+    val bundleId: String,
     val title: String,
     val summary: String,
     val capabilities: List<String>,
@@ -60,18 +61,21 @@ internal fun defaultMcpSkillSeeds(): List<SeededMcpSkill> {
     return listOf(
         SeededMcpSkill(
             skillId = "mcp-skill-desktop-actions",
+            bundleId = "desktop_action_bridge",
             title = "Desktop action bridge",
             summary = "Adds agent-side MCP wiring for companion action openings, workflow launches, and handoff callbacks.",
             capabilities = listOf("mcp.tools.list", "mcp.tools.call", "devices.app_open", "devices.workflow_run"),
         ),
         SeededMcpSkill(
             skillId = "mcp-skill-browser-research",
+            bundleId = "browser_research_handoff",
             title = "Browser research handoff",
             summary = "Adds MCP-routed browser research planning so the phone agent can stage browsing and extraction work behind chat.",
             capabilities = listOf("mcp.tools.list", "mcp.tools.call", "browser.navigate", "browser.extract"),
         ),
         SeededMcpSkill(
             skillId = "mcp-skill-api-ingest",
+            bundleId = "external_api_ingest",
             title = "External API ingest",
             summary = "Adds MCP-routed API request and response ingestion hooks for future skill packages and third-party automations.",
             capabilities = listOf("mcp.tools.list", "mcp.tools.call", "api.request.plan", "api.response.ingest"),
@@ -258,6 +262,12 @@ class PersistentMcpSkillRepository(
 }
 
 private fun skillSeedsForEndpoint(endpoint: ExternalEndpointProfileState): List<SeededMcpSkill> {
+    val bundledSeeds = endpoint.skillBundles
+        .mapNotNull { bundle -> defaultMcpSkillSeeds().firstOrNull { it.bundleId == bundle.bundleId } }
+        .distinctBy { it.skillId }
+    if (bundledSeeds.isNotEmpty()) {
+        return bundledSeeds
+    }
     val advertisedTools = endpoint.toolNames.toSet()
     return defaultMcpSkillSeeds().filter { seed ->
         when (seed.skillId) {

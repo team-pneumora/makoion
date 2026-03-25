@@ -3129,6 +3129,15 @@ private fun ExternalEndpointCard(
                 if (endpoint.toolNames.isNotEmpty()) {
                     add("${endpoint.toolNames.size} tools")
                 }
+                if (endpoint.toolSchemas.isNotEmpty()) {
+                    add("${endpoint.toolSchemas.size} schemas")
+                }
+                if (endpoint.skillBundles.isNotEmpty()) {
+                    add("${endpoint.skillBundles.size} bundles")
+                }
+                if (endpoint.workflowIds.isNotEmpty()) {
+                    add("${endpoint.workflowIds.size} workflows")
+                }
                 if (endpoint.syncedSkillCount > 0) {
                     add("${endpoint.syncedSkillCount} synced skills")
                 }
@@ -3156,6 +3165,13 @@ private fun ExternalEndpointCard(
             if (endpoint.toolNames.isNotEmpty()) {
                 Text(
                     text = "Advertised tools: ${endpoint.toolNames.joinToString()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (endpoint.skillBundles.isNotEmpty()) {
+                Text(
+                    text = "Skill bundles: ${endpoint.skillBundles.joinToString { it.title }}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

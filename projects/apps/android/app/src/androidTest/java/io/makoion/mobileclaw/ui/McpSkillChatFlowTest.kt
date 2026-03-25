@@ -56,6 +56,56 @@ class McpSkillChatFlowTest {
                                 "browser.research.plan",
                                 "api.request.ingest"
                               ],
+                              "tool_schemas": [
+                                {
+                                  "name": "desktop.session.notify",
+                                  "title": "Desktop Session Notify",
+                                  "summary": "Show a guarded desktop notification on the paired companion.",
+                                  "input_schema_summary": "title:string, body:string",
+                                  "requires_confirmation": false
+                                },
+                                {
+                                  "name": "desktop.app.open",
+                                  "title": "Desktop App Open",
+                                  "summary": "Open an approved desktop surface such as inbox or latest transfer.",
+                                  "input_schema_summary": "target_kind:string, target_label?:string, open_mode:string",
+                                  "requires_confirmation": true
+                                },
+                                {
+                                  "name": "browser.research.plan",
+                                  "title": "Browser Research Plan",
+                                  "summary": "Stage a browser research brief for later guarded execution.",
+                                  "input_schema_summary": "topic:string, objective:string",
+                                  "requires_confirmation": false
+                                }
+                              ],
+                              "skill_bundles": [
+                                {
+                                  "bundle_id": "desktop_action_bridge",
+                                  "title": "Desktop action bridge",
+                                  "summary": "Routes guarded notify, open, and workflow actions through the paired companion.",
+                                  "tool_names": ["desktop.session.notify", "desktop.app.open", "desktop.workflow.run"],
+                                  "version_label": "2026.03"
+                                },
+                                {
+                                  "bundle_id": "browser_research_handoff",
+                                  "title": "Browser research handoff",
+                                  "summary": "Stages browser research briefs for later guarded execution.",
+                                  "tool_names": ["browser.research.plan"],
+                                  "version_label": "2026.03"
+                                },
+                                {
+                                  "bundle_id": "external_api_ingest",
+                                  "title": "External API ingest",
+                                  "summary": "Registers API ingest work for later guarded execution and parsing.",
+                                  "tool_names": ["api.request.ingest"],
+                                  "version_label": "2026.03"
+                                }
+                              ],
+                              "workflow_ids": [
+                                "open_latest_transfer",
+                                "open_actions_folder"
+                              ],
                               "status_detail": "Mock MCP discovery endpoint is ready."
                             }
                             """.trimIndent(),
@@ -146,8 +196,24 @@ class McpSkillChatFlowTest {
                 pairedDevice.capabilities.isEmpty(),
             )
             assertTrue(
+                "Expected the endpoint profile to persist MCP tool schemas from discovery.",
+                endpoint.toolSchemas.any { it.name == "desktop.app.open" && it.requiresConfirmation },
+            )
+            assertTrue(
+                "Expected the endpoint profile to persist advertised skill bundles.",
+                endpoint.skillBundles.any { it.bundleId == "desktop_action_bridge" },
+            )
+            assertTrue(
+                "Expected the endpoint profile to persist advertised workflow ids.",
+                endpoint.workflowIds.contains("open_latest_transfer"),
+            )
+            assertTrue(
                 "Expected the MCP status reply to include the Direct HTTP bridge transport.",
                 statusExecution.turnResult.reply.contains("Direct HTTP bridge", ignoreCase = true),
+            )
+            assertTrue(
+                "Expected the MCP status reply to include skill bundle inventory.",
+                statusExecution.turnResult.reply.contains("skill bundle", ignoreCase = true),
             )
             assertTrue(
                 "Expected the skill sync reply to mention the connector tool inventory.",
@@ -156,6 +222,10 @@ class McpSkillChatFlowTest {
             assertTrue(
                 "Expected the MCP tools reply to list desktop.app.open.",
                 toolsExecution.turnResult.reply.contains("desktop.app.open", ignoreCase = true),
+            )
+            assertTrue(
+                "Expected the MCP tools reply to surface tool schema detail.",
+                toolsExecution.turnResult.reply.contains("approved desktop surface", ignoreCase = true),
             )
             assertTrue(
                 "Expected the endpoint profile to persist the synced skill count and last sync time.",
