@@ -325,6 +325,44 @@ class ShellDatabaseHelper(
         if (oldVersion < 26) {
             createMcpSkillTables(db)
         }
+        if (oldVersion < 27) {
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "transport_label",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "auth_label",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "tool_names_json",
+                columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "synced_skill_count",
+                columnDefinition = "INTEGER NOT NULL DEFAULT 0",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "last_sync_at",
+                columnDefinition = "INTEGER",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "external_endpoint_profiles",
+                columnName = "health_details",
+                columnDefinition = "TEXT",
+            )
+        }
     }
 
     private fun createApprovalTables(db: SQLiteDatabase) {
@@ -645,6 +683,12 @@ class ShellDatabaseHelper(
                 summary TEXT NOT NULL,
                 supported_capabilities_json TEXT NOT NULL DEFAULT '[]',
                 endpoint_label TEXT,
+                transport_label TEXT,
+                auth_label TEXT,
+                tool_names_json TEXT NOT NULL DEFAULT '[]',
+                synced_skill_count INTEGER NOT NULL DEFAULT 0,
+                last_sync_at INTEGER,
+                health_details TEXT,
                 updated_at INTEGER NOT NULL
             )
             """.trimIndent(),
@@ -795,6 +839,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 26
+        private const val databaseVersion = 27
     }
 }

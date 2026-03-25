@@ -3116,6 +3116,50 @@ private fun ExternalEndpointCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            endpoint.healthDetails?.let { healthDetails ->
+                Text(
+                    text = healthDetails,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ClawInk.copy(alpha = 0.78f),
+                )
+            }
+            val connectorDetailChips = buildList {
+                endpoint.transportLabel?.let { add("Transport $it") }
+                endpoint.authLabel?.let { add("Auth $it") }
+                if (endpoint.toolNames.isNotEmpty()) {
+                    add("${endpoint.toolNames.size} tools")
+                }
+                if (endpoint.syncedSkillCount > 0) {
+                    add("${endpoint.syncedSkillCount} synced skills")
+                }
+                endpoint.lastSyncAtLabel?.let { add("Synced $it") }
+            }
+            if (connectorDetailChips.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    connectorDetailChips.forEach { detail ->
+                        AssistChip(
+                            onClick = {},
+                            label = { Text(detail) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = ClawGreen.copy(alpha = 0.12f),
+                                labelColor = ClawInk,
+                            ),
+                        )
+                    }
+                }
+            }
+            if (endpoint.toolNames.isNotEmpty()) {
+                Text(
+                    text = "Advertised tools: ${endpoint.toolNames.joinToString()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -96,6 +96,8 @@ class LocalPhoneAgentRuntime(
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
             AgentIntent.TransferIndexedFiles -> transferIndexedFiles(trimmedPrompt, context)
             AgentIntent.ConnectMcpBridge -> connectMcpBridge(trimmedPrompt)
+            AgentIntent.ShowMcpConnectorStatus -> showMcpConnectorStatus(trimmedPrompt)
+            AgentIntent.ShowMcpTools -> showMcpTools(trimmedPrompt)
             AgentIntent.SyncMcpSkills -> syncMcpSkills(trimmedPrompt, context)
             AgentIntent.ShowMcpSkills -> showMcpSkills(trimmedPrompt)
             AgentIntent.ProbeCompanionHealth -> probeCompanionHealth(trimmedPrompt, context)
@@ -679,12 +681,47 @@ class LocalPhoneAgentRuntime(
     private suspend fun connectMcpBridge(
         prompt: String,
     ): AgentTurnResult {
-        externalEndpointRepository.markConnected(mcpBridgeEndpointId)
+        externalEndpointRepository.markConnected(
+            mcpBridgeEndpointId,
+            ExternalEndpointConnectionSnapshot(
+                endpointLabel = "Companion desktop MCP relay",
+            ),
+        )
+        externalEndpointRepository.refresh()
+        val endpoint = externalEndpointRepository.profiles.value.firstOrNull {
+            it.endpointId == mcpBridgeEndpointId
+        }
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
-                "MCP bridge를 mock-ready 상태로 연결했어요. 이제 채팅에서 MCP skill 업데이트를 요청하면 추가 스킬 카탈로그를 동기화할 수 있습니다."
+                buildString {
+                    append("MCP bridge를 연결했어요.")
+                    endpoint?.transportLabel?.let {
+                        append(" transport는 ")
+                        append(it)
+                        append(" 입니다.")
+                    }
+                    if (endpoint?.toolNames?.isNotEmpty() == true) {
+                        append(" 현재 ")
+                        append(endpoint.toolNames.size)
+                        append("개 MCP tool이 광고돼 있어요.")
+                    }
+                    append(" 이제 채팅에서 MCP status, MCP tools, MCP skill 업데이트를 바로 요청할 수 있습니다.")
+                }
             } else {
-                "I marked the MCP bridge as mock-ready. You can now ask me in chat to update MCP skills and I will sync the staged skill catalog."
+                buildString {
+                    append("I connected the MCP bridge.")
+                    endpoint?.transportLabel?.let {
+                        append(" The transport is ")
+                        append(it)
+                        append(".")
+                    }
+                    if (endpoint?.toolNames?.isNotEmpty() == true) {
+                        append(" It is advertising ")
+                        append(endpoint.toolNames.size)
+                        append(" MCP tool(s).")
+                    }
+                    append(" You can now ask for MCP status, MCP tools, or an MCP skill sync from chat.")
+                }
             },
             destination = AgentDestination.Chat,
             taskTitle = taskTitle(prompt),
@@ -703,6 +740,25 @@ class LocalPhoneAgentRuntime(
     ): AgentTurnResult {
         val mcpEndpoint = context.externalEndpoints.firstOrNull { it.endpointId == mcpBridgeEndpointId }
         val syncResult = mcpSkillRepository.syncFromMcpBridge(mcpEndpoint)
+        if (syncResult.updatedSkillCount > 0) {
+            externalEndpointRepository.markConnected(
+                mcpBridgeEndpointId,
+                ExternalEndpointConnectionSnapshot(
+                    syncedSkillCount = syncResult.updatedSkillCount,
+                    lastSyncAtEpochMillis = syncResult.syncedAtEpochMillis,
+                    summary = syncResult.summary,
+                    healthDetails = if (prefersKorean(prompt)) {
+                        "채팅에서 동기화한 skill 카탈로그가 connector 프로필에 반영됐습니다."
+                    } else {
+                        "The connector profile now reflects the latest skill sync from chat."
+                    },
+                ),
+            )
+        }
+        externalEndpointRepository.refresh()
+        val refreshedMcpEndpoint = externalEndpointRepository.profiles.value.firstOrNull {
+            it.endpointId == mcpBridgeEndpointId
+        }
         val installedSkills = mcpSkillRepository.skills.value
         val topSkills = installedSkills.take(3)
         val failedToSync = syncResult.updatedSkillCount == 0
@@ -716,12 +772,18 @@ class LocalPhoneAgentRuntime(
                             "${syncResult.sourceLabel ?: "MCP bridge"}에서 MCP skill ${syncResult.updatedSkillCount}개를 동기화했어요. "
                         },
                     )
+                    if (!failedToSync && syncResult.toolCount > 0) {
+                        append("광고된 MCP tool은 ${syncResult.toolCount}개입니다. ")
+                    }
                     if (topSkills.isNotEmpty()) {
                         append("현재 스킬은 ")
                         append(topSkills.joinToString { "${it.title} (${it.versionLabel})" })
                         append(" 순서로 기록돼 있습니다.")
                     } else {
                         append("먼저 MCP bridge를 연결한 뒤 다시 요청해 주세요.")
+                    }
+                    refreshedMcpEndpoint?.lastSyncAtLabel?.let {
+                        append(" 마지막 동기화는 $it 입니다.")
                     }
                 }
             } else {
@@ -733,12 +795,18 @@ class LocalPhoneAgentRuntime(
                             "I synced ${syncResult.updatedSkillCount} MCP skill(s) from ${syncResult.sourceLabel ?: "the MCP bridge"}. "
                         },
                     )
+                    if (!failedToSync && syncResult.toolCount > 0) {
+                        append("The connector advertised ${syncResult.toolCount} MCP tool(s). ")
+                    }
                     if (topSkills.isNotEmpty()) {
                         append("The current catalog includes ")
                         append(topSkills.joinToString { "${it.title} (${it.versionLabel})" })
                         append(".")
                     } else {
                         append("Connect the MCP bridge first and ask again.")
+                    }
+                    refreshedMcpEndpoint?.lastSyncAtLabel?.let {
+                        append(" Last sync: $it.")
                     }
                 }
             },
@@ -765,8 +833,12 @@ class LocalPhoneAgentRuntime(
     private suspend fun showMcpSkills(
         prompt: String,
     ): AgentTurnResult {
+        externalEndpointRepository.refresh()
         mcpSkillRepository.refresh()
         val installedSkills = mcpSkillRepository.skills.value
+        val endpoint = externalEndpointRepository.profiles.value.firstOrNull {
+            it.endpointId == mcpBridgeEndpointId
+        }
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 if (installedSkills.isEmpty()) {
@@ -774,6 +846,9 @@ class LocalPhoneAgentRuntime(
                 } else {
                     buildString {
                         append("현재 MCP skill ${installedSkills.size}개가 설치되어 있어요.\n")
+                        endpoint?.lastSyncAtLabel?.let {
+                            append("마지막 skill sync: $it\n")
+                        }
                         append(
                             installedSkills.joinToString(separator = "\n") { skill ->
                                 "- ${skill.title} ${skill.versionLabel}: ${skill.summary}"
@@ -787,6 +862,9 @@ class LocalPhoneAgentRuntime(
                 } else {
                     buildString {
                         append("There are ${installedSkills.size} installed MCP skill(s).\n")
+                        endpoint?.lastSyncAtLabel?.let {
+                            append("Last skill sync: $it\n")
+                        }
                         append(
                             installedSkills.joinToString(separator = "\n") { skill ->
                                 "- ${skill.title} ${skill.versionLabel}: ${skill.summary}"
@@ -802,6 +880,98 @@ class LocalPhoneAgentRuntime(
                 "현재 MCP skill 카탈로그를 요약했습니다."
             } else {
                 "Summarized the installed MCP skills."
+            },
+        )
+    }
+
+    private suspend fun showMcpConnectorStatus(
+        prompt: String,
+    ): AgentTurnResult {
+        val endpoint = refreshMcpEndpoint()
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                if (endpoint == null || endpoint.status != ExternalEndpointStatus.Connected) {
+                    "아직 연결된 MCP bridge가 없습니다. 먼저 MCP bridge 연결을 요청해 주세요."
+                } else {
+                    buildString {
+                        append("${endpoint.endpointLabel ?: endpoint.displayName} 상태입니다.\n")
+                        append("transport: ${endpoint.transportLabel ?: "미기록"}\n")
+                        append("auth: ${endpoint.authLabel ?: "미기록"}\n")
+                        append("advertised tools: ${endpoint.toolNames.size}개\n")
+                        append("synced skills: ${endpoint.syncedSkillCount}개")
+                        endpoint.lastSyncAtLabel?.let {
+                            append("\nlast sync: ")
+                            append(it)
+                        }
+                        endpoint.healthDetails?.let {
+                            append("\n")
+                            append(it)
+                        }
+                    }
+                }
+            } else {
+                if (endpoint == null || endpoint.status != ExternalEndpointStatus.Connected) {
+                    "There is no connected MCP bridge yet. Ask me to connect the MCP bridge first."
+                } else {
+                    buildString {
+                        append("MCP connector status for ${endpoint.endpointLabel ?: endpoint.displayName}.\n")
+                        append("Transport: ${endpoint.transportLabel ?: "not recorded"}\n")
+                        append("Auth: ${endpoint.authLabel ?: "not recorded"}\n")
+                        append("Advertised tools: ${endpoint.toolNames.size}\n")
+                        append("Synced skills: ${endpoint.syncedSkillCount}")
+                        endpoint.lastSyncAtLabel?.let {
+                            append("\nLast sync: ")
+                            append(it)
+                        }
+                        endpoint.healthDetails?.let {
+                            append("\n")
+                            append(it)
+                        }
+                    }
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = mcpConnectorStatusActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "MCP connector 상태를 채팅에 요약했습니다."
+            } else {
+                "Summarized the MCP connector status in chat."
+            },
+        )
+    }
+
+    private suspend fun showMcpTools(
+        prompt: String,
+    ): AgentTurnResult {
+        val endpoint = refreshMcpEndpoint()
+        return AgentTurnResult(
+            reply = if (prefersKorean(prompt)) {
+                if (endpoint == null || endpoint.toolNames.isEmpty()) {
+                    "광고된 MCP tool이 아직 없습니다. 먼저 MCP bridge를 연결해 주세요."
+                } else {
+                    buildString {
+                        append("현재 MCP tool ${endpoint.toolNames.size}개입니다.\n")
+                        append(endpoint.toolNames.joinToString(separator = "\n") { "- $it" })
+                    }
+                }
+            } else {
+                if (endpoint == null || endpoint.toolNames.isEmpty()) {
+                    "There are no advertised MCP tools yet. Connect the MCP bridge first."
+                } else {
+                    buildString {
+                        append("The MCP connector is advertising ${endpoint.toolNames.size} tool(s).\n")
+                        append(endpoint.toolNames.joinToString(separator = "\n") { "- $it" })
+                    }
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = mcpToolsShowActionKey,
+            taskSummary = if (prefersKorean(prompt)) {
+                "MCP tool inventory를 채팅에 요약했습니다."
+            } else {
+                "Summarized the MCP tool inventory in chat."
             },
         )
     }
@@ -1021,6 +1191,7 @@ class LocalPhoneAgentRuntime(
             it.status == DeliveryChannelStatus.Staged
         }
         val installedMcpSkills = mcpSkillRepository.skills.value
+        val connectedMcpEndpoint = connectedEndpoints.firstOrNull { it.endpointId == mcpBridgeEndpointId }
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
@@ -1029,6 +1200,16 @@ class LocalPhoneAgentRuntime(
                     append("external endpoint: 연결 ${connectedEndpoints.size}개, staged ${stagedEndpoints.size}개\n")
                     append("delivery channel: 연결 ${connectedChannels.size}개, staged ${stagedChannels.size}개\n")
                     append("paired companion: ${context.pairedDevices.size}대, MCP skill: ${installedMcpSkills.size}개\n")
+                    connectedMcpEndpoint?.let { endpoint ->
+                        append("MCP connector: ${endpoint.toolNames.size}개 tool")
+                        if (endpoint.syncedSkillCount > 0) {
+                            append(", synced skill ${endpoint.syncedSkillCount}개")
+                        }
+                        endpoint.lastSyncAtLabel?.let {
+                            append(", last sync $it")
+                        }
+                        append("\n")
+                    }
                     append("연결된 항목: ")
                     append(
                         (
@@ -1055,6 +1236,16 @@ class LocalPhoneAgentRuntime(
                     append("External endpoints: ${connectedEndpoints.size} connected, ${stagedEndpoints.size} staged\n")
                     append("Delivery channels: ${connectedChannels.size} connected, ${stagedChannels.size} staged\n")
                     append("Paired companions: ${context.pairedDevices.size}, MCP skills: ${installedMcpSkills.size}\n")
+                    connectedMcpEndpoint?.let { endpoint ->
+                        append("MCP connector: ${endpoint.toolNames.size} tool(s)")
+                        if (endpoint.syncedSkillCount > 0) {
+                            append(", ${endpoint.syncedSkillCount} synced skill(s)")
+                        }
+                        endpoint.lastSyncAtLabel?.let {
+                            append(", last sync $it")
+                        }
+                        append("\n")
+                    }
                     append("Connected items: ")
                     append(
                         (
@@ -1159,7 +1350,12 @@ class LocalPhoneAgentRuntime(
         endpointId: String,
     ): AgentTurnResult {
         val endpointLabel = "${externalEndpointDisplayName(endpointId)} placeholder"
-        externalEndpointRepository.markConnected(endpointId, endpointLabel)
+        externalEndpointRepository.markConnected(
+            endpointId,
+            ExternalEndpointConnectionSnapshot(
+                endpointLabel = endpointLabel,
+            ),
+        )
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 "${externalEndpointDisplayName(endpointId)} endpoint를 mock-ready로 연결했어요."
@@ -1865,7 +2061,7 @@ class LocalPhoneAgentRuntime(
                     append("11. desktop companion notification 보내기\n")
                     append("12. allowlisted desktop workflow 실행\n")
                     append("13. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
-                    append("14. MCP bridge 연결 및 MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
+                    append("14. MCP bridge 연결, MCP status/tool 확인, MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
                     append("15. code/app/automation starter scaffold 생성\n")
                     append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
                     append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
@@ -1890,7 +2086,7 @@ class LocalPhoneAgentRuntime(
                     append("11. Send a desktop companion notification\n")
                     append("12. Run an allowlisted desktop workflow\n")
                     append("13. Record, activate, pause, and run scheduled automations\n")
-                    append("14. Connect the MCP bridge and update MCP skills ($installedMcpSkills installed)\n")
+                    append("14. Connect the MCP bridge, inspect MCP status/tools, and update MCP skills ($installedMcpSkills installed)\n")
                     append("15. Generate a code, app, or automation starter scaffold\n")
                     append("There are $pendingApprovals pending approvals right now.\n")
                     append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
@@ -2270,6 +2466,13 @@ class LocalPhoneAgentRuntime(
         }
     }
 
+    private suspend fun refreshMcpEndpoint(): ExternalEndpointProfileState? {
+        externalEndpointRepository.refresh()
+        return externalEndpointRepository.profiles.value.firstOrNull {
+            it.endpointId == mcpBridgeEndpointId
+        }
+    }
+
     private fun deliveryChannelDisplayName(channelId: String): String {
         return when (channelId) {
             localNotificationChannelId -> "Phone local notification"
@@ -2456,6 +2659,24 @@ class LocalPhoneAgentRuntime(
             "mcp 스킬 목록",
             "mcp 스킬 보여",
         )
+        val wantsShowMcpConnectorStatus = containsAny(
+            normalized,
+            "show mcp status",
+            "mcp connector status",
+            "mcp bridge status",
+            "mcp status",
+            "mcp 상태",
+            "mcp 브리지 상태",
+        )
+        val wantsShowMcpTools = containsAny(
+            normalized,
+            "show mcp tools",
+            "list mcp tools",
+            "what mcp tools",
+            "mcp tools",
+            "mcp tool 목록",
+            "mcp 도구",
+        )
         return when {
             wantsDenyAction ->
                 plannerOutput(
@@ -2599,6 +2820,24 @@ class LocalPhoneAgentRuntime(
                     mode = AgentPlannerMode.ActionIntent,
                     summary = "Sync the MCP skill catalog from the connected MCP bridge.",
                     capabilities = listOf("mcp.skills.sync"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            wantsShowMcpTools ->
+                plannerOutput(
+                    intent = AgentIntent.ShowMcpTools,
+                    auditResult = "mcp_tools_listed",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Summarize the currently advertised MCP tool inventory.",
+                    capabilities = listOf("mcp.tools.list"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            wantsShowMcpConnectorStatus ->
+                plannerOutput(
+                    intent = AgentIntent.ShowMcpConnectorStatus,
+                    auditResult = "mcp_connector_status_shown",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Summarize the MCP connector transport, auth, and sync status.",
+                    capabilities = listOf("mcp.connect", "mcp.tools.list"),
                     resources = listOf("mcp.api_endpoints"),
                 )
             wantsShowMcpSkills ->
@@ -3165,6 +3404,8 @@ class LocalPhoneAgentRuntime(
         private const val routeHistoryActionKey = "ui.route.history"
         private const val routeSettingsActionKey = "ui.route.settings"
         private const val mcpBridgeConnectActionKey = "mcp.bridge.connect"
+        private const val mcpConnectorStatusActionKey = "mcp.connector.status"
+        private const val mcpToolsShowActionKey = "mcp.tools.show"
         private const val mcpSkillSyncActionKey = "mcp.skills.sync"
         private const val mcpSkillShowActionKey = "mcp.skills.show"
         private const val companionHealthProbeActionKey = "devices.health_probe"
@@ -3249,6 +3490,8 @@ private sealed interface AgentIntent {
     ) : AgentIntent
     data object TransferIndexedFiles : AgentIntent
     data object ConnectMcpBridge : AgentIntent
+    data object ShowMcpConnectorStatus : AgentIntent
+    data object ShowMcpTools : AgentIntent
     data object SyncMcpSkills : AgentIntent
     data object ShowMcpSkills : AgentIntent
     data object ProbeCompanionHealth : AgentIntent

@@ -603,3 +603,51 @@
 
 - The project now has a single emulator soak command that exercises the most failure-prone recovery surfaces together instead of validating them in isolation.
 - This closes the biggest remaining gap before true multi-hour unattended runs: the harness now proves that companion restarts and Android recovery paths can coexist in one continuous validation loop.
+
+## Follow-up Session: MCP Connector Profile Hardening
+
+### Scope
+
+- Raise the MCP resource connector from placeholder state into a practical connector profile that records transport, auth, advertised tools, and sync history.
+- Keep the product chat-first by making MCP connector status, MCP tools, and MCP skill sync all controllable from the main conversation loop.
+
+### Changes applied
+
+- Extended `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/ExternalEndpointRegistryRepository.kt` so external endpoint profiles can persist:
+  - `transport_label`
+  - `auth_label`
+  - `tool_names_json`
+  - `synced_skill_count`
+  - `last_sync_at`
+  - `health_details`
+- Bumped the Android shell database schema to version `27` in `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/ShellDatabaseHelper.kt` and added the matching migration for existing installs.
+- Upgraded the MCP bridge seed from a generic placeholder into a default connector profile with:
+  - `Direct HTTP bridge` transport
+  - `Device trust + local policy gate` auth
+  - advertised tools for companion actions, transfer receive, browser research, and API ingest
+- Reworked `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/McpSkillRepository.kt` so skill sync is driven by the connector's advertised MCP tool inventory instead of a blind static install.
+- Expanded `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/PhoneAgentRuntime.kt` chat actions with:
+  - `Connect MCP bridge`
+  - `Show MCP status`
+  - `List MCP tools`
+  - `Update MCP skills`
+- Updated `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/data/ResourceRegistryRepository.kt` so the resource stack summary reports MCP tool and sync state instead of only mock-ready counts.
+- Updated the Settings endpoint card in `projects/apps/android/app/src/main/java/io/makoion/mobileclaw/ui/MobileClawShellApp.kt` to surface the connector's transport, auth mode, tool count, synced skill count, last sync label, health note, and advertised tool names.
+- Hardened `projects/apps/android/app/src/androidTest/java/io/makoion/mobileclaw/ui/McpSkillChatFlowTest.kt` so emulator instrumentation now verifies MCP connect -> status -> tool list -> skill sync metadata end to end.
+
+### Emulator validation results
+
+- `:app:assembleDebug` passed with Android Studio JBR and `MAKOION_ANDROID_BUILD_ROOT=C:\Users\jjck5\AppData\Local\Makoion\android-gradle-build-codex`.
+- `:app:testDebugUnitTest` passed.
+- `:app:installDebug` passed on `emulator-5554` (`Medium_Phone_API_36.1`).
+- `:app:connectedDebugAndroidTest` passed on `emulator-5554` with 5 tests completed and 0 failures.
+- MCP-specific emulator coverage now confirms:
+  - MCP bridge connection persists advertised tool inventory
+  - MCP status chat reply surfaces the transport profile
+  - MCP tools chat reply surfaces the advertised tool list
+  - MCP skill sync persists `synced_skill_count` and `last_sync_at`
+
+### Product effect
+
+- The MCP connector is no longer a generic staged placeholder. It now behaves like a real resource profile that the phone agent can inspect, summarize, and refresh from chat.
+- Users can keep the app in a simple conversation flow while still controlling MCP connection state, tool inventory, and skill updates without dropping into Settings first.

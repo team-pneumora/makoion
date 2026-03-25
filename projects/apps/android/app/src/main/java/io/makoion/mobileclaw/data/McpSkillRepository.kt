@@ -35,6 +35,9 @@ data class McpSkillSyncResult(
     val sourceLabel: String? = null,
     val updatedSkillCount: Int = 0,
     val totalInstalledCount: Int = 0,
+    val toolCount: Int = 0,
+    val toolNames: List<String> = emptyList(),
+    val syncedAtEpochMillis: Long? = null,
     val summary: String,
 )
 
@@ -104,9 +107,25 @@ class PersistentMcpSkillRepository(
             )
         }
 
+        val toolNames = endpoint.toolNames
+        if (toolNames.isEmpty()) {
+            return McpSkillSyncResult(
+                sourceLabel = endpoint.endpointLabel ?: endpoint.displayName,
+                summary = "The connected MCP bridge has not advertised any tool inventory yet.",
+            )
+        }
+
         val sourceLabel = endpoint.endpointLabel ?: endpoint.displayName
         val now = System.currentTimeMillis()
-        val seeds = defaultMcpSkillSeeds()
+        val seeds = skillSeedsForEndpoint(endpoint)
+        if (seeds.isEmpty()) {
+            return McpSkillSyncResult(
+                sourceLabel = sourceLabel,
+                toolCount = toolNames.size,
+                toolNames = toolNames,
+                summary = "The MCP bridge is connected, but no skill package matches the current tool inventory yet.",
+            )
+        }
         withContext(Dispatchers.IO) {
             databaseHelper.ensureMcpSkillSchema()
             val db = databaseHelper.writableDatabase
@@ -136,13 +155,16 @@ class PersistentMcpSkillRepository(
         auditTrailRepository.logAction(
             action = "mcp.skills.sync",
             result = "installed",
-            details = "Synced ${seeds.size} MCP skill(s) from $sourceLabel.",
+            details = "Synced ${seeds.size} MCP skill(s) from $sourceLabel using ${toolNames.size} advertised tool(s).",
         )
         return McpSkillSyncResult(
             sourceLabel = sourceLabel,
             updatedSkillCount = seeds.size,
             totalInstalledCount = _skills.value.size,
-            summary = "Synced ${seeds.size} MCP skill(s) from $sourceLabel.",
+            toolCount = toolNames.size,
+            toolNames = toolNames,
+            syncedAtEpochMillis = now,
+            summary = "Synced ${seeds.size} MCP skill(s) from $sourceLabel using ${toolNames.size} advertised tool(s).",
         )
     }
 
@@ -232,5 +254,22 @@ class PersistentMcpSkillRepository(
 
     companion object {
         private const val skillTable = "mcp_skill_catalog"
+    }
+}
+
+private fun skillSeedsForEndpoint(endpoint: ExternalEndpointProfileState): List<SeededMcpSkill> {
+    val advertisedTools = endpoint.toolNames.toSet()
+    return defaultMcpSkillSeeds().filter { seed ->
+        when (seed.skillId) {
+            "mcp-skill-desktop-actions" ->
+                advertisedTools.any {
+                    it.startsWith("desktop.") || it.startsWith("files.transfer.")
+                }
+            "mcp-skill-browser-research" ->
+                advertisedTools.any { it.startsWith("browser.") }
+            "mcp-skill-api-ingest" ->
+                advertisedTools.any { it.startsWith("api.") }
+            else -> false
+        }
     }
 }

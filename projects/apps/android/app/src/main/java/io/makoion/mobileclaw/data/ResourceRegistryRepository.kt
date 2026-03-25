@@ -286,6 +286,14 @@ internal fun buildResourceRegistryEntries(
                     "categories",
                     externalEndpoints.joinToString("|") { it.category.categoryId },
                 )
+                put(
+                    "advertisedToolCount",
+                    externalEndpoints.sumOf { it.toolNames.size }.toString(),
+                )
+                put(
+                    "syncedSkillCount",
+                    externalEndpoints.sumOf { it.syncedSkillCount }.toString(),
+                )
             } else {
                 put("plannedCapabilities", "mcp.connect|api.profile.attach|browser.automation")
             }
@@ -523,9 +531,25 @@ private fun externalEndpointSummary(
     }
     val connectedCount = externalEndpoints.count { it.status == ExternalEndpointStatus.Connected }
     val stagedCount = externalEndpoints.count { it.status == ExternalEndpointStatus.Staged }
+    val connectedMcp = externalEndpoints.firstOrNull {
+        it.category == ExternalEndpointCategory.McpServer &&
+            it.status == ExternalEndpointStatus.Connected
+    }
     return when {
+        connectedMcp != null ->
+            buildString {
+                append("$connectedCount endpoint profile(s) are connected and $stagedCount endpoint profile(s) are staged.")
+                append(" The MCP bridge advertises ${connectedMcp.toolNames.size} tool(s)")
+                if (connectedMcp.syncedSkillCount > 0) {
+                    append(" with ${connectedMcp.syncedSkillCount} synced skill package(s)")
+                }
+                connectedMcp.lastSyncAtLabel?.let {
+                    append("; last sync $it")
+                }
+                append(".")
+            }
         connectedCount > 0 ->
-            "$connectedCount endpoint profile(s) are recorded as mock-ready and $stagedCount endpoint profile(s) are staged for auth and transport wiring."
+            "$connectedCount endpoint profile(s) are connected and $stagedCount endpoint profile(s) are staged for auth and transport wiring."
         stagedCount > 0 ->
             "$stagedCount endpoint profile(s) are staged, but auth profiles, transport validation, and executor wiring are still pending."
         else ->
