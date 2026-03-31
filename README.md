@@ -115,6 +115,13 @@ Detailed setup guides for the Android app and desktop companion are still being 
 
 The implementation work in this repository has been carried out by Codex. Pneumora provided product direction, requirements, and guidance, but did not write the implementation itself.
 
+## Acknowledgements
+
+Makoion also benefited from ideas, reference patterns, and implementation inspiration drawn from these open-source projects:
+
+- [OpenClaw](https://github.com/openclaw/openclaw)
+- [NanoClaw](https://github.com/qwibitai/nanoclaw)
+
 ## Contributing
 
 Makoion is built solo right now, but contributions are very welcome.
