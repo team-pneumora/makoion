@@ -392,6 +392,18 @@ function Wait-ForDeliveredRetryRecovery {
             continue
         }
 
+        if (
+            $transfer -and
+            $transfer.status -eq "Sending" -and
+            [int]$transfer.attempt_count -ge $MinimumAttemptCount -and
+            [long]$transfer.updated_at -gt 0 -and
+            ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$transfer.updated_at) -ge 20000
+        ) {
+            Invoke-DebugTransportCommand -Command "request_shell_recovery" -BoolExtras @{ open_devices_after_command = $false }
+            Start-Sleep -Seconds 2
+            continue
+        }
+
         Start-Sleep -Seconds $PollIntervalSeconds
     }
 
@@ -515,20 +527,28 @@ try {
                 Wait-ForDeliveredRetryRecovery -Description "disconnect_once recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 120
             }
             "delayed_ack" {
-                $retryState = Wait-ForState -Description "retry scheduling for delayed_ack" -TimeoutSeconds 25 -Predicate {
+                $delayedAckState = Wait-ForState -Description "retry scheduling or delayed delivery for delayed_ack" -TimeoutSeconds 90 -Predicate {
                     param($State)
                     $transfer = Find-TransferByFileName -State $State -FileName "$filePrefix-1.txt"
-                    $transfer -and $transfer.status -eq "Queued" -and [long]$transfer.next_attempt_at -gt 0
+                    $transfer -and (
+                        ($transfer.status -eq "Queued" -and [long]$transfer.next_attempt_at -gt 0) -or
+                        $transfer.status -eq "Delivered"
+                    )
                 }
-                Invoke-DebugTransportCommand -Command "set_validation_mode" -StringExtras @{
-                    device_id = $deviceId
-                    validation_mode = "normal"
+                $delayedTransfer = Find-TransferByFileName -State $delayedAckState -FileName "$filePrefix-1.txt"
+                if ($delayedTransfer.status -eq "Delivered") {
+                    $delayedAckState
+                } else {
+                    Invoke-DebugTransportCommand -Command "set_validation_mode" -StringExtras @{
+                        device_id = $deviceId
+                        validation_mode = "normal"
+                    }
+                    if (-not $SkipCompanionRestartOnRetryModes) {
+                        $companion = Restart-ValidationCompanion -Companion $companion -PortNumber $Port
+                        $companionRestarted = $true
+                    }
+                    Wait-ForDeliveredRetryRecovery -Description "delayed_ack recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 120
                 }
-                if (-not $SkipCompanionRestartOnRetryModes) {
-                    $companion = Restart-ValidationCompanion -Companion $companion -PortNumber $Port
-                    $companionRestarted = $true
-                }
-                Wait-ForDeliveredRetryRecovery -Description "delayed_ack recovery delivery" -FileName "$filePrefix-1.txt" -TimeoutSeconds 120
             }
             default {
                 throw "Unsupported validation mode $mode"

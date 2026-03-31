@@ -307,8 +307,8 @@ class PhoneAgentActionCoordinator(
     }
 
     companion object {
-        private const val filesOrganizeActionKey = "files.organize.execute"
-        private const val filesTransferActionKey = "files.transfer.execute"
+        private const val filesOrganizeActionKey = filesOrganizeExecuteActionKey
+        private const val filesTransferActionKey = filesTransferExecuteActionKey
         private const val maxReplyPreviewLength = 240
     }
 }

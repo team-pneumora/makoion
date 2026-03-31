@@ -61,6 +61,8 @@ interface ModelProviderSettingsRepository {
         secret: String,
     )
 
+    suspend fun revealCredential(providerId: String): String?
+
     suspend fun clearCredential(providerId: String)
 
     suspend fun refresh()
@@ -84,9 +86,9 @@ internal fun defaultModelProviderSeeds(): List<SeededModelProviderProfile> {
         SeededModelProviderProfile(
             providerId = "openai",
             displayName = "OpenAI",
-            supportedModels = listOf("gpt-4.1-mini", "gpt-4.1", "o4-mini"),
-            defaultModel = "gpt-4.1-mini",
-            selectedModel = "gpt-4.1-mini",
+            supportedModels = listOf("gpt-5.4", "gpt-5.4-pro", "gpt-5-mini", "gpt-5-nano", "gpt-4.1"),
+            defaultModel = "gpt-5.4",
+            selectedModel = "gpt-5.4",
             enabled = true,
             isDefault = true,
             credentialStatus = ModelProviderCredentialStatus.Missing,
@@ -94,9 +96,9 @@ internal fun defaultModelProviderSeeds(): List<SeededModelProviderProfile> {
         SeededModelProviderProfile(
             providerId = "anthropic",
             displayName = "Anthropic",
-            supportedModels = listOf("claude-3.7-sonnet", "claude-3.5-haiku", "claude-3-opus"),
-            defaultModel = "claude-3.7-sonnet",
-            selectedModel = "claude-3.7-sonnet",
+            supportedModels = listOf("claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"),
+            defaultModel = "claude-sonnet-4-6",
+            selectedModel = "claude-sonnet-4-6",
             enabled = true,
             isDefault = false,
             credentialStatus = ModelProviderCredentialStatus.Missing,
@@ -112,6 +114,13 @@ internal fun defaultModelProviderSeeds(): List<SeededModelProviderProfile> {
             credentialStatus = ModelProviderCredentialStatus.Missing,
         ),
     )
+}
+
+internal fun normalizeSeedSelectedModel(
+    selectedModel: String,
+    seed: SeededModelProviderProfile,
+): String {
+    return selectedModel.takeIf { it in seed.supportedModels } ?: seed.defaultModel
 }
 
 internal fun resolveAgentModelPreference(
@@ -283,6 +292,15 @@ class PersistentModelProviderSettingsRepository(
         refresh()
     }
 
+    override suspend fun revealCredential(providerId: String): String? {
+        return withContext(Dispatchers.IO) {
+            val db = databaseHelper.writableDatabase
+            ensureSeedData(db)
+            queryProfileRow(db, providerId) ?: return@withContext null
+            credentialVault.read(providerId)?.trim()?.takeIf { it.isNotBlank() }
+        }
+    }
+
     override suspend fun refresh() {
         withContext(Dispatchers.IO) {
             val db = databaseHelper.writableDatabase
@@ -313,8 +331,38 @@ class PersistentModelProviderSettingsRepository(
                 },
                 SQLiteDatabase.CONFLICT_IGNORE,
             )
+            reconcileSeedProfile(db, seed, now)
         }
         ensureDefaultSelection(db, now)
+    }
+
+    private fun reconcileSeedProfile(
+        db: SQLiteDatabase,
+        seed: SeededModelProviderProfile,
+        now: Long,
+    ) {
+        val existing = queryProfileRow(db, seed.providerId) ?: return
+        val normalizedSelectedModel = normalizeSeedSelectedModel(existing.selectedModel, seed)
+        val needsUpdate =
+            existing.displayName != seed.displayName ||
+                existing.supportedModels != seed.supportedModels ||
+                existing.defaultModel != seed.defaultModel ||
+                existing.selectedModel != normalizedSelectedModel
+        if (!needsUpdate) {
+            return
+        }
+        db.update(
+            modelProviderProfilesTable,
+            ContentValues().apply {
+                put("display_name", seed.displayName)
+                put("supported_models_json", jsonArrayString(seed.supportedModels))
+                put("default_model", seed.defaultModel)
+                put("selected_model", normalizedSelectedModel)
+                put("updated_at", now)
+            },
+            "provider_id = ?",
+            arrayOf(seed.providerId),
+        )
     }
 
     private fun ensureDefaultSelection(

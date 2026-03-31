@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -13,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,14 +29,19 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -65,6 +72,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,9 +86,14 @@ import io.makoion.mobileclaw.data.ApprovalInboxItem
 import io.makoion.mobileclaw.data.ApprovalInboxRisk
 import io.makoion.mobileclaw.data.ApprovalInboxStatus
 import io.makoion.mobileclaw.data.AuditTrailEvent
+import io.makoion.mobileclaw.data.ChatAttachment
 import io.makoion.mobileclaw.data.ChatMessage
 import io.makoion.mobileclaw.data.ChatMessageRole
 import io.makoion.mobileclaw.data.ChatThreadRecord
+import io.makoion.mobileclaw.data.ChatContinuationPromptCatalog
+import io.makoion.mobileclaw.data.ChatContinuationPromptId
+import io.makoion.mobileclaw.data.ChatEntryPresentation
+import io.makoion.mobileclaw.data.ChatTaskContinuationPresentation
 import io.makoion.mobileclaw.data.CloudDriveConnectionState
 import io.makoion.mobileclaw.data.CloudDriveConnectionStatus
 import io.makoion.mobileclaw.data.CloudDriveProviderKind
@@ -95,6 +108,7 @@ import io.makoion.mobileclaw.data.DeliveryChannelProfileState
 import io.makoion.mobileclaw.data.DeliveryChannelStatus
 import io.makoion.mobileclaw.data.DeviceTransportMode
 import io.makoion.mobileclaw.data.ExternalEndpointProfileState
+import io.makoion.mobileclaw.data.EmailTriageRecord
 import io.makoion.mobileclaw.data.ExternalEndpointStatus
 import io.makoion.mobileclaw.data.FileIndexState
 import io.makoion.mobileclaw.data.FileOrganizePlan
@@ -102,6 +116,7 @@ import io.makoion.mobileclaw.data.FilePreviewDetail
 import io.makoion.mobileclaw.data.FileSummaryDetail
 import io.makoion.mobileclaw.data.IndexedFileItem
 import io.makoion.mobileclaw.data.MediaAccessPermissions
+import io.makoion.mobileclaw.data.MailboxConnectionProfileState
 import io.makoion.mobileclaw.data.ModelProviderCredentialStatus
 import io.makoion.mobileclaw.data.ModelProviderProfileState
 import io.makoion.mobileclaw.data.OrganizeExecutionEntry
@@ -118,6 +133,16 @@ import io.makoion.mobileclaw.data.TransferDraftStatus
 import io.makoion.mobileclaw.data.TransferDraftState
 import io.makoion.mobileclaw.data.TransportValidationMode
 import io.makoion.mobileclaw.data.VoiceEntryState
+import io.makoion.mobileclaw.data.approvalsApproveActionKey
+import io.makoion.mobileclaw.data.approvalsDenyActionKey
+import io.makoion.mobileclaw.data.buildChatEntryPresentation
+import io.makoion.mobileclaw.data.manualTaskRetryActionKey
+import io.makoion.mobileclaw.data.companionAppOpenActionKey
+import io.makoion.mobileclaw.data.companionHealthProbeActionKey
+import io.makoion.mobileclaw.data.companionSessionNotifyActionKey
+import io.makoion.mobileclaw.data.companionWorkflowRunActionKey
+import io.makoion.mobileclaw.data.filesTransferExecuteActionKey
+import io.makoion.mobileclaw.data.providerConversationActionKey
 import io.makoion.mobileclaw.data.companionAppOpenTargetActionsFolder
 import io.makoion.mobileclaw.data.companionAppOpenTargetInbox
 import io.makoion.mobileclaw.data.companionAppOpenTargetLatestAction
@@ -163,6 +188,16 @@ fun MobileClawShellApp(
     ) { uri ->
         uri?.let(shellViewModel::attachDocumentTree)
     }
+    val visualAttachmentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxChatAttachmentPickerItems),
+    ) { uris ->
+        shellViewModel.stageChatAttachments(uris)
+    }
+    val fileAttachmentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        shellViewModel.stageChatAttachments(uris)
+    }
     val deleteConsentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult(),
     ) { result ->
@@ -200,6 +235,14 @@ fun MobileClawShellApp(
     val openDocumentTree = {
         documentTreeLauncher.launch(null)
     }
+    val openVisualAttachments = {
+        visualAttachmentLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+        )
+    }
+    val openFileAttachments = {
+        fileAttachmentLauncher.launch(arrayOf("*/*"))
+    }
     val toggleVoiceCapture = {
         if (uiState.voiceEntryState.isActive) {
             shellViewModel.toggleVoiceCapture()
@@ -208,6 +251,68 @@ fun MobileClawShellApp(
         } else {
             shellViewModel.toggleVoiceCapture()
         }
+    }
+    val hasConfiguredProvider = uiState.providerProfiles.any {
+        it.credentialStatus == ModelProviderCredentialStatus.Stored
+    }
+    val hasLocalFilesReady =
+        uiState.fileIndexState.permissionGranted ||
+            uiState.fileIndexState.documentTreeCount > 0 ||
+            uiState.fileIndexState.indexedCount > 0
+    val hasPairedCompanion = uiState.deviceControlState.pairedDevices.isNotEmpty()
+    val setupRequired = !hasConfiguredProvider || !hasLocalFilesReady
+    var setupWizardCompleted by rememberSaveable {
+        mutableStateOf(hasCompletedInitialSetup(context))
+    }
+    var setupWizardVisible by rememberSaveable {
+        mutableStateOf(!setupWizardCompleted)
+    }
+
+    LaunchedEffect(setupRequired, setupWizardCompleted) {
+        if (setupWizardCompleted) {
+            setupWizardVisible = false
+        } else if (setupRequired || setupWizardVisible) {
+            setupWizardVisible = true
+            if (setupRequired) {
+                shellViewModel.openSection(ShellSection.Settings)
+            }
+        }
+    }
+
+    if (setupWizardVisible) {
+        InitialSetupWizard(
+            prefersKorean = context.resources.configuration.locales[0]?.language == "ko",
+            providerProfiles = uiState.providerProfiles,
+            fileIndexState = uiState.fileIndexState,
+            pairedDevices = uiState.deviceControlState.pairedDevices,
+            hasConfiguredProvider = hasConfiguredProvider,
+            hasLocalFilesReady = hasLocalFilesReady,
+            hasPairedCompanion = hasPairedCompanion,
+            onSetDefaultModelProvider = shellViewModel::setDefaultModelProvider,
+            onSelectProviderModel = shellViewModel::selectProviderModel,
+            onStoreProviderCredential = shellViewModel::storeModelProviderCredential,
+            onClearProviderCredential = shellViewModel::clearModelProviderCredential,
+            onRevealProviderCredential = { providerId, providerLabel, prefersKorean ->
+                authenticateAndRevealStoredCredential(
+                    context = context,
+                    providerLabel = providerLabel,
+                    prefersKorean = prefersKorean,
+                ) {
+                    shellViewModel.revealModelProviderCredential(providerId)
+                }
+            },
+            onRequestMediaAccess = requestMediaAccess,
+            onOpenDocumentTree = openDocumentTree,
+            onRefreshFiles = shellViewModel::refreshFiles,
+            onStartPairing = shellViewModel::startPairing,
+            onFinish = {
+                setupWizardCompleted = true
+                markInitialSetupCompleted(context)
+                setupWizardVisible = false
+                shellViewModel.openSection(ShellSection.Chat)
+            },
+        )
+        return
     }
 
     Scaffold(
@@ -242,8 +347,11 @@ fun MobileClawShellApp(
             ShellSection.Chat -> ChatScreen(
                 uiState = uiState,
                 innerPadding = innerPadding,
+                onPickVisualAttachments = openVisualAttachments,
+                onPickFileAttachments = openFileAttachments,
                 onToggleVoiceCapture = toggleVoiceCapture,
                 onUpdateDraft = shellViewModel::updateChatDraft,
+                onRemoveAttachment = shellViewModel::removeChatAttachment,
                 onSendPrompt = shellViewModel::submitChatPrompt,
                 onSubmitSuggestedPrompt = shellViewModel::submitSuggestedChatPrompt,
                 onStartNewSession = shellViewModel::startNewChatThread,
@@ -297,6 +405,15 @@ fun MobileClawShellApp(
                 onSelectProviderModel = shellViewModel::selectProviderModel,
                 onStoreProviderCredential = shellViewModel::storeModelProviderCredential,
                 onClearProviderCredential = shellViewModel::clearModelProviderCredential,
+                onRevealProviderCredential = { providerId, providerLabel ->
+                    authenticateAndRevealStoredCredential(
+                        context = context,
+                        providerLabel = providerLabel,
+                        prefersKorean = false,
+                    ) {
+                        shellViewModel.revealModelProviderCredential(providerId)
+                    }
+                },
                 onStageExternalEndpoint = shellViewModel::stageExternalEndpoint,
                 onMarkExternalEndpointConnected = shellViewModel::markExternalEndpointConnected,
                 onResetExternalEndpoint = shellViewModel::resetExternalEndpoint,
@@ -355,6 +472,23 @@ private fun needsAudioPermission(context: Context): Boolean {
     ) != PackageManager.PERMISSION_GRANTED
 }
 
+private const val initialSetupPreferencesName = "initial_setup_preferences"
+private const val initialSetupCompletedKey = "completed"
+
+private fun hasCompletedInitialSetup(context: Context): Boolean {
+    return context.getSharedPreferences(
+        initialSetupPreferencesName,
+        Context.MODE_PRIVATE,
+    ).getBoolean(initialSetupCompletedKey, false)
+}
+
+private fun markInitialSetupCompleted(context: Context) {
+    context.getSharedPreferences(
+        initialSetupPreferencesName,
+        Context.MODE_PRIVATE,
+    ).edit().putBoolean(initialSetupCompletedKey, true).apply()
+}
+
 private val ShellSection.icon: ImageVector
     get() = when (this) {
         ShellSection.Chat -> Icons.Default.Home
@@ -363,12 +497,761 @@ private val ShellSection.icon: ImageVector
         ShellSection.Settings -> Icons.Default.DevicesOther
     }
 
+private enum class InitialSetupStep {
+    Provider,
+    Files,
+    Companion,
+    Ready,
+}
+
+private fun initialSetupStep(
+    hasConfiguredProvider: Boolean,
+    hasLocalFilesReady: Boolean,
+): InitialSetupStep {
+    return when {
+        !hasConfiguredProvider -> InitialSetupStep.Provider
+        !hasLocalFilesReady -> InitialSetupStep.Files
+        else -> InitialSetupStep.Companion
+    }
+}
+
+@Composable
+private fun InitialSetupWizard(
+    prefersKorean: Boolean,
+    providerProfiles: List<ModelProviderProfileState>,
+    fileIndexState: FileIndexState,
+    pairedDevices: List<PairedDeviceState>,
+    hasConfiguredProvider: Boolean,
+    hasLocalFilesReady: Boolean,
+    hasPairedCompanion: Boolean,
+    onSetDefaultModelProvider: (String) -> Unit,
+    onSelectProviderModel: (String, String) -> Unit,
+    onStoreProviderCredential: (String, String) -> Unit,
+    onClearProviderCredential: (String) -> Unit,
+    onRevealProviderCredential: suspend (String, String, Boolean) -> StoredCredentialRevealResult,
+    onRequestMediaAccess: () -> Unit,
+    onOpenDocumentTree: () -> Unit,
+    onRefreshFiles: () -> Unit,
+    onStartPairing: () -> Unit,
+    onFinish: () -> Unit,
+) {
+    var stepName by rememberSaveable {
+        mutableStateOf(initialSetupStep(hasConfiguredProvider, hasLocalFilesReady).name)
+    }
+    val currentStep = InitialSetupStep.entries.firstOrNull { it.name == stepName } ?: InitialSetupStep.Provider
+    val completedRequiredStepCount = listOf(hasConfiguredProvider, hasLocalFilesReady).count { it }
+    val progress = when (currentStep) {
+        InitialSetupStep.Provider -> 0.25f
+        InitialSetupStep.Files -> 0.5f
+        InitialSetupStep.Companion -> 0.75f
+        InitialSetupStep.Ready -> 1f
+    }
+
+    LaunchedEffect(hasConfiguredProvider, hasLocalFilesReady, currentStep) {
+        val correctedStep = when {
+            !hasConfiguredProvider && currentStep != InitialSetupStep.Provider ->
+                InitialSetupStep.Provider
+            hasConfiguredProvider &&
+                !hasLocalFilesReady &&
+                (currentStep == InitialSetupStep.Companion || currentStep == InitialSetupStep.Ready) ->
+                InitialSetupStep.Files
+            else -> null
+        }
+        if (correctedStep != null && correctedStep.name != stepName) {
+            stepName = correctedStep.name
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = {
+            Surface(
+                color = MaterialTheme.colorScheme.background,
+            ) {
+                InitialSetupWizardFooter(
+                    prefersKorean = prefersKorean,
+                    currentStep = currentStep,
+                    hasConfiguredProvider = hasConfiguredProvider,
+                    hasLocalFilesReady = hasLocalFilesReady,
+                    hasPairedCompanion = hasPairedCompanion,
+                    onBack = {
+                        stepName = when (currentStep) {
+                            InitialSetupStep.Provider -> InitialSetupStep.Provider.name
+                            InitialSetupStep.Files -> InitialSetupStep.Provider.name
+                            InitialSetupStep.Companion -> InitialSetupStep.Files.name
+                            InitialSetupStep.Ready -> InitialSetupStep.Companion.name
+                        }
+                    },
+                    onNext = {
+                        stepName = when (currentStep) {
+                            InitialSetupStep.Provider -> InitialSetupStep.Files.name
+                            InitialSetupStep.Files -> InitialSetupStep.Companion.name
+                            InitialSetupStep.Companion -> InitialSetupStep.Ready.name
+                            InitialSetupStep.Ready -> {
+                                onFinish()
+                                InitialSetupStep.Ready.name
+                            }
+                        }
+                    },
+                )
+            }
+        },
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 24.dp, vertical = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Text(
+                text = if (prefersKorean) "Initial setup" else "Initial setup",
+                style = MaterialTheme.typography.labelLarge,
+                color = ClawGreen,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = when (currentStep) {
+                    InitialSetupStep.Provider -> if (prefersKorean) {
+                        "1 / 4  AI provider"
+                    } else {
+                        "1 / 4  AI provider"
+                    }
+                    InitialSetupStep.Files -> if (prefersKorean) {
+                        "2 / 4  Local files"
+                    } else {
+                        "2 / 4  Local files"
+                    }
+                    InitialSetupStep.Companion -> if (prefersKorean) {
+                        "3 / 4  Companion"
+                    } else {
+                        "3 / 4  Companion"
+                    }
+                    InitialSetupStep.Ready -> if (prefersKorean) {
+                        "4 / 4  Ready"
+                    } else {
+                        "4 / 4  Ready"
+                    }
+                },
+                style = MaterialTheme.typography.headlineMedium,
+                color = ClawInk,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = when (currentStep) {
+                    InitialSetupStep.Provider -> if (prefersKorean) {
+                        "메인 화면으로 들어가기 전에 사용할 모델 provider key를 하나 저장하세요."
+                    } else {
+                        "Before entering the app, save one model provider key you want to use."
+                    }
+                    InitialSetupStep.Files -> if (prefersKorean) {
+                        "이제 로컬 파일 접근을 허용하세요. 사진 권한 또는 폴더 연결 중 하나면 됩니다."
+                    } else {
+                        "Now allow local files. Media access or one folder attachment is enough."
+                    }
+                    InitialSetupStep.Companion -> if (prefersKorean) {
+                        "Companion은 선택입니다. 지금 붙여도 되고, 나중에 메인 화면에서 이어도 됩니다."
+                    } else {
+                        "Companion is optional. Pair now or continue later from the main app."
+                    }
+                    InitialSetupStep.Ready -> if (prefersKorean) {
+                        "필수 초기 설정이 끝났습니다. 이제 메인 화면으로 들어갈 수 있습니다."
+                    } else {
+                        "The required first-run setup is complete. You can enter the main app now."
+                    }
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            SetupSnapshotCard(
+                prefersKorean = prefersKorean,
+                completedRequiredStepCount = completedRequiredStepCount,
+                hasConfiguredProvider = hasConfiguredProvider,
+                hasLocalFilesReady = hasLocalFilesReady,
+                hasPairedCompanion = hasPairedCompanion,
+            )
+            when (currentStep) {
+                InitialSetupStep.Provider -> {
+                    providerProfiles.forEach { profile ->
+                        SetupProviderProfileCard(
+                            prefersKorean = prefersKorean,
+                            profile = profile,
+                            onSetDefault = { onSetDefaultModelProvider(profile.providerId) },
+                            onSelectModel = { model ->
+                                onSelectProviderModel(profile.providerId, model)
+                            },
+                            onStoreCredential = { secret ->
+                                onStoreProviderCredential(profile.providerId, secret)
+                            },
+                            onClearCredential = {
+                                onClearProviderCredential(profile.providerId)
+                            },
+                            onRevealStoredCredential = {
+                                onRevealProviderCredential(
+                                    profile.providerId,
+                                    profile.displayName,
+                                    prefersKorean,
+                                )
+                            },
+                        )
+                    }
+                }
+                InitialSetupStep.Files -> {
+                    SetupLocalFilesCard(
+                        prefersKorean = prefersKorean,
+                        state = fileIndexState,
+                        onRequestMediaAccess = onRequestMediaAccess,
+                        onOpenDocumentTree = onOpenDocumentTree,
+                        onRefreshFiles = onRefreshFiles,
+                    )
+                }
+                InitialSetupStep.Companion -> {
+                    SetupCompanionCard(
+                        prefersKorean = prefersKorean,
+                        pairedDevices = pairedDevices,
+                        onStartPairing = onStartPairing,
+                    )
+                }
+                InitialSetupStep.Ready -> {
+                    SetupReadyCard(
+                        prefersKorean = prefersKorean,
+                        hasPairedCompanion = hasPairedCompanion,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InitialSetupWizardFooter(
+    prefersKorean: Boolean,
+    currentStep: InitialSetupStep,
+    hasConfiguredProvider: Boolean,
+    hasLocalFilesReady: Boolean,
+    hasPairedCompanion: Boolean,
+    onBack: () -> Unit,
+    onNext: () -> Unit,
+) {
+    val nextEnabled = when (currentStep) {
+        InitialSetupStep.Provider -> hasConfiguredProvider
+        InitialSetupStep.Files -> hasLocalFilesReady
+        InitialSetupStep.Companion -> true
+        InitialSetupStep.Ready -> true
+    }
+    val nextLabel = when (currentStep) {
+        InitialSetupStep.Provider,
+        InitialSetupStep.Files -> if (prefersKorean) "다음" else "Next"
+        InitialSetupStep.Companion -> if (hasPairedCompanion) {
+            if (prefersKorean) "마지막 확인" else "Review"
+        } else {
+            if (prefersKorean) "건너뛰고 계속" else "Skip and continue"
+        }
+        InitialSetupStep.Ready -> if (prefersKorean) "Makoion 시작하기" else "Enter Makoion"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (currentStep != InitialSetupStep.Provider) {
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (prefersKorean) "이전" else "Back")
+            }
+        }
+        FilledTonalButton(
+            onClick = onNext,
+            enabled = nextEnabled,
+            modifier = Modifier.weight(if (currentStep == InitialSetupStep.Provider) 1f else 1f),
+        ) {
+            Text(nextLabel)
+        }
+    }
+}
+
+@Composable
+private fun SetupSnapshotCard(
+    prefersKorean: Boolean,
+    completedRequiredStepCount: Int,
+    hasConfiguredProvider: Boolean,
+    hasLocalFilesReady: Boolean,
+    hasPairedCompanion: Boolean,
+) {
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = ClawGold.copy(alpha = 0.08f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = if (prefersKorean) {
+                    "필수 설정 ${completedRequiredStepCount} / 2 완료"
+                } else {
+                    "Required setup $completedRequiredStepCount / 2 complete"
+                },
+                style = MaterialTheme.typography.titleMedium,
+                color = ClawInk,
+                fontWeight = FontWeight.SemiBold,
+            )
+            SetupChecklistRow(
+                title = if (prefersKorean) "AI provider key" else "AI provider key",
+                detail = if (hasConfiguredProvider) {
+                    if (prefersKorean) "저장됨" else "Saved"
+                } else {
+                    if (prefersKorean) "아직 필요" else "Still needed"
+                },
+                complete = hasConfiguredProvider,
+            )
+            SetupChecklistRow(
+                title = if (prefersKorean) "Local files" else "Local files",
+                detail = if (hasLocalFilesReady) {
+                    if (prefersKorean) "준비됨" else "Ready"
+                } else {
+                    if (prefersKorean) "아직 필요" else "Still needed"
+                },
+                complete = hasLocalFilesReady,
+            )
+            SetupChecklistRow(
+                title = if (prefersKorean) "Companion" else "Companion",
+                detail = if (hasPairedCompanion) {
+                    if (prefersKorean) "연결됨" else "Paired"
+                } else {
+                    if (prefersKorean) "선택 사항" else "Optional"
+                },
+                complete = hasPairedCompanion,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SetupProviderProfileCard(
+    prefersKorean: Boolean,
+    profile: ModelProviderProfileState,
+    onSetDefault: () -> Unit,
+    onSelectModel: (String) -> Unit,
+    onStoreCredential: (String) -> Unit,
+    onClearCredential: () -> Unit,
+    onRevealStoredCredential: suspend () -> StoredCredentialRevealResult,
+) {
+    var credentialDraft by rememberSaveable(profile.providerId, "setup") { mutableStateOf("") }
+    var credentialVisible by rememberSaveable(profile.providerId, "setup-visibility") { mutableStateOf(false) }
+    var revealMessage by rememberSaveable(profile.providerId, "setup-reveal-message") { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = profile.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawInk,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = if (profile.isDefault) {
+                            if (prefersKorean) "기본 추천 provider" else "Default recommended provider"
+                        } else {
+                            if (prefersKorean) "대체 provider" else "Alternative provider"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                AssistChip(
+                    onClick = {},
+                    label = {
+                        Text(
+                            if (profile.credentialStatus == ModelProviderCredentialStatus.Stored) {
+                                if (prefersKorean) "저장됨" else "Saved"
+                            } else {
+                                if (prefersKorean) "키 필요" else "Key needed"
+                            },
+                        )
+                    },
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = providerCredentialStatusColor(profile.credentialStatus).copy(alpha = 0.16f),
+                        labelColor = ClawInk,
+                    ),
+                )
+            }
+            Text(
+                text = if (profile.credentialStatus == ModelProviderCredentialStatus.Stored) {
+                    if (prefersKorean) {
+                        "현재 ${profile.credentialLabel ?: "credential"} 이 폰 vault에 저장돼 있습니다."
+                    } else {
+                        "${profile.credentialLabel ?: "Credential"} is already stored in the phone vault."
+                    }
+                } else {
+                    if (prefersKorean) {
+                        "이 provider를 쓰려면 API key 또는 token을 붙여 넣고 저장하세요."
+                    } else {
+                        "Paste an API key or token and save it to use this provider."
+                    }
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                profile.supportedModels.forEach { model ->
+                    FilterChip(
+                        selected = model == profile.selectedModel,
+                        onClick = { onSelectModel(model) },
+                        label = { Text(model) },
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = credentialDraft,
+                onValueChange = { credentialDraft = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(if (prefersKorean) "API key 또는 token" else "API key or token") },
+                placeholder = { Text(if (prefersKorean) "폰 vault에 저장" else "Stored in phone vault") },
+                visualTransformation = if (credentialVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(
+                        onClick = {
+                            if (credentialDraft.isBlank() &&
+                                profile.credentialStatus == ModelProviderCredentialStatus.Stored
+                            ) {
+                                scope.launch {
+                                    when (val result = onRevealStoredCredential()) {
+                                        is StoredCredentialRevealResult.Revealed -> {
+                                            credentialDraft = result.secret
+                                            credentialVisible = true
+                                            revealMessage = if (prefersKorean) {
+                                                "생체인증 후 저장된 키를 불러왔습니다."
+                                            } else {
+                                                "Loaded the saved key after biometric authentication."
+                                            }
+                                        }
+                                        is StoredCredentialRevealResult.Error -> {
+                                            credentialVisible = false
+                                            revealMessage = result.message
+                                        }
+                                        StoredCredentialRevealResult.Cancelled -> {
+                                            credentialVisible = false
+                                            revealMessage = if (prefersKorean) {
+                                                "생체인증이 취소되었습니다."
+                                            } else {
+                                                "Biometric authentication was cancelled."
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                credentialVisible = !credentialVisible
+                                revealMessage = null
+                            }
+                        },
+                    ) {
+                        Icon(
+                            imageVector = if (credentialVisible) {
+                                Icons.Default.VisibilityOff
+                            } else {
+                                Icons.Default.Visibility
+                            },
+                            contentDescription = if (credentialVisible) {
+                                if (prefersKorean) "키 숨기기" else "Hide key"
+                            } else if (
+                                credentialDraft.isBlank() &&
+                                profile.credentialStatus == ModelProviderCredentialStatus.Stored
+                            ) {
+                                if (prefersKorean) "저장된 키 보기" else "Reveal saved key"
+                            } else {
+                                if (prefersKorean) "키 보기" else "Show key"
+                            },
+                        )
+                    }
+                },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        onStoreCredential(credentialDraft)
+                        credentialDraft = ""
+                        credentialVisible = false
+                        revealMessage = null
+                    },
+                    enabled = credentialDraft.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        if (profile.credentialStatus == ModelProviderCredentialStatus.Stored) {
+                            if (prefersKorean) "키 업데이트" else "Update key"
+                        } else {
+                            if (prefersKorean) "키 저장" else "Save key"
+                        },
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        onClearCredential()
+                        credentialDraft = ""
+                        credentialVisible = false
+                        revealMessage = null
+                    },
+                    enabled = profile.credentialStatus == ModelProviderCredentialStatus.Stored,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (prefersKorean) "삭제" else "Clear")
+                }
+            }
+            revealMessage?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (!profile.isDefault) {
+                TextButton(
+                    onClick = onSetDefault,
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(if (prefersKorean) "기본 provider로 사용" else "Make default")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupLocalFilesCard(
+    prefersKorean: Boolean,
+    state: FileIndexState,
+    onRequestMediaAccess: () -> Unit,
+    onOpenDocumentTree: () -> Unit,
+    onRefreshFiles: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = if (prefersKorean) "로컬 파일 접근" else "Local file access",
+                style = MaterialTheme.typography.titleMedium,
+                color = ClawInk,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = if (prefersKorean) {
+                    "사진 권한을 허용하거나, 작업할 폴더를 하나 연결하세요. 둘 중 하나면 다음 단계로 갈 수 있습니다."
+                } else {
+                    "Grant media access or attach one working folder. Either one is enough for the next step."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = onRequestMediaAccess,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (prefersKorean) "사진 권한 허용" else "Grant media access")
+                }
+                OutlinedButton(
+                    onClick = onOpenDocumentTree,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (prefersKorean) "폴더 연결" else "Attach folder")
+                }
+            }
+            SetupChecklistRow(
+                title = if (prefersKorean) "미디어 권한" else "Media access",
+                detail = if (state.permissionGranted) {
+                    if (prefersKorean) "허용됨" else "Granted"
+                } else {
+                    if (prefersKorean) "아직 필요" else "Still needed"
+                },
+                complete = state.permissionGranted,
+            )
+            SetupChecklistRow(
+                title = if (prefersKorean) "연결된 폴더" else "Attached folders",
+                detail = if (prefersKorean) {
+                    "${state.documentTreeCount}개 연결"
+                } else {
+                    "${state.documentTreeCount} attached"
+                },
+                complete = state.documentTreeCount > 0,
+            )
+            SetupChecklistRow(
+                title = if (prefersKorean) "인덱스 상태" else "Index status",
+                detail = if (prefersKorean) {
+                    "${state.indexedCount}개 파일 확인"
+                } else {
+                    "${state.indexedCount} files available"
+                },
+                complete = state.indexedCount > 0,
+            )
+            OutlinedButton(
+                onClick = onRefreshFiles,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (prefersKorean) "상태 새로고침" else "Refresh status")
+            }
+            Text(
+                text = state.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SetupCompanionCard(
+    prefersKorean: Boolean,
+    pairedDevices: List<PairedDeviceState>,
+    onStartPairing: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = if (prefersKorean) "Companion 연결은 선택입니다" else "Companion is optional",
+                style = MaterialTheme.typography.titleMedium,
+                color = ClawInk,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = if (prefersKorean) {
+                    "데스크톱 알림, 폴더 열기, 파일 전송 workflow가 필요하면 지금 연결하세요. 아니면 바로 메인 화면으로 들어가도 됩니다."
+                } else {
+                    "Pair now if you want desktop notifications, folder open actions, or transfer workflows. Otherwise continue directly to the app."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (pairedDevices.isEmpty()) {
+                SetupChecklistRow(
+                    title = if (prefersKorean) "현재 상태" else "Current status",
+                    detail = if (prefersKorean) "아직 연결된 companion 없음" else "No paired companion yet",
+                    complete = false,
+                )
+            } else {
+                pairedDevices.take(3).forEach { device ->
+                    SetupChecklistRow(
+                        title = device.name,
+                        detail = device.health,
+                        complete = true,
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = onStartPairing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (pairedDevices.isEmpty()) {
+                        if (prefersKorean) "Pairing 시작" else "Start pairing"
+                    } else {
+                        if (prefersKorean) "추가 companion 연결" else "Pair another companion"
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupReadyCard(
+    prefersKorean: Boolean,
+    hasPairedCompanion: Boolean,
+) {
+    Card(
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = ClawGreen.copy(alpha = 0.08f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = if (prefersKorean) "준비 완료" else "Ready to go",
+                style = MaterialTheme.typography.titleLarge,
+                color = ClawInk,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = if (prefersKorean) {
+                    if (hasPairedCompanion) {
+                        "이제 Chat, Dashboard, History, Settings가 모두 열립니다. companion까지 이미 연결돼 있어 원격 액션도 바로 쓸 수 있습니다."
+                    } else {
+                        "이제 Chat, Dashboard, History, Settings가 모두 열립니다. companion은 나중에 Settings에서 붙이면 됩니다."
+                    }
+                } else {
+                    if (hasPairedCompanion) {
+                        "You can now open Chat, Dashboard, History, and Settings. Companion actions are also ready."
+                    } else {
+                        "You can now open Chat, Dashboard, History, and Settings. Pair a companion later from Settings if needed."
+                    }
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun ChatScreen(
     uiState: ShellUiState,
     innerPadding: PaddingValues,
+    onPickVisualAttachments: () -> Unit,
+    onPickFileAttachments: () -> Unit,
     onToggleVoiceCapture: () -> Unit,
     onUpdateDraft: (String) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onSubmitSuggestedPrompt: (String) -> Unit,
     onStartNewSession: () -> Unit,
@@ -376,38 +1259,40 @@ private fun ChatScreen(
     onDeny: (String) -> Unit,
     onRetry: (String) -> Unit,
 ) {
-    val pendingApprovals = uiState.approvals
-        .filter { it.status == ApprovalInboxStatus.Pending }
-        .take(maxChatInlineApprovals)
-    val retryableTasks = uiState.agentTasks
-        .filter(::isChatRetryableTask)
-        .take(maxChatInlineRetries)
-    val quickPrompts = buildChatQuickPrompts(uiState)
-    val selectedCompanion = uiState.deviceControlState.pairedDevices.firstOrNull {
-        it.id == uiState.deviceControlState.selectedTargetDeviceId
-    } ?: uiState.deviceControlState.pairedDevices.firstOrNull { device ->
-        device.transportMode == DeviceTransportMode.DirectHttp
-    } ?: uiState.deviceControlState.pairedDevices.firstOrNull()
+    val listState = rememberLazyListState()
+    val prefersKorean = LocalContext.current.resources.configuration.locales[0]?.language == "ko"
+    val chatEntryPresentation = buildChatEntryPresentation(
+        prefersKorean = prefersKorean,
+        hasConfiguredProvider = uiState.providerProfiles.any {
+            it.credentialStatus == ModelProviderCredentialStatus.Stored
+        },
+        hasIndexedFiles = uiState.fileIndexState.indexedCount > 0,
+        hasPairedCompanion = uiState.deviceControlState.pairedDevices.isNotEmpty(),
+    )
+
+    LaunchedEffect(uiState.chatState.messages.size) {
+        if (uiState.chatState.messages.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.chatState.messages.lastIndex)
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(top = innerPadding.calculateTopPadding() + 12.dp),
+            .padding(
+                top = innerPadding.calculateTopPadding(),
+                bottom = innerPadding.calculateBottomPadding(),
+            ),
     ) {
-        ChatConversationHeader(
-            activeThread = uiState.activeChatThread,
-            isProcessing = uiState.chatState.isProcessing,
-            selectedCompanionName = selectedCompanion?.name,
-            onStartNewSession = onStartNewSession,
-        )
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .testTag(ShellTestTags.chatScreenList),
+            state = listState,
             contentPadding = PaddingValues(
                 start = 20.dp,
-                top = 12.dp,
+                top = 16.dp,
                 end = 20.dp,
                 bottom = 12.dp,
             ),
@@ -415,27 +1300,10 @@ private fun ChatScreen(
         ) {
             if (uiState.chatState.messages.isEmpty()) {
                 item {
-                    Surface(
-                        shape = RoundedCornerShape(22.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(18.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                text = "Agent conversation",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = ClawInk,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = "Ask with plain language. Makoion will plan, execute, ask for approval when needed, and keep the task recoverable on this phone.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    ChatEntryCard(
+                        presentation = chatEntryPresentation,
+                        onSubmitPrompt = onSubmitSuggestedPrompt,
+                    )
                 }
             }
             items(
@@ -452,30 +1320,72 @@ private fun ChatScreen(
                     onSubmitPrompt = onSubmitSuggestedPrompt,
                 )
             }
-            if (pendingApprovals.isNotEmpty() || retryableTasks.isNotEmpty()) {
-                item {
-                    ChatInlineActionsCard(
-                        approvals = pendingApprovals,
-                        retryableTasks = retryableTasks,
-                        remainingApprovalCount = uiState.approvals.count { it.status == ApprovalInboxStatus.Pending } - pendingApprovals.size,
-                        remainingRetryCount = uiState.agentTasks.count(::isChatRetryableTask) - retryableTasks.size,
-                        onApprove = onApprove,
-                        onDeny = onDeny,
-                        onRetry = onRetry,
-                    )
-                }
-            }
         }
         ChatComposerCard(
             draft = uiState.chatState.draft,
+            attachments = uiState.chatState.stagedAttachments,
             isProcessing = uiState.chatState.isProcessing,
             voiceActive = uiState.voiceEntryState.isActive,
-            quickPrompts = quickPrompts,
             onUpdateDraft = onUpdateDraft,
+            onPickVisualAttachments = onPickVisualAttachments,
+            onPickFileAttachments = onPickFileAttachments,
             onToggleVoiceCapture = onToggleVoiceCapture,
+            onRemoveAttachment = onRemoveAttachment,
             onSendPrompt = onSendPrompt,
-            onSubmitSuggestedPrompt = onSubmitSuggestedPrompt,
         )
+    }
+}
+
+@Composable
+private fun ChatEntryCard(
+    presentation: ChatEntryPresentation,
+    onSubmitPrompt: (String) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = presentation.headline,
+                style = MaterialTheme.typography.titleMedium,
+                color = ClawInk,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = presentation.body,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = presentation.note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (presentation.prompts.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    presentation.prompts.forEach { prompt ->
+                        AssistChip(
+                            onClick = { onSubmitPrompt(prompt.prompt) },
+                            label = { Text(prompt.label) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = ClawGreen.copy(alpha = 0.12f),
+                                labelColor = ClawInk,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -574,7 +1484,9 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
             add(
                 ChatQuickPrompt(
                     label = "Open settings",
-                    prompt = promptOpenSettingsAndResources,
+                    prompt = ChatContinuationPromptCatalog.spec(
+                        ChatContinuationPromptId.OpenSettingsAndResources,
+                    ).prompt,
                 ),
             )
         }
@@ -611,7 +1523,9 @@ private fun buildChatQuickPrompts(uiState: ShellUiState): List<ChatQuickPrompt> 
             add(
                 ChatQuickPrompt(
                     label = "Check companion",
-                    prompt = promptCheckCompanionHealth,
+                    prompt = ChatContinuationPromptCatalog.spec(
+                        ChatContinuationPromptId.CheckCompanionHealth,
+                    ).prompt,
                 ),
             )
         }
@@ -994,6 +1908,54 @@ private fun DashboardScreen(
                 )
             }
         }
+        val importantMail = uiState.emailTriageRecords.filter {
+            it.classification == io.makoion.mobileclaw.data.EmailTriageClassification.Important
+        }
+        val reviewQueue = uiState.emailTriageRecords.filter {
+            it.classification == io.makoion.mobileclaw.data.EmailTriageClassification.Review
+        }
+        if (uiState.mailboxConnections.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Mailbox",
+                    subtitle = "Chat controls the connector, while Dashboard keeps the latest mailbox status and triage queue visible.",
+                )
+            }
+            items(
+                items = uiState.mailboxConnections.take(1),
+                key = { it.mailboxId },
+            ) { mailbox ->
+                MailboxConnectionCard(mailbox = mailbox)
+            }
+        }
+        if (importantMail.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Important mail",
+                    subtitle = "Only the messages classified as high-signal stay pinned here after the last triage run.",
+                )
+            }
+            items(
+                items = importantMail.take(4),
+                key = { it.id },
+            ) { record ->
+                EmailTriageRecordCard(record = record)
+            }
+        }
+        if (reviewQueue.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Review queue",
+                    subtitle = "Borderline messages stay here instead of generating alerts or automatic moves.",
+                )
+            }
+            items(
+                items = reviewQueue.take(4),
+                key = { it.id },
+            ) { record ->
+                EmailTriageRecordCard(record = record)
+            }
+        }
         item {
             WorkflowStatusCard(snapshot = organizeWorkflowSnapshot(uiState.fileActionState, uiState.approvals))
         }
@@ -1071,6 +2033,101 @@ private fun DashboardScreen(
         }
         items(uiState.overviewCards) { card ->
             ShellCardView(card = card, icon = Icons.Default.Home)
+        }
+    }
+}
+
+@Composable
+private fun MailboxConnectionCard(
+    mailbox: MailboxConnectionProfileState,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = mailbox.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = mailbox.connectionLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Inbox ${mailbox.inboxFolder} • Promotions ${mailbox.promotionsFolder}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = mailbox.summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            mailbox.lastError?.takeIf(String::isNotBlank)?.let { error ->
+                Text(
+                    text = "Last error: $error",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmailTriageRecordCard(
+    record: EmailTriageRecord,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = record.subject,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "${record.sender} • ${record.actionLabel}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = record.reason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (record.snippet.isNotBlank()) {
+                Text(
+                    text = record.snippet,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            record.receivedAtLabel?.let { label ->
+                Text(
+                    text = "Received $label",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ClawGreen,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
     }
 }
@@ -1367,6 +2424,7 @@ private fun SettingsScreen(
     onSelectProviderModel: (String, String) -> Unit,
     onStoreProviderCredential: (String, String) -> Unit,
     onClearProviderCredential: (String) -> Unit,
+    onRevealProviderCredential: suspend (String, String) -> StoredCredentialRevealResult,
     onStageExternalEndpoint: (String) -> Unit,
     onMarkExternalEndpointConnected: (String) -> Unit,
     onResetExternalEndpoint: (String) -> Unit,
@@ -1410,6 +2468,15 @@ private fun SettingsScreen(
         it.id == deviceControlState.selectedTargetDeviceId
     }
     var showAdvancedTools by rememberSaveable { mutableStateOf(false) }
+    val hasConfiguredProvider = providerProfiles.any {
+        it.credentialStatus == ModelProviderCredentialStatus.Stored
+    }
+    val hasLocalFilesReady =
+        fileIndexState.permissionGranted ||
+            fileIndexState.documentTreeCount > 0 ||
+            fileIndexState.indexedCount > 0
+    val hasPairedCompanion = deviceControlState.pairedDevices.isNotEmpty()
+    val needsInitialSetup = !hasConfiguredProvider || !hasLocalFilesReady
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -1422,8 +2489,163 @@ private fun SettingsScreen(
     ) {
         item {
             SectionHeader(
-                title = "Settings and connections",
-                subtitle = "Connected resources, permissions, and companion registrations live here. Core usage should stay in Chat, Dashboard, and History.",
+                title = if (needsInitialSetup) {
+                    "Initial setup"
+                } else {
+                    "Settings and connections"
+                },
+                subtitle = if (needsInitialSetup) {
+                    "Set up the provider key and local file access first. Companion pairing is optional and can follow next."
+                } else {
+                    "Connected resources, permissions, and companion registrations live here. Core usage should stay in Chat, Dashboard, and History."
+                },
+            )
+        }
+        if (needsInitialSetup) {
+            item {
+                InitialSetupCard(
+                    hasConfiguredProvider = hasConfiguredProvider,
+                    hasLocalFilesReady = hasLocalFilesReady,
+                    hasPairedCompanion = hasPairedCompanion,
+                    fileIndexState = fileIndexState,
+                    onRequestMediaAccess = onRequestMediaAccess,
+                    onOpenDocumentTree = onOpenDocumentTree,
+                    onStartPairing = onStartPairing,
+                )
+            }
+        }
+        if (providerProfiles.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = if (needsInitialSetup) {
+                        "Step 1 · AI model provider"
+                    } else {
+                        "AI model providers"
+                    },
+                    subtitle = if (needsInitialSetup) {
+                        "Add an API key or token below. Once one provider is stored, the phone vault setup is ready."
+                    } else {
+                        "Choose the default provider and model that the phone agent should carry into future routed turns, and store provider secrets in the phone vault."
+                    },
+                )
+            }
+            items(
+                items = providerProfiles,
+                key = { it.providerId },
+            ) { profile ->
+                ModelProviderProfileCard(
+                    profile = profile,
+                    onSetEnabled = { enabled ->
+                        onSetModelProviderEnabled(profile.providerId, enabled)
+                    },
+                    onSetDefault = {
+                        onSetDefaultModelProvider(profile.providerId)
+                    },
+                    onSelectModel = { model ->
+                        onSelectProviderModel(profile.providerId, model)
+                    },
+                    onStoreCredential = { secret ->
+                        onStoreProviderCredential(profile.providerId, secret)
+                    },
+                    onClearCredential = {
+                        onClearProviderCredential(profile.providerId)
+                    },
+                    onRevealStoredCredential = {
+                        onRevealProviderCredential(profile.providerId, profile.displayName)
+                    },
+                )
+            }
+        }
+        item {
+            SectionHeader(
+                title = if (needsInitialSetup) {
+                    "Step 2 · Local files"
+                } else {
+                    "Phone files"
+                },
+                subtitle = if (needsInitialSetup) {
+                    "Grant media access or attach a document root so Makoion can search and organize files."
+                } else {
+                    "Media access and document roots control what the phone can search, summarize, and organize."
+                },
+            )
+        }
+        item {
+            FileIndexControlCard(
+                state = fileIndexState,
+                onRequestMediaAccess = onRequestMediaAccess,
+                onOpenDocumentTree = onOpenDocumentTree,
+                onRefreshFiles = onRefreshFiles,
+            )
+        }
+        item {
+            SectionHeader(
+                title = if (needsInitialSetup) {
+                    "Step 3 · Companion (optional)"
+                } else {
+                    "Companion"
+                },
+                subtitle = if (hasPairedCompanion) {
+                    "A paired companion is already available."
+                } else {
+                    "Pair a desktop companion when you want remote open, notification, or transfer actions."
+                },
+            )
+        }
+        item {
+            Button(
+                onClick = onStartPairing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (hasPairedCompanion) "Start another pairing session" else "Start pairing session")
+            }
+        }
+        if (deviceControlState.pairingSessions.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Pending pairing sessions",
+                    subtitle = "Companion authorization requests stay reviewable from Settings.",
+                )
+            }
+            items(
+                items = deviceControlState.pairingSessions,
+                key = { it.id },
+            ) { session ->
+                PairingSessionCard(
+                    session = session,
+                    onApprovePairing = onApprovePairing,
+                    onDenyPairing = onDenyPairing,
+                )
+            }
+        }
+        if (deviceControlState.pairedDevices.isNotEmpty()) {
+            item {
+                SectionHeader(
+                    title = "Paired companions",
+                    subtitle = "Connected companions live here. Tap one to pin it as the target, or tap the pinned card again to return to auto-select.",
+                )
+            }
+            items(
+                items = deviceControlState.pairedDevices,
+                key = { it.id },
+            ) { device ->
+                DeviceCard(
+                    device = device,
+                    selected = device.id == deviceControlState.selectedTargetDeviceId,
+                    selectionPinnedByUser = deviceControlState.isTargetDevicePinnedByUser,
+                    onClick = { onSelectTargetDevice(device.id) },
+                    onArmDirectHttpBridge = onArmDirectHttpBridge,
+                    onUseLoopbackBridge = onUseLoopbackBridge,
+                    onSetTransportValidationMode = onSetTransportValidationMode,
+                    onUseAdbReverseEndpoint = { onUseAdbReverseEndpoint(device.id) },
+                    onUseEmulatorHostEndpoint = { onUseEmulatorHostEndpoint(device.id) },
+                )
+            }
+        }
+        item {
+            SectionHeader(
+                title = "Other resources and advanced settings",
+                subtitle = "After the core setup is done, connectors and delivery channels can be managed here.",
             )
         }
         item {
@@ -1454,37 +2676,6 @@ private fun SettingsScreen(
                     onStage = { onStageCloudDriveConnection(connection.provider) },
                     onMarkMockReady = { onMarkMockCloudDriveConnected(connection.provider) },
                     onReset = { onResetCloudDriveConnection(connection.provider) },
-                )
-            }
-        }
-        if (providerProfiles.isNotEmpty()) {
-            item {
-                SectionHeader(
-                    title = "AI model providers",
-                    subtitle = "Choose the default provider and model that the phone agent should carry into future routed turns, and store provider secrets in the phone vault.",
-                )
-            }
-            items(
-                items = providerProfiles,
-                key = { it.providerId },
-            ) { profile ->
-                ModelProviderProfileCard(
-                    profile = profile,
-                    onSetEnabled = { enabled ->
-                        onSetModelProviderEnabled(profile.providerId, enabled)
-                    },
-                    onSetDefault = {
-                        onSetDefaultModelProvider(profile.providerId)
-                    },
-                    onSelectModel = { model ->
-                        onSelectProviderModel(profile.providerId, model)
-                    },
-                    onStoreCredential = { secret ->
-                        onStoreProviderCredential(profile.providerId, secret)
-                    },
-                    onClearCredential = {
-                        onClearProviderCredential(profile.providerId)
-                    },
                 )
             }
         }
@@ -1525,14 +2716,6 @@ private fun SettingsScreen(
                     onReset = { onResetDeliveryChannel(channel.channelId) },
                 )
             }
-        }
-        item {
-            FileIndexControlCard(
-                state = fileIndexState,
-                onRequestMediaAccess = onRequestMediaAccess,
-                onOpenDocumentTree = onOpenDocumentTree,
-                onRefreshFiles = onRefreshFiles,
-            )
         }
         item {
             VoiceEntryCard(
@@ -1626,56 +2809,6 @@ private fun SettingsScreen(
                         onRequestDeleteConsent = onRequestDeleteConsent,
                     )
                 }
-            }
-        }
-        item {
-            Button(
-                onClick = onStartPairing,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Start pairing session")
-            }
-        }
-        if (deviceControlState.pairingSessions.isNotEmpty()) {
-            item {
-                SectionHeader(
-                    title = "Pending pairing sessions",
-                    subtitle = "Companion authorization requests stay reviewable from Settings.",
-                )
-            }
-            items(
-                items = deviceControlState.pairingSessions,
-                key = { it.id },
-            ) { session ->
-                PairingSessionCard(
-                    session = session,
-                    onApprovePairing = onApprovePairing,
-                    onDenyPairing = onDenyPairing,
-                )
-            }
-        }
-        if (deviceControlState.pairedDevices.isNotEmpty()) {
-            item {
-                SectionHeader(
-                    title = "Paired companions",
-                    subtitle = "Connected companions live here. Tap one to pin it as the target, or tap the pinned card again to return to auto-select.",
-                )
-            }
-            items(
-                items = deviceControlState.pairedDevices,
-                key = { it.id },
-            ) { device ->
-                DeviceCard(
-                    device = device,
-                    selected = device.id == deviceControlState.selectedTargetDeviceId,
-                    selectionPinnedByUser = deviceControlState.isTargetDevicePinnedByUser,
-                    onClick = { onSelectTargetDevice(device.id) },
-                    onArmDirectHttpBridge = onArmDirectHttpBridge,
-                    onUseLoopbackBridge = onUseLoopbackBridge,
-                    onSetTransportValidationMode = onSetTransportValidationMode,
-                    onUseAdbReverseEndpoint = { onUseAdbReverseEndpoint(device.id) },
-                    onUseEmulatorHostEndpoint = { onUseEmulatorHostEndpoint(device.id) },
-                )
             }
         }
         if (showAdvancedTools) {
@@ -1774,7 +2907,13 @@ private fun ChatMessageCard(
                 color = if (message.role == ChatMessageRole.User) ClawGreen else ClawInk,
                 fontWeight = FontWeight.SemiBold,
             )
-            if (message.role == ChatMessageRole.Assistant && (relatedTask != null || relatedApproval != null)) {
+            if (
+                message.role == ChatMessageRole.Assistant &&
+                shouldShowChatMessageContextCard(
+                    task = relatedTask,
+                    approval = relatedApproval,
+                )
+            ) {
                 ChatMessageContextCard(
                     task = relatedTask,
                     approval = relatedApproval,
@@ -1784,13 +2923,68 @@ private fun ChatMessageCard(
                     onSubmitPrompt = onSubmitPrompt,
                 )
             }
-            Text(
-                text = message.text,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (message.attachments.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    message.attachments.forEach { attachment ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(999.dp),
+                        ) {
+                            Text(
+                                text = buildString {
+                                    append(chatAttachmentChipLabel(attachment))
+                                    attachment.sizeLabel?.let {
+                                        append(" • ")
+                                        append(it)
+                                    }
+                                },
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+            if (message.text.isNotBlank()) {
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
+}
+
+private fun shouldShowChatMessageContextCard(
+    task: AgentTaskRecord?,
+    approval: ApprovalInboxItem?,
+): Boolean {
+    if (approval != null) {
+        return true
+    }
+    task ?: return false
+    if (task.actionKey in suppressedChatContextActionKeys) {
+        return false
+    }
+    if (task.status in visibleOperationalTaskStatuses) {
+        return true
+    }
+    return task.actionKey in persistentChatContextActionKeys
+}
+
+private fun chatAttachmentChipLabel(attachment: ChatAttachment): String {
+    val prefix = when (attachment.kind.name) {
+        "Photo" -> "Photo"
+        "Video" -> "Video"
+        "Audio" -> "Audio"
+        else -> "File"
+    }
+    return "$prefix • ${attachment.displayName}"
 }
 
 @Composable
@@ -1807,7 +3001,8 @@ private fun ChatMessageContextCard(
         task != null && approval != null && approval.summary != task.summary -> approval.summary
         else -> null
     }
-    val followUp = chatMessageFollowUp(task = task, approval = approval)
+    val followUp = ChatTaskContinuationPresentation.followUpNote(task = task, approval = approval)
+    val continuationPrompts = task?.let(ChatTaskContinuationPresentation::continuationPrompts).orEmpty()
     Surface(
         color = ClawGold.copy(alpha = 0.08f),
         shape = RoundedCornerShape(18.dp),
@@ -1827,7 +3022,9 @@ private fun ChatMessageContextCard(
                 )
             }
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 task?.let {
@@ -1944,7 +3141,7 @@ private fun ChatMessageContextCard(
                         Text("Approve")
                     }
                 }
-            } else if (task != null && isChatRetryableTask(task)) {
+            } else if (task != null && ChatTaskContinuationPresentation.isManualRetryEligible(task)) {
                 FilledTonalButton(
                     onClick = { onRetry(task.id) },
                     modifier = Modifier.fillMaxWidth(),
@@ -1952,114 +3149,44 @@ private fun ChatMessageContextCard(
                     Text("Retry task")
                 }
             }
-            if (task?.actionKey == companionHealthProbeActionKeyForChat &&
-                task.status == AgentTaskStatus.Succeeded
-            ) {
+            if (continuationPrompts.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    FilledTonalButton(
-                        onClick = { onSubmitPrompt(promptSendDesktopNotification) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Send notification")
-                    }
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptRunOpenActionsFolderWorkflow) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Run actions workflow")
+                    continuationPrompts.take(3).forEachIndexed { index, promptId ->
+                        val action = continuationPromptAction(promptId)
+                        if (index == 0) {
+                            FilledTonalButton(
+                                onClick = { onSubmitPrompt(action.prompt) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(action.label)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { onSubmitPrompt(action.prompt) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(action.label)
+                            }
+                        }
                     }
                 }
             }
-            if (task?.actionKey == companionSessionNotifyActionKeyForChat &&
-                task.status == AgentTaskStatus.Succeeded
-            ) {
+            if (continuationPrompts.size > 3) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    FilledTonalButton(
-                        onClick = { onSubmitPrompt(promptRunOpenActionsFolderWorkflow) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Run actions workflow")
-                    }
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenCompanionInbox) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Open companion inbox")
-                    }
-                }
-            }
-            if (task?.actionKey == filesTransferActionKeyForChat &&
-                task.status in listOf(AgentTaskStatus.Running, AgentTaskStatus.Succeeded)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    FilledTonalButton(
-                        onClick = { onSubmitPrompt(promptOpenLatestTransferFolder) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Open latest transfer")
-                    }
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenCompanionInbox) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Open companion inbox")
-                    }
-                }
-            }
-            if (task?.actionKey == companionAppOpenActionKeyForChat &&
-                task.status != AgentTaskStatus.WaitingResource
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenCompanionInbox) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Inbox")
-                    }
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenLatestTransferFolder) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Latest")
-                    }
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenActionsFolder) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Actions")
-                    }
-                }
-            }
-            if (task?.actionKey == companionWorkflowRunActionKeyForChat &&
-                task.status != AgentTaskStatus.WaitingResource
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenLatestTransferFolder) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Latest")
-                    }
-                    OutlinedButton(
-                        onClick = { onSubmitPrompt(promptOpenActionsFolder) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Actions")
+                    continuationPrompts.drop(3).take(3).forEach { promptId ->
+                        val action = continuationPromptAction(promptId)
+                        OutlinedButton(
+                            onClick = { onSubmitPrompt(action.prompt) },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(action.label)
+                        }
                     }
                 }
             }
@@ -2189,14 +3316,18 @@ private fun ChatRetryInlineCard(
 @Composable
 private fun ChatComposerCard(
     draft: String,
+    attachments: List<ChatAttachment>,
     isProcessing: Boolean,
     voiceActive: Boolean,
-    quickPrompts: List<ChatQuickPrompt>,
     onUpdateDraft: (String) -> Unit,
+    onPickVisualAttachments: () -> Unit,
+    onPickFileAttachments: () -> Unit,
     onToggleVoiceCapture: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     onSendPrompt: () -> Unit,
-    onSubmitSuggestedPrompt: (String) -> Unit,
 ) {
+    var attachmentMenuExpanded by rememberSaveable { mutableStateOf(false) }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -2208,21 +3339,26 @@ private fun ChatComposerCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (quickPrompts.isNotEmpty()) {
+            if (attachments.isNotEmpty()) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    quickPrompts.forEach { prompt ->
-                        AssistChip(
-                            onClick = { onSubmitSuggestedPrompt(prompt.prompt) },
-                            label = { Text(prompt.label) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = ClawGreen.copy(alpha = 0.12f),
-                                labelColor = ClawInk,
-                            ),
+                    attachments.forEach { attachment ->
+                        FilterChip(
+                            selected = true,
+                            onClick = { onRemoveAttachment(attachment.id) },
+                            label = {
+                                Text(
+                                    buildString {
+                                        append(chatAttachmentChipLabel(attachment))
+                                        attachment.sizeLabel?.let {
+                                            append(" • ")
+                                            append(it)
+                                        }
+                                    },
+                                )
+                            },
                         )
                     }
                 }
@@ -2249,30 +3385,69 @@ private fun ChatComposerCard(
                     },
                 ),
                 placeholder = {
-                    Text("Ask Makoion to use your connected resources.")
+                    Text("Tell Makoion what to do")
                 },
+            )
+            Text(
+                text = if (attachments.isEmpty()) {
+                    "Text, photo, video, file, or voice."
+                } else {
+                    "Tap an attachment chip to remove it before sending."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(
+                        onClick = { attachmentMenuExpanded = true },
+                        enabled = !isProcessing,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Add")
+                    }
+                    DropdownMenu(
+                        expanded = attachmentMenuExpanded,
+                        onDismissRequest = { attachmentMenuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Photos & video") },
+                            onClick = {
+                                attachmentMenuExpanded = false
+                                onPickVisualAttachments()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Files") },
+                            onClick = {
+                                attachmentMenuExpanded = false
+                                onPickFileAttachments()
+                            },
+                        )
+                    }
+                }
                 OutlinedButton(
                     onClick = onToggleVoiceCapture,
                     enabled = !isProcessing || voiceActive,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.width(56.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Default.Mic,
-                        contentDescription = null,
+                        contentDescription = if (voiceActive) {
+                            "Stop voice input"
+                        } else {
+                            "Start voice input"
+                        },
                     )
-                    Spacer(modifier = Modifier.size(8.dp))
-                    Text(if (voiceActive) "Stop voice" else "Voice")
                 }
                 FilledTonalButton(
                     onClick = onSendPrompt,
-                    enabled = !isProcessing && draft.isNotBlank(),
+                    enabled = !isProcessing && (draft.isNotBlank() || attachments.isNotEmpty()),
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(1.2f)
                         .testTag(ShellTestTags.chatComposerSend),
                 ) {
                     Text(if (isProcessing) "Working..." else "Send")
@@ -2776,6 +3951,144 @@ private fun DevicesScreen(
 }
 
 @Composable
+private fun InitialSetupCard(
+    hasConfiguredProvider: Boolean,
+    hasLocalFilesReady: Boolean,
+    hasPairedCompanion: Boolean,
+    fileIndexState: FileIndexState,
+    onRequestMediaAccess: () -> Unit,
+    onOpenDocumentTree: () -> Unit,
+    onStartPairing: () -> Unit,
+) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = "Do these first",
+                style = MaterialTheme.typography.titleMedium,
+                color = ClawInk,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "The provider key field is right below this card. Once you store one key and grant file access, the basic first-run setup is done.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SetupChecklistRow(
+                title = "1. Add an AI provider key",
+                detail = if (hasConfiguredProvider) {
+                    "A provider credential is already stored in the phone vault."
+                } else {
+                    "Use the provider cards below to paste an API key or token and save it."
+                },
+                complete = hasConfiguredProvider,
+            )
+            SetupChecklistRow(
+                title = "2. Allow local files",
+                detail = if (hasLocalFilesReady) {
+                    "Local file access is ready. Indexed ${fileIndexState.indexedCount} item(s), document roots ${fileIndexState.documentTreeCount}."
+                } else {
+                    "Grant media access or attach a document root so Makoion can search and organize local files."
+                },
+                complete = hasLocalFilesReady,
+                actions = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FilledTonalButton(
+                            onClick = onRequestMediaAccess,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Grant media access")
+                        }
+                        OutlinedButton(
+                            onClick = onOpenDocumentTree,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Attach folder")
+                        }
+                    }
+                },
+            )
+            SetupChecklistRow(
+                title = "3. Pair a companion (optional)",
+                detail = if (hasPairedCompanion) {
+                    "A desktop companion is already paired."
+                } else {
+                    "Pair a desktop companion if you want remote notifications, folder open, or transfer workflows."
+                },
+                complete = hasPairedCompanion,
+                actions = if (hasPairedCompanion) {
+                    null
+                } else {
+                    {
+                        OutlinedButton(
+                            onClick = onStartPairing,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Start pairing session")
+                        }
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SetupChecklistRow(
+    title: String,
+    detail: String,
+    complete: Boolean,
+    actions: (@Composable () -> Unit)? = null,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = ClawInk,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = if (complete) {
+                    ClawGreen.copy(alpha = 0.16f)
+                } else {
+                    ClawGold.copy(alpha = 0.16f)
+                },
+            ) {
+                Text(
+                    text = if (complete) "Ready" else "Needs setup",
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ClawInk,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        actions?.invoke()
+    }
+}
+
+@Composable
 private fun NotificationQuickActionCard(event: AuditTrailEvent?) {
     Card(
         shape = RoundedCornerShape(24.dp),
@@ -2874,8 +4187,12 @@ private fun ModelProviderProfileCard(
     onSelectModel: (String) -> Unit,
     onStoreCredential: (String) -> Unit,
     onClearCredential: () -> Unit,
+    onRevealStoredCredential: suspend () -> StoredCredentialRevealResult,
 ) {
     var credentialDraft by rememberSaveable(profile.providerId) { mutableStateOf("") }
+    var credentialVisible by rememberSaveable(profile.providerId, "settings-visibility") { mutableStateOf(false) }
+    var revealMessage by rememberSaveable(profile.providerId, "settings-reveal-message") { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     Card(
         shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -2984,7 +4301,60 @@ private fun ModelProviderProfileCard(
                 singleLine = true,
                 label = { Text("API key or token") },
                 placeholder = { Text("Stored in phone vault") },
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (credentialVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(
+                        onClick = {
+                            if (credentialDraft.isBlank() &&
+                                profile.credentialStatus == ModelProviderCredentialStatus.Stored
+                            ) {
+                                scope.launch {
+                                    when (val result = onRevealStoredCredential()) {
+                                        is StoredCredentialRevealResult.Revealed -> {
+                                            credentialDraft = result.secret
+                                            credentialVisible = true
+                                            revealMessage =
+                                                "Loaded the saved key after biometric authentication."
+                                        }
+                                        is StoredCredentialRevealResult.Error -> {
+                                            credentialVisible = false
+                                            revealMessage = result.message
+                                        }
+                                        StoredCredentialRevealResult.Cancelled -> {
+                                            credentialVisible = false
+                                            revealMessage = "Biometric authentication was cancelled."
+                                        }
+                                    }
+                                }
+                            } else {
+                                credentialVisible = !credentialVisible
+                                revealMessage = null
+                            }
+                        },
+                    ) {
+                        Icon(
+                            imageVector = if (credentialVisible) {
+                                Icons.Default.VisibilityOff
+                            } else {
+                                Icons.Default.Visibility
+                            },
+                            contentDescription = if (credentialVisible) {
+                                "Hide key"
+                            } else if (
+                                credentialDraft.isBlank() &&
+                                profile.credentialStatus == ModelProviderCredentialStatus.Stored
+                            ) {
+                                "Reveal saved key"
+                            } else {
+                                "Show key"
+                            },
+                        )
+                    }
+                },
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2994,6 +4364,8 @@ private fun ModelProviderProfileCard(
                     onClick = {
                         onStoreCredential(credentialDraft)
                         credentialDraft = ""
+                        credentialVisible = false
+                        revealMessage = null
                     },
                     enabled = credentialDraft.isNotBlank(),
                     modifier = Modifier.weight(1f),
@@ -3010,12 +4382,21 @@ private fun ModelProviderProfileCard(
                     onClick = {
                         onClearCredential()
                         credentialDraft = ""
+                        credentialVisible = false
+                        revealMessage = null
                     },
                     enabled = profile.credentialStatus == ModelProviderCredentialStatus.Stored,
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("Clear credential")
                 }
+            }
+            revealMessage?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             if (!profile.isDefault) {
                 OutlinedButton(
@@ -5975,62 +7356,14 @@ private fun agentDestinationLabel(destination: AgentDestination): String {
     }
 }
 
-private fun chatMessageFollowUp(
-    task: AgentTaskRecord?,
-    approval: ApprovalInboxItem?,
-): String? {
-    return when {
-        approval?.status == ApprovalInboxStatus.Pending ->
-            "Next step: approve or deny this request here in the conversation."
-        task == null -> null
-        task.actionKey == companionHealthProbeActionKeyForChat &&
-            task.status == AgentTaskStatus.Succeeded ->
-            "Next step: send a desktop notification or run a companion workflow from chat."
-        task.actionKey == companionSessionNotifyActionKeyForChat &&
-            task.status == AgentTaskStatus.Succeeded ->
-            "Next step: continue from chat with a workflow run or another companion surface request."
-        task.actionKey == companionAppOpenActionKeyForChat &&
-            task.status == AgentTaskStatus.Succeeded ->
-            "Next step: steer another companion surface from chat or continue the conversation."
-        task.actionKey == companionWorkflowRunActionKeyForChat &&
-            task.status == AgentTaskStatus.Succeeded ->
-            "Next step: reopen the surfaced folder from chat or move on to the next turn."
-        task.status == AgentTaskStatus.Running || task.status == AgentTaskStatus.Planning ->
-            "The agent is still working on this turn."
-        task.status == AgentTaskStatus.WaitingResource && isChatRetryableTask(task) ->
-            "This task is blocked on a resource or companion condition. Fix the dependency, then retry it from chat."
-        task.status == AgentTaskStatus.WaitingResource ->
-            "This task is waiting on a missing resource. Settings is the next place to fix the connection."
-        task.status == AgentTaskStatus.WaitingUser ->
-            "This turn still needs your review before the agent can continue."
-        task.status == AgentTaskStatus.RetryScheduled ->
-            "A retry is already scheduled, but you can force another attempt from chat."
-        task.status == AgentTaskStatus.Succeeded ->
-            "This task finished and the result is now attached to the active conversation."
-        task.status == AgentTaskStatus.Failed && isChatRetryableTask(task) ->
-            "The task failed, but it still has a safe retry path from the conversation."
-        task.status == AgentTaskStatus.Failed ->
-            "The task failed and needs inspection before another run makes sense."
-        task.status == AgentTaskStatus.Cancelled ->
-            "This task was cancelled and will not run again unless you create a new request."
-        task.status == AgentTaskStatus.Paused ->
-            "This task is paused and waiting for the runtime to resume it."
-        else -> null
-    }
-}
+private data class ContinuationPromptAction(
+    val label: String,
+    val prompt: String,
+)
 
-private fun isChatRetryableTask(task: AgentTaskRecord): Boolean {
-    val retryableStatus = task.status == AgentTaskStatus.RetryScheduled ||
-        task.status == AgentTaskStatus.Failed ||
-        task.status == AgentTaskStatus.WaitingResource
-    if (!retryableStatus) {
-        return false
-    }
-    return when (task.actionKey) {
-        "files.organize.execute" -> task.maxRetryCount > 0
-        "files.transfer.execute" -> !task.approvalRequestId.isNullOrBlank()
-        else -> false
-    }
+private fun continuationPromptAction(promptId: ChatContinuationPromptId): ContinuationPromptAction {
+    val spec = ChatContinuationPromptCatalog.spec(promptId)
+    return ContinuationPromptAction(label = spec.label, prompt = spec.prompt)
 }
 
 private const val maxChatInlineApprovals = 2
@@ -6038,7 +7371,6 @@ private const val maxChatInlineRetries = 2
 private const val promptRefreshResources = "Refresh my connected resources"
 private const val promptSummarizeCurrentFiles = "Summarize my current files"
 private const val promptOrganizeFilesByType = "Organize my files by type"
-private const val promptOpenSettingsAndResources = "Open settings and show my connected resources"
 private const val promptShowDashboardAndApprovals = "Show my dashboard and pending approvals"
 private const val promptShowDashboard = "Show my dashboard"
 private const val promptPlanDailyAutomation = "Every morning send a notification digest automation"
@@ -6046,21 +7378,41 @@ private const val promptActivateLatestAutomation = "Activate the latest automati
 private const val promptRunLatestAutomationNow = "Run the latest automation now"
 private const val promptConnectMcpBridge = "Connect the MCP bridge"
 private const val promptSyncMcpSkills = "Update MCP skills from the MCP bridge"
-private const val promptCheckCompanionHealth = "Check companion health"
-private const val promptSendDesktopNotification = "Send a desktop notification"
-private const val promptRunOpenLatestActionWorkflow = "Run the open latest action workflow"
-private const val promptRunOpenLatestTransferWorkflow = "Run the open latest transfer workflow"
-private const val promptRunOpenActionsFolderWorkflow = "Run the open actions folder workflow"
-private const val promptOpenLatestActionFolder = "Open the latest action folder"
-private const val promptOpenLatestTransferFolder = "Open the latest transfer folder"
-private const val promptOpenCompanionInbox = "Open the companion inbox"
-private const val promptOpenActionsFolder = "Open the actions folder"
 private const val mcpBridgeEndpointIdForChat = "companion-mcp-bridge"
-private const val filesTransferActionKeyForChat = "files.transfer.execute"
-private const val companionHealthProbeActionKeyForChat = "devices.health_probe"
-private const val companionSessionNotifyActionKeyForChat = "devices.session_notify"
-private const val companionAppOpenActionKeyForChat = "devices.app_open"
-private const val companionWorkflowRunActionKeyForChat = "devices.workflow_run"
+private const val explainCapabilitiesActionKeyForChat = "agent.capabilities.explain"
+private const val filesSummarizeActionKeyForChat = "files.summarize"
+private const val resourceStackShowActionKeyForChat = "resource.stack.show"
+private const val routeDashboardActionKeyForChat = "ui.route.dashboard"
+private const val routeHistoryActionKeyForChat = "ui.route.history"
+private const val routeSettingsActionKeyForChat = "ui.route.settings"
+private val suppressedChatContextActionKeys = setOf(
+    explainCapabilitiesActionKeyForChat,
+    filesSummarizeActionKeyForChat,
+    resourceStackShowActionKeyForChat,
+    routeDashboardActionKeyForChat,
+    routeHistoryActionKeyForChat,
+    routeSettingsActionKeyForChat,
+    providerConversationActionKey,
+)
+private val visibleOperationalTaskStatuses = setOf(
+    AgentTaskStatus.Queued,
+    AgentTaskStatus.Planning,
+    AgentTaskStatus.Running,
+    AgentTaskStatus.WaitingUser,
+    AgentTaskStatus.WaitingResource,
+    AgentTaskStatus.RetryScheduled,
+    AgentTaskStatus.Failed,
+)
+private val persistentChatContextActionKeys = setOf(
+    approvalsApproveActionKey,
+    approvalsDenyActionKey,
+    manualTaskRetryActionKey,
+    filesTransferExecuteActionKey,
+    companionHealthProbeActionKey,
+    companionSessionNotifyActionKey,
+    companionAppOpenActionKey,
+    companionWorkflowRunActionKey,
+)
 
 private fun transportAuditResultColor(result: String): Color {
     return when (result) {
@@ -6647,6 +7999,8 @@ private fun scheduledAutomationStatusColor(status: ScheduledAutomationStatus): C
         ScheduledAutomationStatus.Planned -> ClawGold
         ScheduledAutomationStatus.Active -> ClawGreen
         ScheduledAutomationStatus.Paused -> Color(0xFF6D7C8A)
+        ScheduledAutomationStatus.Blocked -> Color(0xFFC15B52)
+        ScheduledAutomationStatus.Degraded -> Color(0xFFB87B30)
     }
 }
 
@@ -6655,6 +8009,8 @@ private fun scheduledAutomationStatusLabel(status: ScheduledAutomationStatus): S
         ScheduledAutomationStatus.Planned -> "Planned"
         ScheduledAutomationStatus.Active -> "Active"
         ScheduledAutomationStatus.Paused -> "Paused"
+        ScheduledAutomationStatus.Blocked -> "Blocked"
+        ScheduledAutomationStatus.Degraded -> "Degraded"
     }
 }
 
@@ -6727,3 +8083,5 @@ private fun organizeExecutionLabel(status: OrganizeExecutionStatus): String {
         OrganizeExecutionStatus.Failed -> "Failed"
     }
 }
+
+private const val maxChatAttachmentPickerItems = 8

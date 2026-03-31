@@ -14,6 +14,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import io.makoion.mobileclaw.MobileClawApplication
 import io.makoion.mobileclaw.MainActivity
 import io.makoion.mobileclaw.R
+import io.makoion.mobileclaw.data.AlertSeverity
 import io.makoion.mobileclaw.data.AutomationDeliveryMode
 import io.makoion.mobileclaw.data.AgentTaskStatus
 import io.makoion.mobileclaw.data.ApprovalInboxStatus
@@ -126,6 +127,35 @@ object ShellNotificationCenter {
         )
     }
 
+    fun showAgentAlert(
+        context: Context,
+        automation: ScheduledAutomationRecord,
+        title: String,
+        body: String,
+        severity: AlertSeverity,
+    ) {
+        ensureChannels(context)
+        NotificationManagerCompat.from(context).notify(
+            automationNotificationId(automation.id),
+            NotificationCompat.Builder(context, automationChannelId)
+                .setSmallIcon(R.drawable.ic_notification_status)
+                .setContentTitle(title)
+                .setContentText(body.take(180))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setPriority(
+                    when (severity) {
+                        AlertSeverity.Critical,
+                        AlertSeverity.High -> NotificationCompat.PRIORITY_HIGH
+                        AlertSeverity.Normal -> NotificationCompat.PRIORITY_DEFAULT
+                        AlertSeverity.Low -> NotificationCompat.PRIORITY_LOW
+                    },
+                )
+                .setContentIntent(mainActivityPendingIntent(context, ShellSection.Chat))
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
     private fun buildQuickActionsNotification(context: Context): Notification {
         return NotificationCompat.Builder(context, quickActionsChannelId)
             .setSmallIcon(R.drawable.ic_notification_status)
@@ -214,8 +244,10 @@ object ShellNotificationCenter {
         val contentText = when (deliveryMode) {
             AutomationDeliveryMode.LocalNotification ->
                 "${automation.scheduleLabel} automation delivered to the local notification channel."
-            AutomationDeliveryMode.LocalFallback ->
-                "${automation.deliveryLabel} is still staged, so this run stayed on-device."
+            AutomationDeliveryMode.Telegram ->
+                "${automation.scheduleLabel} automation delivered through the Telegram relay."
+            AutomationDeliveryMode.Blocked ->
+                "${automation.title} is blocked and stayed in the on-device audit trail."
         }
         return NotificationCompat.Builder(context, automationChannelId)
             .setSmallIcon(R.drawable.ic_notification_status)

@@ -126,7 +126,7 @@ class PersistentApprovalInboxRepository(
                 ContentValues().apply {
                     put("id", approvalId)
                     put("title", title)
-                    put("intent_action", "files.organize.execute")
+                    put("intent_action", filesOrganizeExecuteActionKey)
                     put("assessed_risk", risk.name)
                     put("summary", summary)
                     put("intent_payload_json", payload.toJson())
@@ -189,7 +189,7 @@ class PersistentApprovalInboxRepository(
                 ContentValues().apply {
                     put("id", approvalId)
                     put("title", "Send ${files.size} files to ${device.name}")
-                    put("intent_action", "files.transfer.execute")
+                    put("intent_action", filesTransferExecuteActionKey)
                     put("assessed_risk", ApprovalInboxRisk.High.name)
                     put("summary", summary)
                     put("intent_payload_json", payload.toJson())

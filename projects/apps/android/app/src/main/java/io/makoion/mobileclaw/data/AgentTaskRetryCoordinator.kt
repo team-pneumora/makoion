@@ -355,7 +355,7 @@ class AgentTaskRetryCoordinator(
     }
 
     companion object {
-        private const val filesOrganizeActionKey = "files.organize.execute"
+        private const val filesOrganizeActionKey = filesOrganizeExecuteActionKey
         private const val maxReplyPreviewLength = 240
         private val retryDelayStepsMs = listOf(15_000L, 30_000L, 60_000L, 120_000L)
     }

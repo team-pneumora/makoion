@@ -86,6 +86,7 @@ data class TransferDraftState(
     val id: String,
     val deviceId: String,
     val deviceName: String,
+    val approvalRequestId: String? = null,
     val status: TransferDraftStatus,
     val createdAtLabel: String,
     val updatedAtLabel: String,
@@ -193,6 +194,25 @@ data class CompanionWorkflowRunResult(
     val sentAtLabel: String,
 )
 
+enum class CompanionMcpToolCallStatus {
+    Completed,
+    Failed,
+    Misconfigured,
+    Skipped,
+}
+
+data class CompanionMcpToolCallResult(
+    val deviceId: String,
+    val toolName: String,
+    val status: CompanionMcpToolCallStatus,
+    val summary: String,
+    val detail: String,
+    val sentAtLabel: String,
+    val finalUrl: String? = null,
+    val pageTitle: String? = null,
+    val contentText: String? = null,
+)
+
 private const val defaultRemoteActionMode = "best_effort"
 private const val recordOnlyRemoteActionMode = "record_only"
 const val companionCapabilityFilesTransfer = "files.transfer"
@@ -258,6 +278,12 @@ interface DevicePairingRepository {
         workflowLabel: String,
         runMode: String = defaultRemoteActionMode,
     ): CompanionWorkflowRunResult
+
+    suspend fun callMcpTool(
+        deviceId: String,
+        toolName: String,
+        arguments: JSONObject,
+    ): CompanionMcpToolCallResult
 
     suspend fun retryFailedTransfers(deviceId: String? = null)
 
@@ -1427,6 +1453,166 @@ class PersistentDevicePairingRepository(
         return result
     }
 
+    override suspend fun callMcpTool(
+        deviceId: String,
+        toolName: String,
+        arguments: JSONObject,
+    ): CompanionMcpToolCallResult {
+        val sentAt = System.currentTimeMillis()
+        val sentAtLabel = DateUtils.getRelativeTimeSpanString(
+            sentAt,
+            sentAt,
+            DateUtils.SECOND_IN_MILLIS,
+        ).toString()
+        val device = _pairedDevices.value.firstOrNull { it.id == deviceId }
+        if (device == null) {
+            return CompanionMcpToolCallResult(
+                deviceId = deviceId,
+                toolName = toolName,
+                status = CompanionMcpToolCallStatus.Misconfigured,
+                summary = "Selected device is no longer available.",
+                detail = "Refresh paired devices before trying MCP tool execution again.",
+                sentAtLabel = sentAtLabel,
+            )
+        }
+        if (device.transportMode != DeviceTransportMode.DirectHttp) {
+            val result = CompanionMcpToolCallResult(
+                deviceId = device.id,
+                toolName = toolName,
+                status = CompanionMcpToolCallStatus.Skipped,
+                summary = "Loopback mode does not expose companion MCP tool calls.",
+                detail = "Arm LAN bridge first if you want the phone agent to execute MCP tools through the companion.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.mcp_tool_call",
+                result = "skipped",
+                details = "Skipped MCP tool call ($toolName) for ${device.name} because loopback transport is active.",
+            )
+            return result
+        }
+        val endpoint = device.endpointLabel
+        if (endpoint.isNullOrBlank()) {
+            val result = CompanionMcpToolCallResult(
+                deviceId = device.id,
+                toolName = toolName,
+                status = CompanionMcpToolCallStatus.Misconfigured,
+                summary = "Companion endpoint is missing.",
+                detail = "Direct HTTP mode needs an endpoint URL before the shell can call MCP tools.",
+                sentAtLabel = sentAtLabel,
+            )
+            auditTrailRepository.logAction(
+                action = "devices.mcp_tool_call",
+                result = "misconfigured",
+                details = "MCP tool call ($toolName) could not run for ${device.name} because endpoint_url was missing.",
+            )
+            return result
+        }
+
+        val result = withContext(Dispatchers.IO) {
+            val toolCallUrl = runCatching { mcpToolCallUrlFor(endpoint) }.getOrNull()
+            if (toolCallUrl == null) {
+                return@withContext CompanionMcpToolCallResult(
+                    deviceId = device.id,
+                    toolName = toolName,
+                    status = CompanionMcpToolCallStatus.Misconfigured,
+                    summary = "Endpoint URL could not be parsed.",
+                    detail = endpoint,
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+            val trustedSecret = queryTrustedSecret(device.id)
+            runCatching {
+                val payload = JSONObject()
+                    .put("request_id", "mcp-call-${UUID.randomUUID()}")
+                    .put("source", BuildConfig.APPLICATION_ID)
+                    .put("device_name", "Makoion Android shell")
+                    .put("tool_name", toolName)
+                    .put("arguments", arguments)
+                    .put("requested_at", sentAt)
+                    .toString()
+                val connection = (URL(toolCallUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 4_000
+                    readTimeout = 10_000
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    trustedSecret?.takeIf { it.isNotBlank() }?.let { secret ->
+                        setRequestProperty("X-MobileClaw-Trusted-Secret", secret)
+                    }
+                }
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    writer.write(payload)
+                }
+                val responseCode = connection.responseCode
+                val responseBody = runCatching {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                }.getOrElse {
+                    connection.errorStream?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
+                }
+                connection.disconnect()
+
+                val responseJson = runCatching { JSONObject(responseBody) }.getOrNull()
+                val detail = responseJson?.optString("status_detail")?.takeIf { it.isNotBlank() }
+                    ?: responseBody.take(200).ifBlank { toolCallUrl }
+                val finalUrl = responseJson?.optString("final_url")?.takeIf { it.isNotBlank() }
+                val pageTitle = responseJson?.optString("page_title")?.takeIf { it.isNotBlank() }
+                val contentText = responseJson?.optString("content_text")?.takeIf { it.isNotBlank() }
+                if (responseCode in 200..299 && responseJson?.optBoolean("executed", false) == true) {
+                    CompanionMcpToolCallResult(
+                        deviceId = device.id,
+                        toolName = toolName,
+                        status = CompanionMcpToolCallStatus.Completed,
+                        summary = "Companion executed MCP tool $toolName with HTTP $responseCode.",
+                        detail = detail,
+                        sentAtLabel = sentAtLabel,
+                        finalUrl = finalUrl,
+                        pageTitle = pageTitle,
+                        contentText = contentText,
+                    )
+                } else {
+                    CompanionMcpToolCallResult(
+                        deviceId = device.id,
+                        toolName = toolName,
+                        status = CompanionMcpToolCallStatus.Failed,
+                        summary = "Companion returned HTTP $responseCode for MCP tool $toolName.",
+                        detail = detail,
+                        sentAtLabel = sentAtLabel,
+                        finalUrl = finalUrl,
+                        pageTitle = pageTitle,
+                        contentText = contentText,
+                    )
+                }
+            }.getOrElse { error ->
+                CompanionMcpToolCallResult(
+                    deviceId = device.id,
+                    toolName = toolName,
+                    status = CompanionMcpToolCallStatus.Failed,
+                    summary = "Companion MCP tool call could not reach the endpoint.",
+                    detail = directHttpReachabilityDetail(
+                        requestUrl = toolCallUrl,
+                        fallbackUrl = endpoint,
+                        error = error,
+                    ),
+                    sentAtLabel = sentAtLabel,
+                )
+            }
+        }
+
+        auditTrailRepository.logAction(
+            action = "devices.mcp_tool_call",
+            result = when (result.status) {
+                CompanionMcpToolCallStatus.Completed -> "completed"
+                CompanionMcpToolCallStatus.Failed -> "failed"
+                CompanionMcpToolCallStatus.Misconfigured -> "misconfigured"
+                CompanionMcpToolCallStatus.Skipped -> "skipped"
+            },
+            details = "MCP tool $toolName for ${device.name}: ${result.summary} ${result.detail}".trim(),
+        )
+        return result
+    }
+
     override suspend fun retryFailedTransfers(deviceId: String?) {
         val targetLabel = if (deviceId == null) {
             "all paired devices"
@@ -1611,6 +1797,7 @@ class PersistentDevicePairingRepository(
                 "id",
                 "device_id",
                 "device_name",
+                "approval_request_id",
                 "file_names_json",
                 "status",
                 "created_at",
@@ -1632,6 +1819,7 @@ class PersistentDevicePairingRepository(
             val idIndex = cursor.getColumnIndexOrThrow("id")
             val deviceIdIndex = cursor.getColumnIndexOrThrow("device_id")
             val deviceNameIndex = cursor.getColumnIndexOrThrow("device_name")
+            val approvalRequestIdIndex = cursor.getColumnIndexOrThrow("approval_request_id")
             val fileNamesIndex = cursor.getColumnIndexOrThrow("file_names_json")
             val statusIndex = cursor.getColumnIndexOrThrow("status")
             val createdAtIndex = cursor.getColumnIndexOrThrow("created_at")
@@ -1669,6 +1857,7 @@ class PersistentDevicePairingRepository(
                     id = cursor.getString(idIndex),
                     deviceId = cursor.getString(deviceIdIndex),
                     deviceName = cursor.getString(deviceNameIndex),
+                    approvalRequestId = cursor.getString(approvalRequestIdIndex),
                     status = status,
                     createdAtLabel = DateUtils.getRelativeTimeSpanString(
                         createdAt,
@@ -1792,6 +1981,11 @@ class PersistentDevicePairingRepository(
     private fun appOpenUrlFor(endpoint: String): String {
         val url = URL(endpoint)
         return URL(url.protocol, url.host, url.port, "/api/v1/app/open").toString()
+    }
+
+    private fun mcpToolCallUrlFor(endpoint: String): String {
+        val url = URL(endpoint)
+        return URL(url.protocol, url.host, url.port, "/api/v1/mcp/tools/call").toString()
     }
 
     private fun workflowRunUrlFor(endpoint: String): String {

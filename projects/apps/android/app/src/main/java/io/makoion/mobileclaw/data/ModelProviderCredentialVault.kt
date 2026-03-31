@@ -8,11 +8,14 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 interface ModelProviderCredentialVault {
     suspend fun store(providerId: String, secret: String)
+
+    suspend fun read(providerId: String): String?
 
     suspend fun hasCredential(providerId: String): Boolean
 
@@ -49,6 +52,31 @@ class AndroidKeystoreModelProviderCredentialVault(
     override suspend fun hasCredential(providerId: String): Boolean {
         return withContext(Dispatchers.IO) {
             preferences.contains(providerId)
+        }
+    }
+
+    override suspend fun read(providerId: String): String? {
+        return withContext(Dispatchers.IO) {
+            val payload = preferences.getString(providerId, null) ?: return@withContext null
+            val separatorIndex = payload.indexOf(payloadSeparator)
+            if (separatorIndex <= 0 || separatorIndex == payload.lastIndex) {
+                return@withContext null
+            }
+            val encodedIv = payload.substring(0, separatorIndex)
+            val encodedSecret = payload.substring(separatorIndex + 1)
+            runCatching {
+                val cipher = Cipher.getInstance(cipherTransformation)
+                cipher.init(
+                    Cipher.DECRYPT_MODE,
+                    getOrCreateSecretKey(providerId),
+                    GCMParameterSpec(
+                        gcmTagLengthBits,
+                        Base64.getDecoder().decode(encodedIv),
+                    ),
+                )
+                val decrypted = cipher.doFinal(Base64.getDecoder().decode(encodedSecret))
+                decrypted.toString(Charsets.UTF_8)
+            }.getOrNull()
         }
     }
 
@@ -104,6 +132,7 @@ class AndroidKeystoreModelProviderCredentialVault(
         private const val cipherTransformation = "AES/GCM/NoPadding"
         private const val keyAliasPrefix = "io.makoion.mobileclaw.provider."
         private const val payloadSeparator = ":"
+        private const val gcmTagLengthBits = 128
     }
 }
 

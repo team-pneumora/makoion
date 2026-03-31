@@ -304,8 +304,9 @@ function Wait-ForState {
         }
         Start-Sleep -Seconds $PollIntervalSeconds
     }
+    $recentDevices = $lastState.recent_devices | ConvertTo-Json -Compress -Depth 6
     $recentTransfers = $lastState.recent_transfers | ConvertTo-Json -Compress -Depth 6
-    throw "Timed out while waiting for $Description. Recent transfers: $recentTransfers"
+    throw "Timed out while waiting for $Description. Recent devices: $recentDevices Recent transfers: $recentTransfers"
 }
 
 function Get-LatestAuditTimestamp {
@@ -384,6 +385,61 @@ function Find-DeviceByEndpoint {
     return $null
 }
 
+function Wait-ForBootstrappedDevice {
+    param(
+        [object]$Bootstrap,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $bootstrappedState = Wait-ForState -Description "bootstrapped Direct HTTP device" -TimeoutSeconds $TimeoutSeconds -Predicate {
+        param($State)
+        $null -ne (Find-DeviceByEndpoint -State $State -EndpointUrl $Bootstrap.endpoint)
+    }
+    $bootstrappedDevice = Find-DeviceByEndpoint -State $bootstrappedState -EndpointUrl $Bootstrap.endpoint
+    if (-not $bootstrappedDevice -or -not $bootstrappedDevice.id) {
+        throw "No paired Direct HTTP device was found after bootstrap."
+    }
+
+    return [pscustomobject]@{
+        State = $bootstrappedState
+        Device = $bootstrappedDevice
+    }
+}
+
+function Bootstrap-ValidationDevice {
+    param(
+        [int]$PortNumber,
+        [int]$WaitTimeoutSeconds = 30,
+        [int]$MaxAttempts = 2
+    )
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-ValidationStep "Retrying Direct HTTP bootstrap after visibility timeout"
+            Start-Sleep -Seconds 2
+        }
+
+        try {
+            $bootstrap = & pwsh -NoProfile -ExecutionPolicy Bypass -File $bootstrapScript -Serial $script:ResolvedSerial -ValidationMode "normal" -EndpointPreset $EndpointPreset -Port $PortNumber | ConvertFrom-Json
+            Start-Sleep -Seconds 1
+            $bootstrapped = Wait-ForBootstrappedDevice -Bootstrap $bootstrap -TimeoutSeconds $WaitTimeoutSeconds
+            return [pscustomobject]@{
+                Bootstrap = $bootstrap
+                State = $bootstrapped.State
+                Device = $bootstrapped.Device
+            }
+        } catch {
+            $lastError = $_.Exception.Message
+            if ($attempt -eq $MaxAttempts) {
+                break
+            }
+        }
+    }
+
+    throw "Failed to bootstrap Direct HTTP device after $MaxAttempts attempt(s). Last error: $lastError"
+}
+
 function Wait-UntilEpochMillis {
     param([long]$EpochMillis)
 
@@ -402,6 +458,22 @@ function Find-TransferByFileName {
         Where-Object { $_.file_names -contains $FileName } |
         Sort-Object { [long]$_.created_at } -Descending |
         Select-Object -First 1
+}
+
+function Get-DelayedRetryScheduledAt {
+    param([object]$Transfer)
+
+    if (-not $Transfer) {
+        return 0L
+    }
+
+    $scheduledAt = [long]$Transfer.next_attempt_at
+    $createdAt = [long]$Transfer.created_at
+    if ($scheduledAt -le 0 -or $scheduledAt -le $createdAt) {
+        return 0L
+    }
+
+    return $scheduledAt
 }
 
 function Get-TransferDirectories {
@@ -562,9 +634,9 @@ function Validate-ProcessDeathDelayedRetry {
         $transfer = Find-TransferByFileName -State $State -FileName $targetFileName
         $transfer -and
             $transfer.status -eq "Queued" -and
-            [long]$transfer.next_attempt_at -gt [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            (Get-DelayedRetryScheduledAt -Transfer $transfer) -gt 0
     }
-    $scheduledRetryAt = [long](Find-TransferByFileName -State $queuedState -FileName $targetFileName).next_attempt_at
+    $scheduledRetryAt = Get-DelayedRetryScheduledAt -Transfer (Find-TransferByFileName -State $queuedState -FileName $targetFileName)
 
     Write-ValidationStep "Force-stopping the app before delayed retry and relaunching it"
     Force-StopMobileClaw
@@ -595,18 +667,11 @@ try {
     Write-ValidationStep "Starting desktop companion on port $Port"
     $companion = Start-ValidationCompanion -PortNumber $Port -InboxDirectory $inboxPath
     Write-ValidationStep "Bootstrapping Direct HTTP device against $($companion.Health.endpoint)"
-    $bootstrap = & pwsh -NoProfile -File $bootstrapScript -Serial $script:ResolvedSerial -ValidationMode "normal" -EndpointPreset $EndpointPreset -Port $Port | ConvertFrom-Json
-    Start-Sleep -Seconds 1
-
-    $bootstrappedState = Wait-ForState -Description "bootstrapped Direct HTTP device" -TimeoutSeconds 20 -Predicate {
-        param($State)
-        $null -ne (Find-DeviceByEndpoint -State $State -EndpointUrl $bootstrap.endpoint)
-    }
-    $bootstrappedDevice = Find-DeviceByEndpoint -State $bootstrappedState -EndpointUrl $bootstrap.endpoint
+    $bootstrapped = Bootstrap-ValidationDevice -PortNumber $Port -WaitTimeoutSeconds 30 -MaxAttempts 2
+    $bootstrap = $bootstrapped.Bootstrap
+    $bootstrappedState = $bootstrapped.State
+    $bootstrappedDevice = $bootstrapped.Device
     $deviceId = $bootstrappedDevice.id
-    if (-not $deviceId) {
-        throw "No paired Direct HTTP device was found after bootstrap."
-    }
     $cleanupDeviceId = $deviceId
     Write-ValidationStep "Bootstrapped device $deviceId at endpoint $($bootstrap.endpoint)"
 

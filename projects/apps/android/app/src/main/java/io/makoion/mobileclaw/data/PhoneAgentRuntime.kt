@@ -1,18 +1,23 @@
 package io.makoion.mobileclaw.data
 
 import kotlinx.coroutines.delay
+import org.json.JSONObject
 
 data class AgentTurnContext(
     val fileIndexState: FileIndexState,
     val approvals: List<ApprovalInboxItem>,
     val tasks: List<AgentTaskRecord>,
     val auditEvents: List<AuditTrailEvent>,
+    val chatMessages: List<ChatMessage> = emptyList(),
+    val attachments: List<ChatAttachment> = emptyList(),
     val pairedDevices: List<PairedDeviceState>,
     val selectedTargetDeviceId: String?,
     val cloudDriveConnections: List<CloudDriveConnectionState> = emptyList(),
     val modelPreference: AgentModelPreference = AgentModelPreference(),
     val externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
     val deliveryChannels: List<DeliveryChannelProfileState> = emptyList(),
+    val mailboxConnections: List<MailboxConnectionProfileState> = emptyList(),
+    val emailTriageRecords: List<EmailTriageRecord> = emptyList(),
     val scheduledAutomations: List<ScheduledAutomationRecord> = emptyList(),
     val selectedFileId: String? = null,
 )
@@ -54,6 +59,8 @@ class LocalPhoneAgentRuntime(
     private val cloudDriveConnectionRepository: CloudDriveConnectionRepository,
     private val devicePairingRepository: DevicePairingRepository,
     private val deliveryChannelRepository: DeliveryChannelRegistryRepository,
+    private val mailboxConnectionRepository: MailboxConnectionRepository,
+    private val emailTriageRepository: EmailTriageRepository,
     private val externalEndpointRepository: ExternalEndpointRegistryRepository,
     private val mcpSkillRepository: McpSkillRepository,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
@@ -62,12 +69,20 @@ class LocalPhoneAgentRuntime(
     private val codeGenerationProjectRepository: CodeGenerationProjectRepository,
     private val codeGenerationWorkspaceExecutor: CodeGenerationWorkspaceExecutor,
     private val phoneAgentActionCoordinator: PhoneAgentActionCoordinator,
+    private val providerConversationClient: ProviderConversationClient,
+    private val deliveryChannelCredentialVault: DeliveryChannelCredentialVault,
+    private val mailboxCredentialVault: MailboxCredentialVault,
+    private val mailboxGateway: MailboxGateway,
+    private val telegramDeliveryGateway: TelegramDeliveryGateway,
 ) {
     suspend fun processTurn(
         prompt: String,
         context: AgentTurnContext,
     ): AgentTurnResult {
         val trimmedPrompt = prompt.trim()
+        if (trimmedPrompt.isBlank() && context.attachments.isNotEmpty()) {
+            return attachmentOnlyReply(context.attachments)
+        }
         val plannerOutput = planTurn(trimmedPrompt, context)
         val rawResult = when (val intent = plannerOutput.intent) {
             is AgentIntent.ApprovePendingApproval -> approvePendingApproval(trimmedPrompt, context, intent.approvalId)
@@ -76,6 +91,10 @@ class LocalPhoneAgentRuntime(
             AgentIntent.ShowDashboard -> buildDashboardResponse(trimmedPrompt, context)
             AgentIntent.ShowHistory -> buildHistoryResponse(trimmedPrompt, context)
             AgentIntent.ShowSettings -> buildSettingsResponse(trimmedPrompt, context)
+            AgentIntent.ExplainInitialSetup -> explainInitialSetup(trimmedPrompt, context)
+            AgentIntent.ExplainMcpSetup -> explainMcpSetup(trimmedPrompt, context)
+            AgentIntent.ExplainEmailSetup -> explainEmailSetup(trimmedPrompt, context)
+            AgentIntent.ShowMailboxStatus -> showMailboxStatus(trimmedPrompt)
             AgentIntent.ShowResourceStack -> showResourceStack(trimmedPrompt, context)
             AgentIntent.RefreshResources -> refreshResources(trimmedPrompt)
             AgentIntent.RunShellRecovery -> runShellRecovery(trimmedPrompt)
@@ -86,12 +105,14 @@ class LocalPhoneAgentRuntime(
             is AgentIntent.ConnectExternalEndpoint -> connectExternalEndpoint(trimmedPrompt, intent.endpointId)
             is AgentIntent.StageDeliveryChannel -> stageDeliveryChannel(trimmedPrompt, intent.channelId)
             is AgentIntent.ConnectDeliveryChannel -> connectDeliveryChannel(trimmedPrompt, intent.channelId)
+            AgentIntent.ConnectMailbox -> connectMailbox(trimmedPrompt)
             AgentIntent.PlanScheduledAutomation -> planScheduledAutomation(trimmedPrompt, context)
             is AgentIntent.ActivateScheduledAutomation -> activateScheduledAutomation(trimmedPrompt, context, intent.automationId)
             is AgentIntent.PauseScheduledAutomation -> pauseScheduledAutomation(trimmedPrompt, context, intent.automationId)
             is AgentIntent.RunScheduledAutomationNow -> runScheduledAutomationNow(trimmedPrompt, context, intent.automationId)
             AgentIntent.PlanCodeGeneration -> planCodeGeneration(trimmedPrompt, context)
             AgentIntent.PlanBrowserResearch -> planBrowserResearch(trimmedPrompt, context)
+            is AgentIntent.BrowseWebPage -> browseWebPage(trimmedPrompt, context, intent.url)
             AgentIntent.SummarizeIndexedFiles -> summarizeIndexedFiles(trimmedPrompt, context)
             is AgentIntent.OrganizeIndexedFiles -> organizeIndexedFiles(trimmedPrompt, context, intent.strategy)
             AgentIntent.TransferIndexedFiles -> transferIndexedFiles(trimmedPrompt, context)
@@ -104,6 +125,7 @@ class LocalPhoneAgentRuntime(
             AgentIntent.SendCompanionSessionNotification -> sendCompanionSessionNotification(trimmedPrompt, context)
             is AgentIntent.OpenCompanionTarget -> openCompanionTarget(trimmedPrompt, context, intent.targetKind)
             is AgentIntent.RunCompanionWorkflow -> runCompanionWorkflow(trimmedPrompt, context, intent.workflowId)
+            AgentIntent.RespondWithProviderConversation -> respondWithProviderConversation(trimmedPrompt, context)
             AgentIntent.ExplainCapabilities -> explainCapabilities(trimmedPrompt, context)
         }
         val result = rawResult.copy(planningTrace = plannerOutput.planningTrace)
@@ -144,6 +166,17 @@ class LocalPhoneAgentRuntime(
             },
         )
         return result
+    }
+
+    private fun attachmentOnlyReply(attachments: List<ChatAttachment>): AgentTurnResult {
+        val summary = chatAttachmentSummaryLine(attachments)
+        return AgentTurnResult(
+            reply = "I received $summary Tell me whether to summarize, compare, transfer, or organize them next.",
+            destination = AgentDestination.Chat,
+            taskTitle = "Review attachments",
+            taskSummary = summary,
+            taskStatus = AgentTaskStatus.Succeeded,
+        )
     }
 
     private suspend fun approvePendingApproval(
@@ -474,14 +507,126 @@ class LocalPhoneAgentRuntime(
         )
     }
 
+    private suspend fun browseWebPage(
+        prompt: String,
+        context: AgentTurnContext,
+        url: String,
+    ): AgentTurnResult {
+        val browserExecution = resolveBrowserExecution(context)
+        if (browserExecution == null || browserExecution.deviceId == null || !browserExecution.canBrowseWebPages) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "연결된 companion MCP bridge에서 웹 페이지 접근 tool을 아직 찾지 못했어요. 먼저 MCP bridge discovery가 성공해야 URL 접근을 실행할 수 있습니다."
+                } else {
+                    "I could not find a connected companion MCP bridge with webpage access tools yet. MCP bridge discovery needs to succeed before I can open the URL."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = browserPageAccessActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "웹 페이지 접근에 필요한 MCP/browser tool 연결이 아직 준비되지 않았습니다."
+                } else {
+                    "Webpage access is still waiting for an MCP/browser bridge."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+
+        val toolName = when {
+            browserExecution.toolNames.contains("browser.navigate") -> "browser.navigate"
+            browserExecution.toolNames.contains("browser.extract") -> "browser.extract"
+            else -> null
+        }
+        if (toolName == null) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "MCP bridge는 연결됐지만 browser.navigate/browser.extract tool inventory가 아직 광고되지 않았어요."
+                } else {
+                    "The MCP bridge is connected, but it still is not advertising browser.navigate or browser.extract."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = browserPageAccessActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "브라우저 실행 tool inventory가 아직 비어 있습니다."
+                } else {
+                    "Browser execution tools are not advertised yet."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+
+        val result = devicePairingRepository.callMcpTool(
+            deviceId = browserExecution.deviceId,
+            toolName = toolName,
+            arguments = JSONObject()
+                .put("url", url)
+                .put("max_chars", webPagePreviewMaxChars),
+        )
+        return when (result.status) {
+            CompanionMcpToolCallStatus.Completed -> AgentTurnResult(
+                reply = webPageAccessReply(
+                    prompt = prompt,
+                    requestedUrl = url,
+                    result = result,
+                    bridgeLabel = browserExecution.label,
+                ),
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = browserPageAccessActionKey,
+                taskSummary = result.pageTitle ?: result.finalUrl ?: url,
+            )
+            CompanionMcpToolCallStatus.Failed -> AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "연결된 MCP/browser bridge로 $url 페이지 접근을 시도했지만 실패했어요. ${result.detail}"
+                } else {
+                    "I tried to open $url through the connected MCP/browser bridge, but it failed. ${result.detail}"
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = browserPageAccessActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "웹 페이지 접근 요청이 실패했습니다."
+                } else {
+                    "The webpage access request failed."
+                },
+                taskStatus = AgentTaskStatus.Failed,
+            )
+            CompanionMcpToolCallStatus.Misconfigured,
+            CompanionMcpToolCallStatus.Skipped,
+            -> AgentTurnResult(
+                reply = result.detail.ifBlank {
+                    if (prefersKorean(prompt)) {
+                        "웹 페이지 접근에 필요한 companion MCP 설정이 아직 완료되지 않았어요."
+                    } else {
+                        "The companion MCP setup required for webpage access is still incomplete."
+                    }
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = browserPageAccessActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "웹 페이지 접근을 위한 companion 연결이 필요합니다."
+                } else {
+                    "Webpage access still needs a reachable companion bridge."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+    }
+
     private suspend fun planScheduledAutomation(
         prompt: String,
         context: AgentTurnContext,
     ): AgentTurnResult {
+        val goalPlan = planAgentGoal(prompt, context)
         val plan = buildScheduledAutomationPlan(prompt)
+        val runSpec = buildScheduledAgentRunSpec(prompt)
         val record = scheduledAutomationRepository.createSkeleton(
             prompt = prompt,
             plan = plan,
+            runSpecJson = encodeRunSpec(runSpec),
+            blockedReason = goalPlan?.blockedReason,
         )
         val recordedCount = context.scheduledAutomations.size + 1
         val connectedDeliveryChannels = context.deliveryChannels.count {
@@ -502,31 +647,50 @@ class LocalPhoneAgentRuntime(
             "뉴스",
             "기사",
         )
+        val taskStatus = if (record.blockedReason.isNullOrBlank()) {
+            AgentTaskStatus.Succeeded
+        } else {
+            AgentTaskStatus.WaitingResource
+        }
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
                 buildString {
-                    append("반복 작업을 scheduled automation으로 기록했어요. ")
-                    append("주기는 ${record.scheduleLabel}, 전달 방식은 ${record.deliveryLabel}로 해석했고, Dashboard에서 바로 확인할 수 있습니다. ")
-                    append("Dashboard에서 활성화하면 로컬 scheduler가 주기 실행을 예약하고, 'Run once'로 즉시 검증할 수도 있습니다. ")
-                    append("현재는 on-device audit/notification delivery까지 연결돼 있고, mock-ready delivery channel은 ${connectedDeliveryChannels}개입니다. ")
-                    append("기록된 automation은 총 ${recordedCount}건입니다.")
+                    goalPlan?.let {
+                        append("${it.recipe.summary} task graph로 해석해 scheduled automation으로 기록했어요. ")
+                        if (it.missingRequirements.isNotEmpty()) {
+                            append("아직 필요한 연결: ${it.missingRequirements.joinToString { requirement -> requirement.label }}. ")
+                        }
+                    } ?: append("반복 작업을 scheduled automation으로 기록했어요. ")
+                    append("주기는 ${record.scheduleLabel}, 전달 방식은 ${record.deliveryLabel}로 해석했습니다. ")
+                    append("채팅에서 바로 '활성화해', '지금 실행해', '일시정지해'라고 이어서 제어할 수 있습니다. ")
+                    append("현재 mock-ready delivery channel은 ${connectedDeliveryChannels}개이고, 기록된 automation은 총 ${recordedCount}건입니다.")
                     if (browserLinked) {
                         append(" 이 요청은 이후 browser/news research capability와 연결될 수 있게 남겨뒀습니다.")
+                    }
+                    record.blockedReason?.let {
+                        append(" 현재는 $it")
                     }
                 }
             } else {
                 buildString {
-                    append("I recorded this recurring request as a scheduled automation. ")
-                    append("The schedule was interpreted as ${record.scheduleLabel} and the delivery channel as ${record.deliveryLabel}, and you can review it on Dashboard. ")
-                    append("Once you activate it on Dashboard, the local scheduler will queue recurring runs, and you can also use Run once for immediate validation. ")
-                    append("On-device audit and notification delivery are wired now, and $connectedDeliveryChannels delivery channel(s) are currently mock-ready. ")
-                    append("There are now $recordedCount recorded automation(s).")
+                    goalPlan?.let {
+                        append("I interpreted this as the ${it.recipe.summary} task graph and recorded it as a scheduled automation. ")
+                        if (it.missingRequirements.isNotEmpty()) {
+                            append("Missing requirements: ${it.missingRequirements.joinToString { requirement -> requirement.label }}. ")
+                        }
+                    } ?: append("I recorded this recurring request as a scheduled automation. ")
+                    append("The schedule was interpreted as ${record.scheduleLabel} and the delivery channel as ${record.deliveryLabel}. ")
+                    append("You can keep controlling it from chat by asking me to activate it, run it now, or pause it. ")
+                    append("$connectedDeliveryChannels delivery channel(s) are currently mock-ready, and there are now $recordedCount recorded automation(s).")
                     if (browserLinked) {
                         append(" I also kept it aligned with the upcoming browser/news research capability.")
                     }
+                    record.blockedReason?.let {
+                        append(" It is currently blocked because $it")
+                    }
                 }
             },
-            destination = AgentDestination.Dashboard,
+            destination = AgentDestination.Chat,
             taskTitle = taskTitle(prompt),
             taskActionKey = scheduledAutomationPlanActionKey,
             taskSummary = if (prefersKorean(prompt)) {
@@ -534,7 +698,7 @@ class LocalPhoneAgentRuntime(
             } else {
                 "Recorded a ${record.scheduleLabel} / ${record.deliveryLabel} automation."
             },
-            taskStatus = AgentTaskStatus.Succeeded,
+            taskStatus = taskStatus,
         )
     }
 
@@ -558,6 +722,24 @@ class LocalPhoneAgentRuntime(
                     "활성화할 automation이 없습니다."
                 } else {
                     "No scheduled automation matched the activation request."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+        }
+        if (!automation.blockedReason.isNullOrBlank()) {
+            return AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    "${automation.title} automation은 아직 ${automation.blockedReason} 상태라 바로 활성화할 수 없어요. 필요한 연결을 먼저 채팅에서 진행해 주세요."
+                } else {
+                    "${automation.title} is still blocked because ${automation.blockedReason}, so I cannot activate it yet. Finish the missing connection step from chat first."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = scheduledAutomationActivateActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "blocked automation 때문에 활성화를 보류했습니다."
+                } else {
+                    "Activation is waiting on a blocked automation prerequisite."
                 },
                 taskStatus = AgentTaskStatus.WaitingResource,
             )
@@ -660,11 +842,27 @@ class LocalPhoneAgentRuntime(
                 buildString {
                     append("${updated.title} automation을 바로 실행했어요. ")
                     append("최근 실행 시각은 ${updated.lastRunAtLabel ?: "방금"}이고, 다음 일정은 ${updated.nextRunAtLabel ?: "현재 상태 기준으로 유지"} 입니다.")
+                    updated.lastResultSummary?.let {
+                        append(" ")
+                        append(it)
+                    }
+                    updated.deliveryReceiptLabel?.let {
+                        append(" 전달 결과: ")
+                        append(it)
+                    }
                 }
             } else {
                 buildString {
                     append("I ran ${updated.title} immediately. ")
                     append("The last run was ${updated.lastRunAtLabel ?: "just now"}, and the next schedule is ${updated.nextRunAtLabel ?: "preserved from the current state"}.")
+                    updated.lastResultSummary?.let {
+                        append(" ")
+                        append(it)
+                    }
+                    updated.deliveryReceiptLabel?.let {
+                        append(" Delivery: ")
+                        append(it)
+                    }
                 }
             },
             destination = AgentDestination.Chat,
@@ -686,11 +884,11 @@ class LocalPhoneAgentRuntime(
         if (targetDevice == null) {
             return AgentTurnResult(
                 reply = if (prefersKorean(prompt)) {
-                    "Direct HTTP companion이 아직 없어 MCP bridge를 실제로 연결할 수 없어요. Settings에서 companion을 페어링하고 LAN bridge를 먼저 준비해 주세요."
+                    "Direct HTTP companion이 아직 없어 MCP bridge를 실제로 연결할 수 없어요. 채팅에서 companion 상태를 확인하거나, 필요할 때만 Settings에서 페어링을 마치면 됩니다."
                 } else {
-                    "There is no Direct HTTP companion ready yet, so I cannot connect the MCP bridge for real. Pair a companion and arm the LAN bridge from Settings first."
+                    "There is no Direct HTTP companion ready yet, so I cannot connect the MCP bridge for real. Check companion readiness from chat, and only open Settings if you need to pair one manually."
                 },
-                destination = AgentDestination.Settings,
+                destination = AgentDestination.Chat,
                 taskTitle = taskTitle(prompt),
                 taskActionKey = mcpBridgeConnectActionKey,
                 taskSummary = if (prefersKorean(prompt)) {
@@ -720,11 +918,7 @@ class LocalPhoneAgentRuntime(
                         append(discovery.detail)
                     }
                 },
-                destination = if (discovery.status == McpBridgeDiscoveryStatus.Unreachable) {
-                    AgentDestination.Chat
-                } else {
-                    AgentDestination.Settings
-                },
+                destination = AgentDestination.Chat,
                 taskTitle = taskTitle(prompt),
                 taskActionKey = mcpBridgeConnectActionKey,
                 taskSummary = if (prefersKorean(prompt)) {
@@ -888,7 +1082,7 @@ class LocalPhoneAgentRuntime(
                     }
                 }
             },
-            destination = if (failedToSync) AgentDestination.Settings else AgentDestination.Chat,
+            destination = AgentDestination.Chat,
             taskTitle = taskTitle(prompt),
             taskActionKey = mcpSkillSyncActionKey,
             taskSummary = if (prefersKorean(prompt)) {
@@ -1312,6 +1506,7 @@ class LocalPhoneAgentRuntime(
         prompt: String,
         context: AgentTurnContext,
     ): AgentTurnResult {
+        val environment = buildAgentEnvironmentSnapshot(context)
         val connectedCloudDrives = context.cloudDriveConnections.filter {
             it.status == CloudDriveConnectionStatus.Connected
         }
@@ -1340,6 +1535,12 @@ class LocalPhoneAgentRuntime(
                     append("external endpoint: 연결 ${connectedEndpoints.size}개, staged ${stagedEndpoints.size}개\n")
                     append("delivery channel: 연결 ${connectedChannels.size}개, staged ${stagedChannels.size}개\n")
                     append("paired companion: ${context.pairedDevices.size}대, MCP skill: ${installedMcpSkills.size}개\n")
+                    append("agent capability inventory:\n")
+                    environment.capabilitySummaryLines().forEach { line ->
+                        append("- ")
+                        append(line)
+                        append("\n")
+                    }
                     connectedMcpEndpoint?.let { endpoint ->
                         append("MCP connector: ${endpoint.toolNames.size}개 tool")
                         if (endpoint.syncedSkillCount > 0) {
@@ -1376,6 +1577,12 @@ class LocalPhoneAgentRuntime(
                     append("External endpoints: ${connectedEndpoints.size} connected, ${stagedEndpoints.size} staged\n")
                     append("Delivery channels: ${connectedChannels.size} connected, ${stagedChannels.size} staged\n")
                     append("Paired companions: ${context.pairedDevices.size}, MCP skills: ${installedMcpSkills.size}\n")
+                    append("Agent capability inventory:\n")
+                    environment.capabilitySummaryLines().forEach { line ->
+                        append("- ")
+                        append(line)
+                        append("\n")
+                    }
                     connectedMcpEndpoint?.let { endpoint ->
                         append("MCP connector: ${endpoint.toolNames.size} tool(s)")
                         if (endpoint.syncedSkillCount > 0) {
@@ -1539,6 +1746,135 @@ class LocalPhoneAgentRuntime(
         prompt: String,
         channelId: String,
     ): AgentTurnResult {
+        if (channelId == telegramDeliveryChannelId) {
+            val botToken = extractTelegramBotToken(prompt)
+            val chatId = extractTelegramChatId(prompt)
+            val hasStoredToken = deliveryChannelCredentialVault.hasCredential(channelId)
+            if (botToken == null && !hasStoredToken || chatId == null) {
+                return AgentTurnResult(
+                    reply = if (prefersKorean(prompt)) {
+                        buildString {
+                            append("Telegram 연결에는 bot token 과 target chat id가 필요해요. ")
+                            append("채팅에서 `텔레그램 연결 token <BOT_TOKEN> chat <CHAT_ID>` 형식으로 보내 주세요. ")
+                            if (hasStoredToken) {
+                                append("이미 저장된 token은 있어서 chat id만 다시 보내도 됩니다.")
+                            }
+                        }
+                    } else {
+                        buildString {
+                            append("Telegram setup needs a bot token and a target chat ID. ")
+                            append("Send them in chat as `connect telegram token <BOT_TOKEN> chat <CHAT_ID>`. ")
+                            if (hasStoredToken) {
+                                append("A token is already stored, so you can resend only the chat ID.")
+                            }
+                        }
+                    },
+                    destination = AgentDestination.Chat,
+                    taskTitle = taskTitle(prompt),
+                    taskActionKey = resourceDeliveryConnectActionKey,
+                    taskSummary = if (prefersKorean(prompt)) {
+                        "Telegram 연결에 필요한 secret / chat binding 정보를 기다리고 있습니다."
+                    } else {
+                        "Waiting for the Telegram secret and target chat binding."
+                    },
+                    taskStatus = AgentTaskStatus.WaitingUser,
+                )
+            }
+            val resolvedChatId = chatId!!
+            botToken?.let { deliveryChannelCredentialVault.store(channelId, it) }
+            val resolvedToken = deliveryChannelCredentialVault.read(channelId)?.trim().orEmpty()
+            if (resolvedToken.isBlank()) {
+                return AgentTurnResult(
+                    reply = if (prefersKorean(prompt)) {
+                        "Telegram bot token이 아직 비어 있어 검증을 시작할 수 없어요. `텔레그램 연결 token <BOT_TOKEN> chat <CHAT_ID>` 형식으로 다시 보내 주세요."
+                    } else {
+                        "The Telegram bot token is still missing, so I cannot validate the relay yet. Send `connect telegram token <BOT_TOKEN> chat <CHAT_ID>` again."
+                    },
+                    destination = AgentDestination.Chat,
+                    taskTitle = taskTitle(prompt),
+                    taskActionKey = resourceDeliveryConnectActionKey,
+                    taskSummary = if (prefersKorean(prompt)) {
+                        "Telegram secret이 없어 연결 검증을 시작하지 못했습니다."
+                    } else {
+                        "Telegram relay validation could not start because the secret is missing."
+                    },
+                    taskStatus = AgentTaskStatus.WaitingUser,
+                )
+            }
+            deliveryChannelRepository.stageChannel(channelId)
+            return when (
+                val validation = telegramDeliveryGateway.sendMessage(
+                    botToken = resolvedToken,
+                    chatId = resolvedChatId,
+                    text = buildTelegramValidationMessage(prompt, resolvedChatId),
+                )
+            ) {
+                is TelegramDeliveryResult.Delivered -> {
+                    deliveryChannelRepository.configureTelegramBinding(
+                        channelId = channelId,
+                        chatId = resolvedChatId,
+                        destinationLabel = "Chat $resolvedChatId",
+                    )
+                    deliveryChannelRepository.noteDeliveryAttempt(
+                        channelId = channelId,
+                        deliveredAtEpochMillis = System.currentTimeMillis(),
+                    )
+                    AgentTurnResult(
+                        reply = if (prefersKorean(prompt)) {
+                            "Telegram bot relay를 chat $resolvedChatId 로 검증하고 연결했어요. 테스트 메시지도 전달됐고, 이제 중요한 automation alert는 Telegram을 먼저 시도하고 실패하면 폰 알림으로 남깁니다."
+                        } else {
+                            "I validated and connected the Telegram bot relay to chat $resolvedChatId. The test message was delivered, and important automation alerts will now try Telegram first before falling back to local phone notifications."
+                        },
+                        destination = AgentDestination.Chat,
+                        taskTitle = taskTitle(prompt),
+                        taskActionKey = resourceDeliveryConnectActionKey,
+                        taskSummary = if (prefersKorean(prompt)) {
+                            "Telegram delivery channel을 검증 후 활성화했습니다."
+                        } else {
+                            "Validated and activated the Telegram delivery channel."
+                        },
+                    )
+                }
+                is TelegramDeliveryResult.Failed -> {
+                    deliveryChannelRepository.stageChannel(channelId)
+                    deliveryChannelRepository.noteDeliveryAttempt(
+                        channelId = channelId,
+                        deliveredAtEpochMillis = System.currentTimeMillis(),
+                        error = validation.detail,
+                    )
+                    AgentTurnResult(
+                        reply = if (prefersKorean(prompt)) {
+                            buildString {
+                                append("Telegram 테스트 전송이 실패해서 아직 활성화하지 않았어요. ")
+                                append("bot을 대상 chat에서 시작했는지, chat id가 맞는지, bot이 메시지 보낼 권한이 있는지 확인해 주세요.")
+                                if (validation.detail.isNotBlank()) {
+                                    append("\n오류: ")
+                                    append(validation.detail)
+                                }
+                            }
+                        } else {
+                            buildString {
+                                append("The Telegram validation send failed, so I left the relay staged instead of activating it. ")
+                                append("Check that the bot has started in the target chat, the chat ID is correct, and the bot can post messages there.")
+                                if (validation.detail.isNotBlank()) {
+                                    append("\nError: ")
+                                    append(validation.detail)
+                                }
+                            }
+                        },
+                        destination = AgentDestination.Chat,
+                        taskTitle = taskTitle(prompt),
+                        taskActionKey = resourceDeliveryConnectActionKey,
+                        taskSummary = if (prefersKorean(prompt)) {
+                            "Telegram delivery 검증이 실패해 staged 상태로 남겼습니다."
+                        } else {
+                            "Telegram delivery validation failed, so the relay was left staged."
+                        },
+                        taskStatus = AgentTaskStatus.Failed,
+                    )
+                }
+            }
+        }
         val destinationLabel = "${deliveryChannelDisplayName(channelId)} placeholder"
         deliveryChannelRepository.markConnected(channelId, destinationLabel)
         return AgentTurnResult(
@@ -1556,6 +1892,207 @@ class LocalPhoneAgentRuntime(
                 "Updated the delivery channel connection state from chat."
             },
         )
+    }
+
+    private suspend fun connectMailbox(prompt: String): AgentTurnResult {
+        val korean = prefersKorean(prompt)
+        val existing = mailboxConnectionRepository.primaryMailbox()
+        val host = extractStructuredPromptField(prompt, listOf("host", "server", "서버")) ?: existing?.host
+        val username = extractStructuredPromptField(
+            prompt,
+            listOf("user", "username", "account", "사용자", "계정"),
+        ) ?: existing?.username
+        val password = extractStructuredPromptField(
+            prompt,
+            listOf("password", "pass", "app_password", "secret", "비밀번호", "패스워드", "앱비밀번호"),
+        )
+        val port = extractStructuredPromptField(prompt, listOf("port", "포트"))
+            ?.toIntOrNull()
+            ?: existing?.port
+            ?: 993
+        val inboxFolder = extractStructuredPromptField(prompt, listOf("inbox", "inbox_folder", "받은편지함"))
+            ?: existing?.inboxFolder
+            ?: "INBOX"
+        val promotionsFolder = extractStructuredPromptField(
+            prompt,
+            listOf("promotions", "promo", "archive", "광고함", "프로모션함", "보관함"),
+        ) ?: existing?.promotionsFolder ?: "Promotions"
+
+        if (host.isNullOrBlank() || username.isNullOrBlank() || (password.isNullOrBlank() && !mailboxCredentialVault.hasCredential(primaryMailboxConnectionId))) {
+            return AgentTurnResult(
+                reply = if (korean) {
+                    buildString {
+                        append("메일 연결에는 host, user, password가 필요해요. ")
+                        append("예: `메일 연결 host imap.gmail.com user me@example.com password \"app password\"` ")
+                        append("선택값으로 `port 993`, `inbox INBOX`, `promotions Promotions`를 붙일 수 있습니다.")
+                    }
+                } else {
+                    buildString {
+                        append("Mailbox setup needs host, user, and password. ")
+                        append("Example: `connect mailbox host imap.gmail.com user me@example.com password \"app password\"`. ")
+                        append("Optional fields are `port 993`, `inbox INBOX`, and `promotions Promotions`.")
+                    }
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mailboxConnectActionKey,
+                taskSummary = if (korean) {
+                    "메일 연결에 필요한 host/user/password 입력을 기다리고 있습니다."
+                } else {
+                    "Waiting for mailbox host, user, and password."
+                },
+                taskStatus = AgentTaskStatus.WaitingUser,
+            )
+        }
+
+        password?.let { mailboxCredentialVault.store(primaryMailboxConnectionId, it) }
+        val resolvedPassword = mailboxCredentialVault.read(primaryMailboxConnectionId)?.trim().orEmpty()
+        if (resolvedPassword.isBlank()) {
+            return AgentTurnResult(
+                reply = if (korean) {
+                    "메일함 비밀번호가 비어 있어 검증을 시작할 수 없어요. app password를 다시 보내 주세요."
+                } else {
+                    "The mailbox password is missing, so I cannot validate the inbox yet. Send the app password again."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mailboxConnectActionKey,
+                taskSummary = if (korean) {
+                    "메일함 secret이 없어 연결 검증을 시작하지 못했습니다."
+                } else {
+                    "Mailbox validation could not start because the secret is missing."
+                },
+                taskStatus = AgentTaskStatus.WaitingUser,
+            )
+        }
+        val config = MailboxConnectionConfig(
+            host = host,
+            port = port,
+            username = username,
+            inboxFolder = inboxFolder,
+            promotionsFolder = promotionsFolder,
+        )
+        mailboxConnectionRepository.upsertMailbox(
+            config = config,
+            status = MailboxConnectionStatus.Staged,
+            summary = "Mailbox credentials were recorded and validation is in progress.",
+        )
+        val validation = mailboxGateway.validate(config, resolvedPassword)
+        return if (validation.connected) {
+            mailboxConnectionRepository.upsertMailbox(
+                config = config,
+                status = MailboxConnectionStatus.Connected,
+                summary = validation.summary,
+                lastError = null,
+                lastSyncAtEpochMillis = System.currentTimeMillis(),
+            )
+            AgentTurnResult(
+                reply = if (korean) {
+                    "메일함 연결을 검증했어요. 이제 채팅에서 이메일 triage 정책을 기록하고 바로 활성화할 수 있습니다. 현재 inbox는 ${validation.inboxCount}건으로 확인됐고, 광고 메일 보관함은 ${config.promotionsFolder}로 준비했습니다."
+                } else {
+                    "I validated the mailbox connection. You can now record and activate an email triage policy from chat. The inbox currently has ${validation.inboxCount} message(s), and the promotions folder is set to ${config.promotionsFolder}."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mailboxConnectActionKey,
+                taskSummary = if (korean) {
+                    "메일함 연결을 검증하고 활성화했습니다."
+                } else {
+                    "Validated and activated the mailbox connection."
+                },
+            )
+        } else {
+            mailboxConnectionRepository.upsertMailbox(
+                config = config,
+                status = MailboxConnectionStatus.Staged,
+                summary = "Mailbox validation failed and the connector was left staged.",
+                lastError = validation.lastError,
+            )
+            AgentTurnResult(
+                reply = if (korean) {
+                    buildString {
+                        append("메일 연결 검증이 실패해서 staged 상태로 남겨뒀어요. ")
+                        validation.lastError?.takeIf(String::isNotBlank)?.let { error ->
+                            append("오류: ")
+                            append(error)
+                        }
+                    }
+                } else {
+                    buildString {
+                        append("Mailbox validation failed, so I left the connector staged. ")
+                        validation.lastError?.takeIf(String::isNotBlank)?.let { error ->
+                            append("Error: ")
+                            append(error)
+                        }
+                    }
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mailboxConnectActionKey,
+                taskSummary = if (korean) {
+                    "메일 연결 검증이 실패해 staged 상태로 남겼습니다."
+                } else {
+                    "Mailbox validation failed, so the connector was left staged."
+                },
+                taskStatus = AgentTaskStatus.Failed,
+            )
+        }
+    }
+
+    private suspend fun showMailboxStatus(prompt: String): AgentTurnResult {
+        val korean = prefersKorean(prompt)
+        val mailbox = mailboxConnectionRepository.primaryMailbox()
+        return if (mailbox == null) {
+            AgentTurnResult(
+                reply = if (korean) {
+                    "아직 연결된 메일함이 없습니다. `메일 연결 host <HOST> user <USER> password <APP_PASSWORD>` 형식으로 바로 연결할 수 있어요."
+                } else {
+                    "No mailbox is connected yet. You can connect one in chat with `connect mailbox host <HOST> user <USER> password <APP_PASSWORD>`."
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mailboxStatusActionKey,
+                taskSummary = if (korean) {
+                    "연결된 메일함이 아직 없습니다."
+                } else {
+                    "No mailbox is connected yet."
+                },
+                taskStatus = AgentTaskStatus.WaitingUser,
+            )
+        } else {
+            AgentTurnResult(
+                reply = if (korean) {
+                    buildString {
+                        append("현재 메일함 상태는 ${mailbox.status.name.lowercase()} 입니다.\n")
+                        append("연결: ${mailbox.connectionLabel}\n")
+                        append("Inbox: ${mailbox.inboxFolder}, Promotions: ${mailbox.promotionsFolder}\n")
+                        mailbox.lastSyncAtLabel?.let { append("최근 검증: $it\n") }
+                        mailbox.lastError?.takeIf(String::isNotBlank)?.let { append("최근 오류: $it") }
+                    }.trim()
+                } else {
+                    buildString {
+                        append("Mailbox status is ${mailbox.status.name.lowercase()}.\n")
+                        append("Connection: ${mailbox.connectionLabel}\n")
+                        append("Inbox: ${mailbox.inboxFolder}, Promotions: ${mailbox.promotionsFolder}\n")
+                        mailbox.lastSyncAtLabel?.let { append("Last validated: $it\n") }
+                        mailbox.lastError?.takeIf(String::isNotBlank)?.let { append("Last error: $it") }
+                    }.trim()
+                },
+                destination = AgentDestination.Chat,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = mailboxStatusActionKey,
+                taskSummary = if (korean) {
+                    "현재 메일함 연결 상태를 채팅에 정리했습니다."
+                } else {
+                    "Summarized the current mailbox connection state in chat."
+                },
+                taskStatus = if (mailbox.status == MailboxConnectionStatus.Connected) {
+                    AgentTaskStatus.Succeeded
+                } else {
+                    AgentTaskStatus.WaitingResource
+                },
+            )
+        }
     }
 
     private suspend fun runShellRecovery(prompt: String): AgentTurnResult {
@@ -1743,18 +2280,220 @@ class LocalPhoneAgentRuntime(
         val configuredProviderCount = context.modelPreference.configuredProviderIds.size
         return AgentTurnResult(
             reply = if (prefersKorean(prompt)) {
-                "Settings에서 연결 자원과 권한을 관리할 수 있어요. 미디어 권한은 $mediaState, 문서 루트는 ${context.fileIndexState.documentTreeCount}개, companion은 ${context.pairedDevices.size}대 연결돼 있고, cloud connector는 staged ${stagedCloudDrives}개 / mock-ready ${connectedCloudDrives}개입니다. MCP/API endpoint는 staged ${stagedExternalEndpoints}개 / mock-ready ${connectedExternalEndpoints}개입니다. delivery channel은 staged ${stagedDeliveryChannels}개 / mock-ready ${connectedDeliveryChannels}개입니다. 기본 모델 선호도는 $providerLabel 입니다. 구성된 provider credential은 ${configuredProviderCount}개예요."
+                "세부 설정은 Settings에서 직접 볼 수 있어요. 다만 계속 여기 채팅에서 진행해도 됩니다. 현재 미디어 권한은 $mediaState, 문서 루트는 ${context.fileIndexState.documentTreeCount}개, companion은 ${context.pairedDevices.size}대, cloud connector는 staged ${stagedCloudDrives}개 / mock-ready ${connectedCloudDrives}개, MCP/API endpoint는 staged ${stagedExternalEndpoints}개 / mock-ready ${connectedExternalEndpoints}개, delivery channel은 staged ${stagedDeliveryChannels}개 / mock-ready ${connectedDeliveryChannels}개입니다. 기본 모델은 $providerLabel, 저장된 provider credential은 ${configuredProviderCount}개예요."
             } else {
-                "Settings is where resources and permissions are managed. Media access is $mediaState, there are ${context.fileIndexState.documentTreeCount} document roots, ${context.pairedDevices.size} companions are connected, cloud connectors are staged ${stagedCloudDrives} / mock-ready ${connectedCloudDrives}, MCP/API endpoints are staged ${stagedExternalEndpoints} / mock-ready ${connectedExternalEndpoints}, delivery channels are staged ${stagedDeliveryChannels} / mock-ready ${connectedDeliveryChannels}, and the current model preference is $providerLabel. There are $configuredProviderCount configured provider credential(s)."
+                "You can inspect the details in Settings, but you can also keep working from chat. Media access is $mediaState, there are ${context.fileIndexState.documentTreeCount} document roots, ${context.pairedDevices.size} companions, cloud connectors are staged ${stagedCloudDrives} / mock-ready ${connectedCloudDrives}, MCP/API endpoints are staged ${stagedExternalEndpoints} / mock-ready ${connectedExternalEndpoints}, delivery channels are staged ${stagedDeliveryChannels} / mock-ready ${connectedDeliveryChannels}, the current model preference is $providerLabel, and there are $configuredProviderCount configured provider credential(s)."
             },
             destination = AgentDestination.Settings,
             taskTitle = taskTitle(prompt),
             taskActionKey = routeSettingsActionKey,
             taskSummary = if (prefersKorean(prompt)) {
-                "Settings로 라우팅했습니다."
+                "Settings 세부 구성을 요약했습니다."
             } else {
-                "Routed the session to Settings."
+                "Summarized the Settings-level resource state."
             },
+        )
+    }
+
+    private fun explainInitialSetup(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val korean = prefersKorean(prompt)
+        val hasConfiguredProvider = context.modelPreference.configuredProviderIds.isNotEmpty()
+        val hasLocalFilesReady =
+            context.fileIndexState.permissionGranted ||
+                context.fileIndexState.documentTreeCount > 0 ||
+                context.fileIndexState.indexedCount > 0
+        val hasPairedCompanion = context.pairedDevices.isNotEmpty()
+        val providerState = if (hasConfiguredProvider) {
+            if (korean) "완료" else "ready"
+        } else {
+            if (korean) "필요" else "needed"
+        }
+        val fileState = if (hasLocalFilesReady) {
+            if (korean) "완료" else "ready"
+        } else {
+            if (korean) "필요" else "needed"
+        }
+        val companionState = if (hasPairedCompanion) {
+            if (korean) "연결됨" else "paired"
+        } else {
+            if (korean) "선택" else "optional"
+        }
+        return AgentTurnResult(
+            reply = if (korean) {
+                buildString {
+                    append("처음에는 두 가지만 먼저 끝내면 됩니다.\n")
+                    append("1. AI model provider에서 API key 또는 token 1개 저장\n")
+                    append("2. Local files에서 미디어 권한 허용 또는 폴더 1개 연결\n")
+                    append("3. Companion pairing은 선택입니다.\n")
+                    append("현재 상태: provider $providerState, local files $fileState, companion $companionState.\n")
+                    append("계속 채팅에서 요청해도 되고, 직접 보고 싶을 때만 Settings를 열면 됩니다.")
+                }
+            } else {
+                buildString {
+                    append("For the first run, finish these two steps first.\n")
+                    append("1. Store one API key or token in an AI model provider card\n")
+                    append("2. Grant media access or attach one local folder in Local files\n")
+                    append("3. Companion pairing is optional.\n")
+                    append("Current state: provider $providerState, local files $fileState, companion $companionState.\n")
+                    append("You can keep going in chat and open Settings only if you want to inspect things manually.")
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = explainInitialSetupActionKey,
+            taskSummary = if (korean) {
+                "초기 설정 순서를 채팅 기준으로 정리했습니다."
+            } else {
+                "Explained the first-run setup order from chat."
+            },
+        )
+    }
+
+    private fun explainMcpSetup(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val korean = prefersKorean(prompt)
+        val pairedCompanion = resolveMcpCompanion(context)
+        val mcpEndpoint = context.externalEndpoints.firstOrNull { it.endpointId == mcpBridgeEndpointId }
+        val installedSkillCount = mcpSkillRepository.skills.value.size
+        val providerReady = context.modelPreference.configuredProviderIds.isNotEmpty()
+        val companionReady = pairedCompanion != null
+        val bridgeConnected = mcpEndpoint?.status == ExternalEndpointStatus.Connected
+        return AgentTurnResult(
+            reply = if (korean) {
+                buildString {
+                    append("MCP 연결은 채팅에서 이어가면 됩니다.\n")
+                    append("1. companion 상태 확인\n")
+                    append("2. MCP bridge 연결\n")
+                    append("3. MCP skill 업데이트 또는 MCP tool 확인\n\n")
+                    append("현재 상태: ")
+                    append(if (providerReady) "provider 준비됨, " else "provider 미설정, ")
+                    append(if (companionReady) "companion 준비됨, " else "companion 미연결, ")
+                    append(if (bridgeConnected) "MCP bridge 연결됨, " else "MCP bridge 미연결, ")
+                    append("설치된 MCP skill ${installedSkillCount}개.")
+                    if (!companionReady) {
+                        append("\n지금은 companion이 없어 실제 MCP bridge discovery를 못 합니다. 아래 버튼으로 다음 단계를 이어가면 됩니다.")
+                    } else if (!bridgeConnected) {
+                        append("\ncompanion은 준비돼 있으니 이제 채팅에서 바로 MCP bridge 연결을 시도하면 됩니다.")
+                    } else if (installedSkillCount == 0) {
+                        append("\nbridge는 연결돼 있으니 이제 MCP skill 업데이트를 실행하면 됩니다.")
+                    } else {
+                        append("\n이제 채팅에서 MCP status, MCP tools, MCP skill 업데이트를 계속 요청하면 됩니다.")
+                    }
+                }
+            } else {
+                buildString {
+                    append("You can keep the MCP setup in chat.\n")
+                    append("1. Check companion health\n")
+                    append("2. Connect the MCP bridge\n")
+                    append("3. Update MCP skills or inspect MCP tools\n\n")
+                    append("Current state: ")
+                    append(if (providerReady) "provider ready, " else "provider missing, ")
+                    append(if (companionReady) "companion ready, " else "companion missing, ")
+                    append(if (bridgeConnected) "MCP bridge connected, " else "MCP bridge not connected, ")
+                    append("$installedSkillCount installed MCP skill(s).")
+                    if (!companionReady) {
+                        append("\nA companion is still missing, so live MCP discovery cannot run yet. Use the buttons below to continue.")
+                    } else if (!bridgeConnected) {
+                        append("\nThe companion is available, so the next step is to connect the MCP bridge right from chat.")
+                    } else if (installedSkillCount == 0) {
+                        append("\nThe bridge is ready, so the next step is to update MCP skills.")
+                    } else {
+                        append("\nYou can now keep asking for MCP status, MCP tools, or MCP skill updates in chat.")
+                    }
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = mcpSetupGuideActionKey,
+            taskSummary = if (korean) {
+                "채팅 기준 MCP 연결 단계를 정리했습니다."
+            } else {
+                "Outlined the MCP setup flow from chat."
+            },
+            taskStatus = if (companionReady) {
+                AgentTaskStatus.Succeeded
+            } else {
+                AgentTaskStatus.WaitingResource
+            },
+        )
+    }
+
+    private fun explainEmailSetup(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        val korean = prefersKorean(prompt)
+        val environment = buildAgentEnvironmentSnapshot(context)
+        val mailboxCapability = environment.capabilities.firstOrNull { it.capabilityId == "mailbox.connector" }
+        val telegramCapability = environment.capabilities.firstOrNull { it.capabilityId == "delivery.telegram" }
+        return AgentTurnResult(
+            reply = if (korean) {
+                buildString {
+                    append("이메일 자동화는 이제 generic IMAP mailbox 기준으로 chat에서 바로 연결할 수 있어요.\n")
+                    append("현재 상태: ")
+                    append(
+                        when (mailboxCapability?.state) {
+                            ResourceConnectionState.Connected -> "mailbox connector 준비됨"
+                            ResourceConnectionState.Staged -> "mailbox connector staged"
+                            ResourceConnectionState.NeedsSetup -> "mailbox connector 설정 필요"
+                            ResourceConnectionState.Blocked, null -> "mailbox connector 정보 없음"
+                        },
+                    )
+                    append(", ")
+                    append(
+                        when (telegramCapability?.state) {
+                            ResourceConnectionState.Connected -> "Telegram 알림 준비됨"
+                            ResourceConnectionState.Staged -> "Telegram 알림 검증 대기"
+                            ResourceConnectionState.NeedsSetup -> "Telegram 알림 미설정"
+                            ResourceConnectionState.Blocked, null -> "Telegram 알림 불가"
+                        },
+                    )
+                    append(".\n")
+                    append("연결 형식: `메일 연결 host imap.gmail.com user me@example.com password \"app password\"`\n")
+                    append("선택값: `port 993`, `inbox INBOX`, `promotions Promotions`\n")
+                    append("연결이 끝나면 `광고 메일은 보관함으로 옮기고 중요한 메일은 알림 줘`라고 바로 기록하고, 이어서 `활성화해`, `지금 실행해`로 실행할 수 있습니다.")
+                }
+            } else {
+                buildString {
+                    append("Email automation can now be connected from chat with a generic IMAP mailbox.\n")
+                    append("Current state: ")
+                    append(
+                        when (mailboxCapability?.state) {
+                            ResourceConnectionState.Connected -> "mailbox connector ready"
+                            ResourceConnectionState.Staged -> "mailbox connector staged"
+                            ResourceConnectionState.NeedsSetup -> "mailbox connector needs setup"
+                            ResourceConnectionState.Blocked, null -> "mailbox connector unavailable"
+                        },
+                    )
+                    append(", ")
+                    append(
+                        when (telegramCapability?.state) {
+                            ResourceConnectionState.Connected -> "Telegram alerts ready"
+                            ResourceConnectionState.Staged -> "Telegram alerts waiting for validation"
+                            ResourceConnectionState.NeedsSetup -> "Telegram alerts not configured"
+                            ResourceConnectionState.Blocked, null -> "Telegram alerts unavailable"
+                        },
+                    )
+                    append(".\n")
+                    append("Connection format: `connect mailbox host imap.gmail.com user me@example.com password \"app password\"`\n")
+                    append("Optional fields: `port 993`, `inbox INBOX`, `promotions Promotions`\n")
+                    append("After that, ask `move promotional mail and alert on important mail`, then keep controlling it from chat with `activate it` or `run it now`.")
+                }
+            },
+            destination = AgentDestination.Chat,
+            taskTitle = taskTitle(prompt),
+            taskActionKey = emailSetupGuideActionKey,
+            taskSummary = if (korean) {
+                "이메일 자동화의 현재 blocker와 다음 구현 단계를 채팅에서 설명했습니다."
+            } else {
+                "Explained the current email automation blocker and next implementation steps in chat."
+            },
+            taskStatus = AgentTaskStatus.WaitingResource,
         )
     }
 
@@ -1802,16 +2541,10 @@ class LocalPhoneAgentRuntime(
             taskTitle = taskTitle(prompt),
             taskActionKey = companionAppOpenActionKey,
             taskSummary = when (result.status) {
-                CompanionAppOpenStatus.Opened ->
-                    if (prefersKorean(prompt)) "Companion에서 target surface를 열었습니다." else "Opened the target companion surface."
-                CompanionAppOpenStatus.Recorded ->
-                    if (prefersKorean(prompt)) "Companion이 요청을 기록했고 후속 확인이 필요합니다." else "The companion recorded the request and may need follow-up confirmation."
-                CompanionAppOpenStatus.Failed ->
-                    if (prefersKorean(prompt)) "Companion target 열기 요청이 실패했습니다." else "Opening the companion target failed."
-                CompanionAppOpenStatus.Misconfigured ->
-                    if (prefersKorean(prompt)) "Companion 설정 문제로 요청을 완료하지 못했습니다." else "Companion misconfiguration prevented completion."
-                CompanionAppOpenStatus.Skipped ->
-                    if (prefersKorean(prompt)) "현재 상태에서는 요청이 건너뛰어졌습니다." else "The request was skipped in the current companion state."
+                else -> ChatTaskContinuationPresentation.appOpenTaskSummary(
+                    korean = prefersKorean(prompt),
+                    result = result,
+                )
             },
             taskStatus = when (result.status) {
                 CompanionAppOpenStatus.Opened,
@@ -1861,14 +2594,10 @@ class LocalPhoneAgentRuntime(
             taskTitle = taskTitle(prompt),
             taskActionKey = companionHealthProbeActionKey,
             taskSummary = when (result.status) {
-                CompanionHealthStatus.Healthy ->
-                    if (prefersKorean(prompt)) "Companion health snapshot을 새로고침했습니다." else "Refreshed the companion health snapshot."
-                CompanionHealthStatus.Unreachable ->
-                    if (prefersKorean(prompt)) "Companion health probe가 endpoint에 닿지 못했습니다." else "The companion health probe could not reach the endpoint."
-                CompanionHealthStatus.Misconfigured ->
-                    if (prefersKorean(prompt)) "Companion 설정 문제로 health probe를 완료하지 못했습니다." else "Companion misconfiguration prevented the health probe."
-                CompanionHealthStatus.Skipped ->
-                    if (prefersKorean(prompt)) "현재 companion 상태에서는 health probe를 실행할 수 없습니다." else "The health probe was skipped in the current companion state."
+                else -> ChatTaskContinuationPresentation.healthTaskSummary(
+                    korean = prefersKorean(prompt),
+                    result = result,
+                )
             },
             taskStatus = when (result.status) {
                 CompanionHealthStatus.Healthy -> AgentTaskStatus.Succeeded
@@ -1925,14 +2654,10 @@ class LocalPhoneAgentRuntime(
             taskTitle = taskTitle(prompt),
             taskActionKey = companionSessionNotifyActionKey,
             taskSummary = when (result.status) {
-                CompanionSessionNotifyStatus.Delivered ->
-                    if (prefersKorean(prompt)) "Companion session.notify를 전달했습니다." else "Delivered session.notify to the companion."
-                CompanionSessionNotifyStatus.Failed ->
-                    if (prefersKorean(prompt)) "Companion session.notify 전달이 실패했습니다." else "Sending session.notify to the companion failed."
-                CompanionSessionNotifyStatus.Misconfigured ->
-                    if (prefersKorean(prompt)) "Companion 설정 문제로 session.notify를 보낼 수 없습니다." else "Companion misconfiguration prevented session.notify."
-                CompanionSessionNotifyStatus.Skipped ->
-                    if (prefersKorean(prompt)) "현재 companion 상태에서는 session.notify를 보낼 수 없습니다." else "session.notify was skipped in the current companion state."
+                else -> ChatTaskContinuationPresentation.sessionNotifyTaskSummary(
+                    korean = prefersKorean(prompt),
+                    result = result,
+                )
             },
             taskStatus = when (result.status) {
                 CompanionSessionNotifyStatus.Delivered -> AgentTaskStatus.Succeeded
@@ -1988,16 +2713,11 @@ class LocalPhoneAgentRuntime(
             taskTitle = taskTitle(prompt),
             taskActionKey = companionWorkflowRunActionKey,
             taskSummary = when (result.status) {
-                CompanionWorkflowRunStatus.Completed ->
-                    if (prefersKorean(prompt)) "$workflowLabel workflow를 실행했습니다." else "Executed the $workflowLabel workflow."
-                CompanionWorkflowRunStatus.Recorded ->
-                    if (prefersKorean(prompt)) "$workflowLabel workflow 요청을 기록했습니다." else "Recorded the $workflowLabel workflow request."
-                CompanionWorkflowRunStatus.Failed ->
-                    if (prefersKorean(prompt)) "$workflowLabel workflow 실행이 실패했습니다." else "Running the $workflowLabel workflow failed."
-                CompanionWorkflowRunStatus.Misconfigured ->
-                    if (prefersKorean(prompt)) "Companion 설정 문제로 workflow.run을 실행할 수 없습니다." else "Companion misconfiguration prevented workflow.run."
-                CompanionWorkflowRunStatus.Skipped ->
-                    if (prefersKorean(prompt)) "현재 companion 상태에서는 workflow.run을 실행할 수 없습니다." else "workflow.run was skipped in the current companion state."
+                else -> ChatTaskContinuationPresentation.workflowTaskSummary(
+                    korean = prefersKorean(prompt),
+                    workflowLabel = workflowLabel,
+                    result = result,
+                )
             },
             taskStatus = when (result.status) {
                 CompanionWorkflowRunStatus.Completed,
@@ -2140,110 +2860,147 @@ class LocalPhoneAgentRuntime(
         }
     }
 
-    private fun explainCapabilities(
+    private suspend fun explainCapabilities(
         prompt: String,
         context: AgentTurnContext,
     ): AgentTurnResult {
-        val indexedCount = context.fileIndexState.indexedCount
-        val pendingApprovals = context.approvals.count { it.status == ApprovalInboxStatus.Pending }
-        val retryableTasks = context.tasks.count { task ->
-            task.actionKey == filesOrganizeActionKey &&
-                (
-                    task.status == AgentTaskStatus.RetryScheduled ||
-                        task.status == AgentTaskStatus.Failed ||
-                        task.status == AgentTaskStatus.WaitingResource
-                    ) &&
-                task.maxRetryCount > 0
-        }
-        val pairedDevices = context.pairedDevices.size
-        val connectedCloudDrives = context.cloudDriveConnections.count {
-            it.status == CloudDriveConnectionStatus.Connected
-        }
-        val connectedExternalEndpoints = context.externalEndpoints.count {
-            it.status == ExternalEndpointStatus.Connected
-        }
-        val stagedExternalEndpoints = context.externalEndpoints.count {
-            it.status == ExternalEndpointStatus.Staged
-        }
-        val connectedDeliveryChannels = context.deliveryChannels.count {
-            it.status == DeliveryChannelStatus.Connected
-        }
-        val stagedDeliveryChannels = context.deliveryChannels.count {
-            it.status == DeliveryChannelStatus.Staged
-        }
-        val installedMcpSkills = mcpSkillRepository.skills.value.size
-        val preferredProviderLabel = context.modelPreference.preferredProviderLabel?.let { provider ->
-            val model = context.modelPreference.preferredModel
-            if (model.isNullOrBlank()) {
-                provider
-            } else {
-                "$provider / $model"
-            }
-        } ?: if (prefersKorean(prompt)) {
-            "아직 선택되지 않음"
+        val prefersKorean = prefersKorean(prompt)
+        val browserExecution = if (looksLikeBrowserCapabilityQuestion(prompt.lowercase())) {
+            resolveBrowserExecution(context)
         } else {
-            "not selected yet"
+            null
         }
         return AgentTurnResult(
-            reply = if (prefersKorean(prompt)) {
-                buildString {
-                    append("지금 이 채팅 루프에서 바로 할 수 있는 일은 열다섯 가지예요.\n")
-                    append("1. 인덱싱된 파일 요약 (${indexedCount}개 감지)\n")
-                    append("2. 파일 정리 dry-run 계획 생성 후 승인 요청\n")
-                    append("3. companion 전송 approval 생성\n")
-                    append("4. 채팅에서 최신 승인 요청 승인 또는 거절\n")
-                    append("5. 실패한 organize task 재시도 (${retryableTasks}건 가능)\n")
-                    append("6. Dashboard / History / Settings로 이동\n")
-                    append("7. shell recovery 실행 및 최근 recovery 상태 확인\n")
-                    append("8. resource stack 요약과 cloud/endpoint/delivery staged 또는 connect 제어\n")
-                    append("9. 연결된 companion surface 열기 (${pairedDevices}대 연결)\n")
-                    append("10. companion health snapshot 새로고침\n")
-                    append("11. desktop companion notification 보내기\n")
-                    append("12. allowlisted desktop workflow 실행\n")
-                    append("13. scheduled automation 기록, 활성화, 일시정지, 즉시 실행\n")
-                    append("14. MCP bridge 연결, MCP status/tool 확인, MCP skill 업데이트 (${installedMcpSkills}개 설치됨)\n")
-                    append("15. code/app/automation starter scaffold 생성\n")
-                    append("현재 승인 대기는 ${pendingApprovals}건입니다.\n")
-                    append("cloud connector mock-ready 상태는 ${connectedCloudDrives}개입니다.\n")
-                    append("MCP/API endpoint는 staged ${stagedExternalEndpoints}개, mock-ready ${connectedExternalEndpoints}개입니다.\n")
-                    append("delivery channel은 staged ${stagedDeliveryChannels}개, mock-ready ${connectedDeliveryChannels}개입니다.\n")
-                    append("예시: 'resource stack 보여줘', 'Google Drive 연결해', 'browser automation profile 준비해', 'shell recovery 실행해'.\n")
-                    append("기본 모델 선호도는 $preferredProviderLabel 입니다.")
-                }
-            } else {
-                buildString {
-                    append("This first chat loop can do fifteen things right now.\n")
-                    append("1. Summarize indexed files ($indexedCount detected)\n")
-                    append("2. Create an organize dry-run and submit it for approval\n")
-                    append("3. Create a companion transfer approval\n")
-                    append("4. Approve or deny the latest pending approval from chat\n")
-                    append("5. Retry a failed organize task ($retryableTasks retryable)\n")
-                    append("6. Route you to Dashboard, History, or Settings\n")
-                    append("7. Run shell recovery and inspect the latest recovery status\n")
-                    append("8. Inspect the resource stack and stage/connect cloud, endpoint, and delivery profiles\n")
-                    append("9. Open a paired companion surface ($pairedDevices paired)\n")
-                    append("10. Refresh the companion health snapshot\n")
-                    append("11. Send a desktop companion notification\n")
-                    append("12. Run an allowlisted desktop workflow\n")
-                    append("13. Record, activate, pause, and run scheduled automations\n")
-                    append("14. Connect the MCP bridge, inspect MCP status/tools, and update MCP skills ($installedMcpSkills installed)\n")
-                    append("15. Generate a code, app, or automation starter scaffold\n")
-                    append("There are $pendingApprovals pending approvals right now.\n")
-                    append("Cloud connectors marked mock-ready: $connectedCloudDrives.\n")
-                    append("MCP/API endpoints staged: $stagedExternalEndpoints, mock-ready: $connectedExternalEndpoints.\n")
-                    append("Delivery channels staged: $stagedDeliveryChannels, mock-ready: $connectedDeliveryChannels.\n")
-                    append("Examples: 'show resource stack', 'connect Google Drive', 'stage browser automation profile', 'run shell recovery now'.\n")
-                    append("The current model preference is $preferredProviderLabel.")
-                }
-            },
+            reply = explainCapabilitiesReply(prompt, context, browserExecution),
             taskTitle = taskTitle(prompt),
             taskActionKey = explainCapabilitiesActionKey,
-            taskSummary = if (prefersKorean(prompt)) {
-                "현재 chat loop의 capability 범위를 설명했습니다."
+            taskSummary = if (prefersKorean) {
+                "현재 chat 시작 방법과 setup 위치를 짧게 안내했습니다."
             } else {
-                "Explained the current scope of the chat loop."
+                "Explained how to start in chat and where setup lives."
             },
         )
+    }
+
+    private fun explainCapabilitiesReply(
+        prompt: String,
+        context: AgentTurnContext,
+        browserExecution: BrowserExecutionSnapshot?,
+    ): String {
+        val korean = prefersKorean(prompt)
+        val hasConfiguredProvider = context.modelPreference.configuredProviderIds.isNotEmpty()
+        val mentionsBrowserCapability = looksLikeBrowserCapabilityQuestion(prompt.lowercase())
+        if (mentionsBrowserCapability) {
+            return if (korean) {
+                buildString {
+                    append("지금은 로컬 파일, 첨부, 채팅, 승인, companion 연동 같은 앱 내부 작업은 가능합니다. ")
+                    if (browserExecution?.canBrowseWebPages == true) {
+                        append("그리고 연결된 companion MCP bridge를 통해 웹 페이지도 직접 열어 읽을 수 있어요. ")
+                        append("URL을 보내주면 페이지 제목과 본문 요약까지 바로 가져올 수 있습니다. ")
+                        append("다만 일반 웹 검색이나 브라우저 상호작용 자동화는 아직 최소 경로만 연결돼 있어요.")
+                    } else {
+                        append("다만 웹 페이지를 직접 열어 읽는 MCP/browser executor는 아직 연결되지 않았어요. ")
+                        append("그래서 웹 관련 요청은 현재 계획 수준으로만 남길 수 있고, 실제 페이지 접근/수집은 아직 수행하지 못합니다.")
+                    }
+                    if (!hasConfiguredProvider) {
+                        append(" 일반 설명 응답 품질도 provider를 연결하면 더 좋아집니다.")
+                    }
+                }
+            } else {
+                buildString {
+                    append("I can handle app-local work like files, attachments, chat turns, approvals, and companion actions. ")
+                    if (browserExecution?.canBrowseWebPages == true) {
+                        append("A connected companion MCP bridge is also available, so I can open and read a webpage when you send a URL. ")
+                        append("I can return the page title and a readable summary from that page. ")
+                        append("General live web search is still only partially wired beyond direct page access.")
+                    } else {
+                        append("But there is no live MCP/browser executor wired yet for opening webpages or running real-time web research. ")
+                        append("That means I can only keep web requests at the planning level for now, not actually access or collect from the page.")
+                    }
+                    if (!hasConfiguredProvider) {
+                        append(" A configured model provider would also improve general explanation quality.")
+                    }
+                }
+            }
+        }
+        return if (korean) {
+            if (hasConfiguredProvider) {
+                "지금은 채팅에서 파일 요약, 첨부 전송, 승인 처리, companion 액션, 설정 요약 같은 작업을 진행할 수 있어요. 더 구체적으로 원하는 작업을 바로 말해 주면 그 흐름으로 이어서 처리합니다."
+            } else {
+                "지금은 채팅에서 setup 안내와 로컬 자원 상태 확인은 할 수 있어요. 자유 입력 응답 품질을 높이려면 먼저 provider key를 연결한 뒤 이어서 요청해 주세요."
+            }
+        } else {
+            if (hasConfiguredProvider) {
+                "I can continue from chat with file summaries, attachments, approvals, companion actions, and setup/resource guidance. Ask for the concrete next action and I will route it there."
+            } else {
+                "I can still explain setup and local resource state from chat, but connecting a provider key first will unlock stronger freeform answers."
+            }
+        }
+    }
+
+    private suspend fun respondWithProviderConversation(
+        prompt: String,
+        context: AgentTurnContext,
+    ): AgentTurnResult {
+        return when (
+            val result = providerConversationClient.generateReply(
+                prompt = prompt,
+                recentMessages = context.chatMessages,
+                context = context,
+            )
+        ) {
+            is ProviderConversationResult.Reply -> AgentTurnResult(
+                reply = result.text,
+                taskTitle = taskTitle(prompt),
+                taskActionKey = providerConversationReplyActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "${result.providerLabel} ${result.model}로 자유 입력 대화 응답을 생성했습니다."
+                } else {
+                    "Generated a freeform chat reply with ${result.providerLabel} ${result.model}."
+                },
+            )
+            is ProviderConversationResult.Failure -> AgentTurnResult(
+                reply = if (prefersKorean(prompt)) {
+                    buildString {
+                        append("자유 대화 응답을 만들려고 ")
+                        append(result.providerLabel ?: "모델 provider")
+                        result.model?.let {
+                            append(" ")
+                            append(it)
+                        }
+                        append("에 연결했지만 실패했습니다. ")
+                        append("Settings에서 API key와 기본 provider를 확인해 주세요.")
+                        if (result.detail.isNotBlank()) {
+                            append("\n오류: ")
+                            append(result.detail)
+                        }
+                    }
+                } else {
+                    buildString {
+                        append("I tried to generate a freeform chat reply with ")
+                        append(result.providerLabel ?: "the configured model provider")
+                        result.model?.let {
+                            append(" ")
+                            append(it)
+                        }
+                        append(", but the request failed. Check the API key and default provider in Settings.")
+                        if (result.detail.isNotBlank()) {
+                            append("\nError: ")
+                            append(result.detail)
+                        }
+                    }
+                },
+                taskTitle = taskTitle(prompt),
+                taskActionKey = providerConversationReplyActionKey,
+                taskSummary = if (prefersKorean(prompt)) {
+                    "Provider 기반 자유 대화 응답 생성에 실패했습니다."
+                } else {
+                    "Provider-backed freeform chat failed."
+                },
+                taskStatus = AgentTaskStatus.WaitingResource,
+            )
+            ProviderConversationResult.Unavailable -> explainCapabilities(prompt, context)
+        }
     }
 
     private suspend fun ensureIndexedFiles(currentState: FileIndexState): Pair<FileIndexState, FileIndexState?> {
@@ -2574,9 +3331,9 @@ class LocalPhoneAgentRuntime(
 
     private fun companionWorkflowLabel(workflowId: String): String {
         return when (workflowId) {
-            desktopWorkflowIdOpenLatestTransfer -> "Open latest transfer"
-            desktopWorkflowIdOpenActionsFolder -> "Open actions folder"
-            desktopWorkflowIdOpenLatestAction -> "Open latest action"
+            companionWorkflowIdOpenLatestTransfer -> "Open latest transfer"
+            companionWorkflowIdOpenActionsFolder -> "Open actions folder"
+            companionWorkflowIdOpenLatestAction -> "Open latest action"
             else -> workflowId
         }
     }
@@ -2587,9 +3344,9 @@ class LocalPhoneAgentRuntime(
     ): String {
         return if (prefersKorean(prompt)) {
             when (workflowId) {
-                desktopWorkflowIdOpenLatestTransfer -> "최근 전송 열기"
-                desktopWorkflowIdOpenActionsFolder -> "actions 폴더 열기"
-                desktopWorkflowIdOpenLatestAction -> "최근 액션 열기"
+                companionWorkflowIdOpenLatestTransfer -> "최근 전송 열기"
+                companionWorkflowIdOpenActionsFolder -> "actions 폴더 열기"
+                companionWorkflowIdOpenLatestAction -> "최근 액션 열기"
                 else -> workflowId
             }
         } else {
@@ -2635,6 +3392,97 @@ class LocalPhoneAgentRuntime(
         )
     }
 
+    private suspend fun resolveBrowserExecution(context: AgentTurnContext): BrowserExecutionSnapshot? {
+        val targetDevice = resolveMcpCompanion(context)
+        val connectedEndpoint = externalEndpointRepository.profiles.value.firstOrNull {
+            it.endpointId == mcpBridgeEndpointId && it.status == ExternalEndpointStatus.Connected
+        }
+        if (connectedEndpoint != null && connectedEndpoint.toolNames.any(::isBrowserExecutionTool)) {
+            return BrowserExecutionSnapshot(
+                deviceId = targetDevice?.id,
+                label = connectedEndpoint.endpointLabel ?: connectedEndpoint.displayName,
+                toolNames = connectedEndpoint.toolNames,
+                canBrowseWebPages = true,
+            )
+        }
+        if (targetDevice == null) {
+            return null
+        }
+        val discovery = devicePairingRepository.discoverMcpBridge(targetDevice.id)
+        if (discovery.status != McpBridgeDiscoveryStatus.Ready) {
+            return null
+        }
+        externalEndpointRepository.markConnected(
+            mcpBridgeEndpointId,
+            ExternalEndpointConnectionSnapshot(
+                endpointLabel = discovery.serverLabel ?: targetDevice.name,
+                summary = discovery.summary,
+                transportLabel = discovery.transportLabel,
+                authLabel = discovery.authLabel,
+                toolNames = discovery.toolNames,
+                toolSchemas = discovery.toolSchemas,
+                skillBundles = discovery.skillBundles,
+                workflowIds = discovery.workflowIds,
+                healthDetails = discovery.detail,
+            ),
+        )
+        externalEndpointRepository.refresh()
+        return if (discovery.toolNames.any(::isBrowserExecutionTool)) {
+            BrowserExecutionSnapshot(
+                deviceId = targetDevice.id,
+                label = discovery.serverLabel ?: targetDevice.name,
+                toolNames = discovery.toolNames,
+                canBrowseWebPages = true,
+            )
+        } else {
+            null
+        }
+    }
+
+    private fun isBrowserExecutionTool(toolName: String): Boolean {
+        return toolName == "browser.navigate" || toolName == "browser.extract"
+    }
+
+    private fun webPageAccessReply(
+        prompt: String,
+        requestedUrl: String,
+        result: CompanionMcpToolCallResult,
+        bridgeLabel: String,
+    ): String {
+        val finalUrl = result.finalUrl ?: requestedUrl
+        val pageTitle = result.pageTitle
+        val contentPreview = result.contentText?.trim().orEmpty().takeIf { it.isNotBlank() }
+        return if (prefersKorean(prompt)) {
+            buildString {
+                append("$bridgeLabel MCP bridge로 웹 페이지에 접근했습니다. ")
+                pageTitle?.let {
+                    append("제목은 \"$it\" 입니다. ")
+                }
+                append("최종 URL은 $finalUrl 입니다. ")
+                if (!contentPreview.isNullOrBlank()) {
+                    append("읽은 내용 요약: ")
+                    append(contentPreview)
+                } else {
+                    append(result.detail)
+                }
+            }
+        } else {
+            buildString {
+                append("I opened the webpage through the $bridgeLabel MCP bridge. ")
+                pageTitle?.let {
+                    append("The page title is \"$it\". ")
+                }
+                append("The final URL is $finalUrl. ")
+                if (!contentPreview.isNullOrBlank()) {
+                    append("Readable summary: ")
+                    append(contentPreview)
+                } else {
+                    append(result.detail)
+                }
+            }
+        }
+    }
+
     private fun resolveMcpCompanion(context: AgentTurnContext): PairedDeviceState? {
         return context.selectedTargetDeviceId?.let { selectedId ->
             context.pairedDevices.firstOrNull { it.id == selectedId }
@@ -2652,11 +3500,48 @@ class LocalPhoneAgentRuntime(
         }
     }
 
+    private fun extractTelegramBotToken(prompt: String): String? {
+        return telegramTokenPattern.find(prompt)?.value
+    }
+
+    private fun extractTelegramChatId(prompt: String): String? {
+        telegramChatPattern.find(prompt)?.groupValues?.getOrNull(1)?.trim()?.let { return it }
+        telegramNumericChatPattern.find(prompt)?.value?.trim()?.let { return it }
+        return null
+    }
+
+    private fun extractStructuredPromptField(
+        prompt: String,
+        keys: List<String>,
+    ): String? {
+        keys.forEach { key ->
+            val pattern = Regex("""(?:^|\s)${Regex.escape(key)}\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))""", RegexOption.IGNORE_CASE)
+            val match = pattern.find(prompt) ?: return@forEach
+            val value = match.groupValues.drop(1).firstOrNull { it.isNotBlank() }?.trim()
+            if (!value.isNullOrBlank()) {
+                return value
+            }
+        }
+        return null
+    }
+
+    private fun buildTelegramValidationMessage(
+        prompt: String,
+        chatId: String,
+    ): String {
+        return if (prefersKorean(prompt)) {
+            "Makoion Telegram 연결 검증입니다.\n대상 chat: $chatId\n이 메시지가 보이면 Telegram relay가 정상적으로 연결됐습니다."
+        } else {
+            "This is a Makoion Telegram delivery validation.\nTarget chat: $chatId\nIf you can read this message, the Telegram relay is connected correctly."
+        }
+    }
+
     private fun planTurn(
         prompt: String,
         context: AgentTurnContext,
     ): AgentPlannerOutput {
         val normalized = prompt.lowercase()
+        val requestedWebUrl = extractFirstWebUrl(prompt)
         val approvalId = approvalIdFromPrompt(prompt)
         val taskId = taskIdFromPrompt(prompt)
         val automationId = automationIdFromPrompt(prompt)
@@ -2736,10 +3621,102 @@ class LocalPhoneAgentRuntime(
             "connected resources",
             "resource summary",
             "resource status",
+            "delivery status",
+            "notification channel",
+            "alert channel",
+            "알림 채널",
+            "알림 어디",
+            "보낼 수 있",
             "리소스 스택",
             "연결 자원",
             "자원 상태",
             "리소스 상태",
+        )
+        val goalPlan = planAgentGoal(prompt, context)
+        val mentionsMailbox = containsAny(
+            normalized,
+            "email",
+            "mailbox",
+            "imap",
+            "gmail",
+            "이메일",
+            "메일함",
+            "메일",
+        )
+        val wantsMailboxStatus = mentionsMailbox && containsAny(
+            normalized,
+            "mailbox status",
+            "email status",
+            "show mailbox",
+            "mailbox summary",
+            "상태",
+            "요약",
+            "보여",
+            "현재",
+        )
+        val wantsConnectMailbox = mentionsMailbox &&
+            (
+                containsAny(
+                    normalized,
+                    "connect mailbox",
+                    "mailbox connect",
+                    "setup mailbox",
+                    "메일 연결",
+                    "메일함 연결",
+                    "이메일 연결",
+                ) ||
+                    containsAny(normalized, "host", "server", "user", "username", "password", "비밀번호")
+                )
+        val wantsInitialSetup = containsAny(
+            normalized,
+            "initial setup",
+            "start setup",
+            "first run",
+            "first setup",
+            "setup first",
+            "api key",
+            "provider key",
+            "model key",
+            "credential setup",
+            "token setup",
+            "초기 설정",
+            "초기세팅",
+            "처음 설정",
+            "처음 세팅",
+            "api 키",
+            "모델 키",
+            "provider 키",
+            "어떻게 시작",
+            "무엇부터 해야",
+            "뭘 먼저 해야",
+            "처음 뭐 해야",
+        )
+        val wantsShowDashboard = containsAny(
+            normalized,
+            "open dashboard",
+            "show dashboard",
+            "dashboard",
+            "대시보드",
+        )
+        val wantsShowHistory = containsAny(
+            normalized,
+            "open history",
+            "show history",
+            "history",
+            "audit",
+            "log",
+            "기록",
+            "히스토리",
+            "로그",
+        )
+        val wantsShowSettings = containsAny(
+            normalized,
+            "open settings",
+            "show settings",
+            "settings",
+            "설정 열어",
+            "설정 보여",
+            "설정으로",
         )
         val cloudDriveProvider = cloudDriveProviderFromPrompt(normalized)
         val externalEndpointId = externalEndpointIdFromPrompt(normalized)
@@ -2852,6 +3829,56 @@ class LocalPhoneAgentRuntime(
             "mcp tool 목록",
             "mcp 도구",
         )
+        val wantsExplainMcpSetup = containsAny(
+            normalized,
+            "mcp",
+            "model context protocol",
+            "mcp 서버",
+            "mcp 브리지",
+        ) && containsAny(
+            normalized,
+            "how",
+            "help",
+            "setup",
+            "start",
+            "guide",
+            "what do i need",
+            "how do i",
+            "how should i",
+            "연동",
+            "어떻게",
+            "설명",
+            "도움",
+            "뭐부터",
+            "무엇부터",
+            "처음",
+        )
+        val wantsExplainEmailSetup = containsAny(
+            normalized,
+            "email",
+            "mailbox",
+            "gmail",
+            "이메일",
+            "메일",
+        ) && containsAny(
+            normalized,
+            "how",
+            "help",
+            "setup",
+            "start",
+            "guide",
+            "possible",
+            "available",
+            "connect",
+            "연동",
+            "가능",
+            "어떻게",
+            "설명",
+            "도움",
+            "뭐부터",
+            "무엇부터",
+            "처음",
+        )
         return when {
             wantsDenyAction ->
                 plannerOutput(
@@ -2898,6 +3925,15 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("shell.recovery.read"),
                     resources = listOf("task.runtime", "audit.history"),
                 )
+            wantsInitialSetup ->
+                plannerOutput(
+                    intent = AgentIntent.ExplainInitialSetup,
+                    auditResult = "initial_setup_explained",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Explain the first-run setup path while keeping the user in chat.",
+                    capabilities = listOf("model.providers", "phone.local_storage"),
+                    resources = listOf("resource.stack"),
+                )
             wantsShowResourceStack ->
                 plannerOutput(
                     intent = AgentIntent.ShowResourceStack,
@@ -2924,69 +3960,6 @@ class LocalPhoneAgentRuntime(
                     summary = "Mark a cloud drive connector as mock-ready from chat.",
                     capabilities = listOf("cloud.connectors.connect"),
                     resources = listOf("cloud.drives"),
-                )
-            externalEndpointId != null && wantsStageResource ->
-                plannerOutput(
-                    intent = AgentIntent.StageExternalEndpoint(externalEndpointId),
-                    auditResult = "external_endpoint_staged_from_chat",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Stage an external endpoint profile from chat.",
-                    capabilities = listOf("external.endpoint.stage"),
-                    resources = listOf("mcp.api_endpoints"),
-                )
-            externalEndpointId != null && wantsConnectResource ->
-                plannerOutput(
-                    intent = AgentIntent.ConnectExternalEndpoint(externalEndpointId),
-                    auditResult = "external_endpoint_connected_from_chat",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Mark an external endpoint profile as mock-ready from chat.",
-                    capabilities = listOf("external.endpoint.connect"),
-                    resources = listOf("mcp.api_endpoints"),
-                )
-            deliveryChannelId != null && wantsStageResource ->
-                plannerOutput(
-                    intent = AgentIntent.StageDeliveryChannel(deliveryChannelId),
-                    auditResult = "delivery_channel_staged_from_chat",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Stage a delivery channel profile from chat.",
-                    capabilities = listOf("delivery.channel.stage"),
-                    resources = listOf("delivery.channels"),
-                )
-            deliveryChannelId != null && wantsConnectResource ->
-                plannerOutput(
-                    intent = AgentIntent.ConnectDeliveryChannel(deliveryChannelId),
-                    auditResult = "delivery_channel_connected_from_chat",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Mark a delivery channel profile as mock-ready from chat.",
-                    capabilities = listOf("delivery.channel.connect"),
-                    resources = listOf("delivery.channels"),
-                )
-            wantsRunAutomationNow ->
-                plannerOutput(
-                    intent = AgentIntent.RunScheduledAutomationNow(automationId),
-                    auditResult = "scheduled_automation_run_now",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Run a scheduled automation immediately from the chat loop.",
-                    capabilities = listOf("automation.schedule.run"),
-                    resources = listOf("task.runtime", "notifications.delivery"),
-                )
-            wantsPauseAutomation ->
-                plannerOutput(
-                    intent = AgentIntent.PauseScheduledAutomation(automationId),
-                    auditResult = "scheduled_automation_paused",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Pause a scheduled automation from chat.",
-                    capabilities = listOf("automation.schedule.pause"),
-                    resources = listOf("task.runtime"),
-                )
-            wantsActivateAutomation ->
-                plannerOutput(
-                    intent = AgentIntent.ActivateScheduledAutomation(automationId),
-                    auditResult = "scheduled_automation_activated",
-                    mode = AgentPlannerMode.ActionIntent,
-                    summary = "Activate a scheduled automation from chat.",
-                    capabilities = listOf("automation.schedule.activate"),
-                    resources = listOf("task.runtime"),
                 )
             wantsSyncMcpSkills ->
                 plannerOutput(
@@ -3033,6 +4006,124 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("mcp.connect"),
                     resources = listOf("mcp.api_endpoints", "external.companion"),
                 )
+            wantsExplainMcpSetup ->
+                plannerOutput(
+                    intent = AgentIntent.ExplainMcpSetup,
+                    auditResult = "mcp_setup_explained",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Explain how MCP connection works inside the chat-first shell and show the next step.",
+                    capabilities = listOf("mcp.connect", "mcp.skills.sync"),
+                    resources = listOf("external.companion", "mcp.api_endpoints"),
+                )
+            wantsMailboxStatus ->
+                plannerOutput(
+                    intent = AgentIntent.ShowMailboxStatus,
+                    auditResult = "mailbox_status_shown",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Summarize the currently recorded mailbox connection in chat.",
+                    capabilities = listOf("mail.connect", "mail.read"),
+                    resources = listOf("mailbox.connector"),
+                )
+            wantsConnectMailbox ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectMailbox,
+                    auditResult = "mailbox_connect_requested",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Store mailbox credentials, validate the IMAP inbox, and activate the mailbox connector from chat.",
+                    capabilities = listOf("mail.connect", "mail.read", "mail.move"),
+                    resources = listOf("mailbox.connector"),
+                )
+            wantsExplainEmailSetup ->
+                plannerOutput(
+                    intent = AgentIntent.ExplainEmailSetup,
+                    auditResult = "email_setup_explained",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Explain the email automation connection format and current mailbox state from chat.",
+                    capabilities = listOf("mail.connect", "mail.classify", "delivery.alert"),
+                    resources = listOf("mailbox.connector", "delivery.channels"),
+                )
+            externalEndpointId != null && wantsStageResource ->
+                plannerOutput(
+                    intent = AgentIntent.StageExternalEndpoint(externalEndpointId),
+                    auditResult = "external_endpoint_staged_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Stage an external endpoint profile from chat.",
+                    capabilities = listOf("external.endpoint.stage"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            externalEndpointId != null && wantsConnectResource ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectExternalEndpoint(externalEndpointId),
+                    auditResult = "external_endpoint_connected_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Mark an external endpoint profile as mock-ready from chat.",
+                    capabilities = listOf("external.endpoint.connect"),
+                    resources = listOf("mcp.api_endpoints"),
+                )
+            deliveryChannelId != null && wantsStageResource ->
+                plannerOutput(
+                    intent = AgentIntent.StageDeliveryChannel(deliveryChannelId),
+                    auditResult = "delivery_channel_staged_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Stage a delivery channel profile from chat.",
+                    capabilities = listOf("delivery.channel.stage"),
+                    resources = listOf("delivery.channels"),
+                )
+            deliveryChannelId != null && wantsConnectResource ->
+                plannerOutput(
+                    intent = AgentIntent.ConnectDeliveryChannel(deliveryChannelId),
+                    auditResult = "delivery_channel_connected_from_chat",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Mark a delivery channel profile as mock-ready from chat.",
+                    capabilities = listOf("delivery.channel.connect"),
+                    resources = listOf("delivery.channels"),
+                )
+            goalPlan != null ->
+                plannerOutput(
+                    intent = when (goalPlan.type) {
+                        AgentGoalType.TelegramConnect -> AgentIntent.ConnectDeliveryChannel(telegramDeliveryChannelId)
+                        AgentGoalType.MarketNewsWatch,
+                        AgentGoalType.MorningBriefing,
+                        AgentGoalType.EmailTriage -> AgentIntent.PlanScheduledAutomation
+                    },
+                    auditResult = when (goalPlan.type) {
+                        AgentGoalType.TelegramConnect -> "telegram_connect_requested"
+                        AgentGoalType.MarketNewsWatch -> "market_news_goal_planned"
+                        AgentGoalType.MorningBriefing -> "morning_briefing_goal_planned"
+                        AgentGoalType.EmailTriage -> "email_triage_goal_planned"
+                    },
+                    mode = AgentPlannerMode.Plan,
+                    summary = goalPlan.summary,
+                    capabilities = goalPlan.recipe.capabilities,
+                    resources = goalPlan.requirements.map { it.capabilityId }.ifEmpty { listOf("task.runtime") },
+                )
+            wantsRunAutomationNow ->
+                plannerOutput(
+                    intent = AgentIntent.RunScheduledAutomationNow(automationId),
+                    auditResult = "scheduled_automation_run_now",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Run a scheduled automation immediately from the chat loop.",
+                    capabilities = listOf("automation.schedule.run"),
+                    resources = listOf("task.runtime", "notifications.delivery"),
+                )
+            wantsPauseAutomation ->
+                plannerOutput(
+                    intent = AgentIntent.PauseScheduledAutomation(automationId),
+                    auditResult = "scheduled_automation_paused",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Pause a scheduled automation from chat.",
+                    capabilities = listOf("automation.schedule.pause"),
+                    resources = listOf("task.runtime"),
+                )
+            wantsActivateAutomation ->
+                plannerOutput(
+                    intent = AgentIntent.ActivateScheduledAutomation(automationId),
+                    auditResult = "scheduled_automation_activated",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Activate a scheduled automation from chat.",
+                    capabilities = listOf("automation.schedule.activate"),
+                    resources = listOf("task.runtime"),
+                )
             containsAny(
                 normalized,
                 "check companion health",
@@ -3078,7 +4169,7 @@ class LocalPhoneAgentRuntime(
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "latest action", "recent action", "last action", "최근 액션", "방금 액션") ->
                 plannerOutput(
-                    intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenLatestAction),
+                    intent = AgentIntent.RunCompanionWorkflow(companionWorkflowIdOpenLatestAction),
                     auditResult = "companion_latest_action_workflow_run",
                     mode = AgentPlannerMode.ActionIntent,
                     summary = "Run the allowlisted desktop workflow that opens the latest companion action.",
@@ -3088,7 +4179,7 @@ class LocalPhoneAgentRuntime(
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "latest transfer", "recent transfer", "최근 전송", "전송 폴더") ->
                 plannerOutput(
-                    intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenLatestTransfer),
+                    intent = AgentIntent.RunCompanionWorkflow(companionWorkflowIdOpenLatestTransfer),
                     auditResult = "companion_latest_transfer_workflow_run",
                     mode = AgentPlannerMode.ActionIntent,
                     summary = "Run the allowlisted desktop workflow that opens the latest transfer.",
@@ -3098,7 +4189,7 @@ class LocalPhoneAgentRuntime(
             containsAny(normalized, "workflow.run", "workflow", "워크플로") &&
                 containsAny(normalized, "actions folder", "action folder", "액션 폴더", "actions") ->
                 plannerOutput(
-                    intent = AgentIntent.RunCompanionWorkflow(desktopWorkflowIdOpenActionsFolder),
+                    intent = AgentIntent.RunCompanionWorkflow(companionWorkflowIdOpenActionsFolder),
                     auditResult = "companion_actions_workflow_run",
                     mode = AgentPlannerMode.ActionIntent,
                     summary = "Run the allowlisted desktop workflow that opens the companion actions folder.",
@@ -3169,6 +4260,24 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("automation.schedule.plan"),
                     resources = listOf("task.runtime", "notifications.delivery", "audit.history"),
                 )
+            requestedWebUrl != null ->
+                plannerOutput(
+                    intent = AgentIntent.BrowseWebPage(requestedWebUrl),
+                    auditResult = "browser_page_access_requested",
+                    mode = AgentPlannerMode.ActionIntent,
+                    summary = "Open the referenced webpage through the connected companion MCP bridge and return a readable summary.",
+                    capabilities = listOf("browser.navigate", "browser.extract"),
+                    resources = listOf("external.companion", "mcp.api_endpoints"),
+                )
+            looksLikeBrowserCapabilityQuestion(normalized) ->
+                plannerOutput(
+                    intent = AgentIntent.ExplainCapabilities,
+                    auditResult = "capabilities_explained",
+                    mode = AgentPlannerMode.Answer,
+                    summary = "Explain the current browser and web capability limits instead of creating a blocked research task.",
+                    capabilities = listOf("agent.capabilities.explain"),
+                    resources = listOf("resource.stack", "model.providers"),
+                )
             containsAny(
                 normalized,
                 "browser",
@@ -3211,30 +4320,30 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("files.organize", "approvals.request"),
                     resources = listOf("phone.local_storage", "phone.document_roots", "approval.inbox"),
                 )
-            containsAny(normalized, "approve", "approval", "review", "승인", "검토", "dashboard", "대시보드", "status", "현황") ->
+            containsAny(normalized, "approve", "approval", "review", "승인", "검토") || wantsShowDashboard ->
                 plannerOutput(
                     intent = AgentIntent.ShowDashboard,
                     auditResult = "dashboard_routed",
                     mode = AgentPlannerMode.Answer,
-                    summary = "Route the user to Dashboard to inspect approvals, task state, and resource status.",
+                    summary = "Summarize dashboard-oriented approvals and task state for the user.",
                     capabilities = listOf("ui.route.dashboard"),
                     resources = listOf("shell.navigation"),
                 )
-            containsAny(normalized, "history", "audit", "log", "기록", "히스토리", "로그") ->
+            wantsShowHistory ->
                 plannerOutput(
                     intent = AgentIntent.ShowHistory,
                     auditResult = "history_routed",
                     mode = AgentPlannerMode.Answer,
-                    summary = "Route the user to History to inspect audit and prior task activity.",
+                    summary = "Summarize how to inspect audit and prior task activity.",
                     capabilities = listOf("ui.route.history"),
                     resources = listOf("shell.navigation", "audit.history"),
                 )
-            containsAny(normalized, "settings", "connect", "connection", "permission", "권한", "설정", "연결", "drive", "mcp", "api", "companion", "device") ->
+            wantsShowSettings ->
                 plannerOutput(
                     intent = AgentIntent.ShowSettings,
                     auditResult = "settings_routed",
                     mode = AgentPlannerMode.Answer,
-                    summary = "Route the user to Settings to inspect connections, permissions, and resource configuration.",
+                    summary = "Summarize the Settings-level resource and permission state without leaving chat.",
                     capabilities = listOf("ui.route.settings"),
                     resources = listOf("shell.navigation", "resource.stack"),
                 )
@@ -3247,11 +4356,19 @@ class LocalPhoneAgentRuntime(
                     capabilities = listOf("files.transfer", "approvals.request"),
                     resources = listOf("phone.local_storage", "external.companion", "approval.inbox"),
                 )
+            context.modelPreference.configuredProviderIds.isNotEmpty() -> plannerOutput(
+                intent = AgentIntent.RespondWithProviderConversation,
+                auditResult = "provider_conversation_replied",
+                mode = AgentPlannerMode.Answer,
+                summary = "Use the configured model provider to answer a freeform chat turn that does not map to a built-in capability.",
+                capabilities = listOf("model.providers.chat"),
+                resources = listOf("model.providers", "task.runtime"),
+            )
             else -> plannerOutput(
                 intent = AgentIntent.ExplainCapabilities,
                 auditResult = "capabilities_explained",
                 mode = AgentPlannerMode.Answer,
-                summary = "Explain the current capability envelope of the chat loop and connected resource stack.",
+                summary = "Explain how to start in chat and where setup or connected resources live.",
                 capabilities = listOf("agent.capabilities.explain"),
                 resources = listOf("resource.stack", "task.runtime"),
             )
@@ -3604,11 +4721,8 @@ class LocalPhoneAgentRuntime(
         private const val organizeRetryBudget = 3
         private const val maxChatTransferItemsWithoutSelection = 5
         private const val filesSummarizeActionKey = "files.summarize"
-        private const val filesOrganizeActionKey = "files.organize.execute"
-        private const val filesTransferActionKey = "files.transfer"
-        private const val approvalsApproveActionKey = "approvals.approve"
-        private const val approvalsDenyActionKey = "approvals.deny"
-        private const val manualTaskRetryActionKey = "agent.task.retry.manual"
+        private const val filesOrganizeActionKey = filesOrganizeExecuteActionKey
+        private const val filesTransferActionKey = filesTransferExecuteActionKey
         private const val shellRefreshActionKey = "shell.refresh"
         private const val resourceStackShowActionKey = "resource.stack.show"
         private const val resourceCloudDriveStageActionKey = "resource.cloud.stage"
@@ -3617,6 +4731,8 @@ class LocalPhoneAgentRuntime(
         private const val resourceEndpointConnectActionKey = "resource.endpoint.connect"
         private const val resourceDeliveryStageActionKey = "resource.delivery.stage"
         private const val resourceDeliveryConnectActionKey = "resource.delivery.connect"
+        private const val mailboxConnectActionKey = "resource.mailbox.connect"
+        private const val mailboxStatusActionKey = "resource.mailbox.status"
         private const val shellRecoveryRunActionKey = "shell.recovery.run"
         private const val shellRecoveryShowActionKey = "shell.recovery.show"
         private const val scheduledAutomationPlanActionKey = "automation.schedule.plan"
@@ -3625,21 +4741,13 @@ class LocalPhoneAgentRuntime(
         private const val scheduledAutomationRunNowActionKey = "automation.schedule.run_now"
         private const val codeGenerationPlanActionKey = "code.generate.plan"
         private const val browserResearchPlanActionKey = "browser.research.plan"
+        private const val browserPageAccessActionKey = "browser.page.access"
         private const val routeDashboardActionKey = "ui.route.dashboard"
         private const val routeHistoryActionKey = "ui.route.history"
         private const val routeSettingsActionKey = "ui.route.settings"
-        private const val mcpBridgeConnectActionKey = "mcp.bridge.connect"
-        private const val mcpConnectorStatusActionKey = "mcp.connector.status"
-        private const val mcpToolsShowActionKey = "mcp.tools.show"
-        private const val mcpSkillSyncActionKey = "mcp.skills.sync"
-        private const val mcpSkillShowActionKey = "mcp.skills.show"
-        private const val companionHealthProbeActionKey = "devices.health_probe"
-        private const val companionSessionNotifyActionKey = "devices.session_notify"
-        private const val companionAppOpenActionKey = "devices.app_open"
-        private const val companionWorkflowRunActionKey = "devices.workflow_run"
-        private const val desktopWorkflowIdOpenLatestAction = "open_latest_action"
-        private const val desktopWorkflowIdOpenLatestTransfer = "open_latest_transfer"
-        private const val desktopWorkflowIdOpenActionsFolder = "open_actions_folder"
+        private const val explainInitialSetupActionKey = "agent.setup.explain"
+        private const val emailSetupGuideActionKey = "agent.email_setup.explain"
+        private const val providerConversationReplyActionKey = providerConversationActionKey
         private const val browserAutomationEndpointId = "browser-automation-profile"
         private const val thirdPartyApiEndpointId = "third-party-api-profile"
         private const val localNotificationChannelId = "phone-local-notification"
@@ -3652,14 +4760,31 @@ class LocalPhoneAgentRuntime(
         private const val shellRecoveryPollIntervalMs = 200L
         private val approvalIdPattern = Regex("""approval-[A-Za-z0-9-]+""")
         private val taskIdPattern = Regex("""task-[A-Za-z0-9-]+""")
+        private val telegramTokenPattern = Regex("""\b\d{6,12}:[A-Za-z0-9_-]{20,}\b""")
+        private val telegramChatPattern = Regex("""(?:chat|chat_id)\s+(@?[A-Za-z0-9_-]+|-?\d+)""", RegexOption.IGNORE_CASE)
+        private val telegramNumericChatPattern = Regex("""-?\d{6,}""")
         private val automationIdPattern = Regex("""automation-[A-Za-z0-9-]+""")
+        private const val webPagePreviewMaxChars = 2200
     }
 }
+
+private val webPageUrlPattern = Regex("""https?://[^\s<>"')\]]+""", RegexOption.IGNORE_CASE)
+private val webPageBareDomainPattern = Regex(
+    """\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?:/[^\s<>"')\]]*)?""",
+    RegexOption.IGNORE_CASE,
+)
 
 private data class AgentPlannerOutput(
     val intent: AgentIntent,
     val auditResult: String,
     val planningTrace: AgentPlanningTrace,
+)
+
+private data class BrowserExecutionSnapshot(
+    val deviceId: String?,
+    val label: String,
+    val toolNames: List<String>,
+    val canBrowseWebPages: Boolean,
 )
 
 private sealed interface AgentIntent {
@@ -3675,6 +4800,10 @@ private sealed interface AgentIntent {
     data object ShowDashboard : AgentIntent
     data object ShowHistory : AgentIntent
     data object ShowSettings : AgentIntent
+    data object ExplainInitialSetup : AgentIntent
+    data object ExplainMcpSetup : AgentIntent
+    data object ExplainEmailSetup : AgentIntent
+    data object ShowMailboxStatus : AgentIntent
     data object ShowResourceStack : AgentIntent
     data object RefreshResources : AgentIntent
     data object RunShellRecovery : AgentIntent
@@ -3697,6 +4826,7 @@ private sealed interface AgentIntent {
     data class ConnectDeliveryChannel(
         val channelId: String,
     ) : AgentIntent
+    data object ConnectMailbox : AgentIntent
     data object PlanScheduledAutomation : AgentIntent
     data class ActivateScheduledAutomation(
         val automationId: String? = null,
@@ -3709,6 +4839,9 @@ private sealed interface AgentIntent {
     ) : AgentIntent
     data object PlanCodeGeneration : AgentIntent
     data object PlanBrowserResearch : AgentIntent
+    data class BrowseWebPage(
+        val url: String,
+    ) : AgentIntent
     data object SummarizeIndexedFiles : AgentIntent
     data class OrganizeIndexedFiles(
         val strategy: FileOrganizeStrategy,
@@ -3727,5 +4860,72 @@ private sealed interface AgentIntent {
     data class RunCompanionWorkflow(
         val workflowId: String,
     ) : AgentIntent
+    data object RespondWithProviderConversation : AgentIntent
     data object ExplainCapabilities : AgentIntent
+}
+
+internal fun looksLikeBrowserCapabilityQuestion(normalizedPrompt: String): Boolean {
+    val mentionsWebCapability = browserPromptContainsAny(
+        normalizedPrompt,
+        "browser",
+        "web",
+        "웹",
+        "브라우저",
+        "웹 페이지",
+        "웹페이지",
+        "사이트",
+        "page access",
+        "website access",
+    )
+    if (!mentionsWebCapability) {
+        return false
+    }
+    val asksCapability = browserPromptContainsAny(
+        normalizedPrompt,
+        "?",
+        "가능",
+        "할 수 있",
+        "되나",
+        "돼",
+        "접근",
+        "지원",
+        "can you",
+        "can i",
+        "able to",
+        "support",
+        "access",
+    )
+    val actionRequest = browserPromptContainsAny(
+        normalizedPrompt,
+        "research",
+        "search",
+        "look up",
+        "find",
+        "collect",
+        "summarize",
+        "news",
+        "article",
+        "조사",
+        "검색",
+        "찾아",
+        "수집",
+        "요약",
+        "뉴스",
+        "기사",
+        "열어줘",
+        "가져와",
+    )
+    return asksCapability && !actionRequest
+}
+
+internal fun extractFirstWebUrl(prompt: String): String? {
+    return webPageUrlPattern.find(prompt)?.value?.trim()
+        ?: webPageBareDomainPattern.find(prompt)?.value?.trim()
+}
+
+private fun browserPromptContainsAny(
+    normalizedPrompt: String,
+    vararg terms: String,
+): Boolean {
+    return terms.any { term -> normalizedPrompt.contains(term) }
 }

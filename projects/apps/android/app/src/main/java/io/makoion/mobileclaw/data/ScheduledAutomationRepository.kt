@@ -11,11 +11,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
 enum class ScheduledAutomationStatus {
     Planned,
     Active,
     Paused,
+    Blocked,
+    Degraded,
 }
 
 data class ScheduledAutomationRecord(
@@ -33,6 +34,10 @@ data class ScheduledAutomationRecord(
     val lastRunAtLabel: String?,
     val nextRunAtEpochMillis: Long?,
     val nextRunAtLabel: String?,
+    val runSpecJson: String? = null,
+    val blockedReason: String? = null,
+    val lastResultSummary: String? = null,
+    val deliveryReceiptLabel: String? = null,
 )
 
 interface ScheduledAutomationRepository {
@@ -41,6 +46,8 @@ interface ScheduledAutomationRepository {
     suspend fun createSkeleton(
         prompt: String,
         plan: ScheduledAutomationPlan,
+        runSpecJson: String? = null,
+        blockedReason: String? = null,
     ): ScheduledAutomationRecord
 
     suspend fun setStatus(
@@ -59,6 +66,10 @@ interface ScheduledAutomationRepository {
         automationId: String,
         lastRunAtEpochMillis: Long,
         nextRunAtEpochMillis: Long?,
+        status: ScheduledAutomationStatus? = null,
+        resultSummary: String? = null,
+        blockedReason: String? = null,
+        deliveryReceiptLabel: String? = null,
     ): ScheduledAutomationRecord?
 
     suspend fun refresh()
@@ -82,10 +93,12 @@ class PersistentScheduledAutomationRepository(
     override suspend fun createSkeleton(
         prompt: String,
         plan: ScheduledAutomationPlan,
+        runSpecJson: String?,
+        blockedReason: String?,
     ): ScheduledAutomationRecord {
         val automationId = "automation-${UUID.randomUUID()}"
         val now = System.currentTimeMillis()
-        val summary = buildScheduledAutomationSummary(plan)
+        val summary = buildScheduledAutomationSummary(plan, blockedReason)
         withContext(Dispatchers.IO) {
             databaseHelper.ensureScheduledAutomationSchema()
             databaseHelper.writableDatabase.insert(
@@ -98,18 +111,35 @@ class PersistentScheduledAutomationRepository(
                     put("schedule_label", plan.scheduleLabel)
                     put("delivery_label", plan.deliveryLabel)
                     put("summary", summary)
-                    put("status", ScheduledAutomationStatus.Planned.name)
+                    put(
+                        "status",
+                        if (blockedReason.isNullOrBlank()) {
+                            ScheduledAutomationStatus.Planned.name
+                        } else {
+                            ScheduledAutomationStatus.Blocked.name
+                        },
+                    )
                     put("created_at", now)
                     put("updated_at", now)
                     putNull("last_run_at")
                     putNull("next_run_at")
+                    put("run_spec_json", runSpecJson)
+                    put("blocked_reason", blockedReason)
+                    putNull("last_result_summary")
+                    putNull("delivery_receipt_label")
                 },
             )
         }
         auditTrailRepository.logAction(
             action = "automation.schedule",
-            result = "planned",
-            details = "Recorded automation ${plan.title} (${plan.scheduleLabel}, ${plan.deliveryLabel}).",
+            result = if (blockedReason.isNullOrBlank()) "planned" else "blocked",
+            details = buildString {
+                append("Recorded automation ${plan.title} (${plan.scheduleLabel}, ${plan.deliveryLabel}).")
+                blockedReason?.let {
+                    append(" Blocked reason: ")
+                    append(it)
+                }
+            },
         )
         refresh()
         return _automations.value.first { it.id == automationId }
@@ -173,6 +203,10 @@ class PersistentScheduledAutomationRepository(
         automationId: String,
         lastRunAtEpochMillis: Long,
         nextRunAtEpochMillis: Long?,
+        status: ScheduledAutomationStatus?,
+        resultSummary: String?,
+        blockedReason: String?,
+        deliveryReceiptLabel: String?,
     ): ScheduledAutomationRecord? {
         withContext(Dispatchers.IO) {
             databaseHelper.ensureScheduledAutomationSchema()
@@ -184,6 +218,22 @@ class PersistentScheduledAutomationRepository(
                         putNull("next_run_at")
                     } else {
                         put("next_run_at", nextRunAtEpochMillis)
+                    }
+                    status?.let { put("status", it.name) }
+                    if (resultSummary.isNullOrBlank()) {
+                        putNull("last_result_summary")
+                    } else {
+                        put("last_result_summary", resultSummary)
+                    }
+                    if (blockedReason.isNullOrBlank()) {
+                        putNull("blocked_reason")
+                    } else {
+                        put("blocked_reason", blockedReason)
+                    }
+                    if (deliveryReceiptLabel.isNullOrBlank()) {
+                        putNull("delivery_receipt_label")
+                    } else {
+                        put("delivery_receipt_label", deliveryReceiptLabel)
                     }
                     put("updated_at", lastRunAtEpochMillis)
                 },
@@ -214,6 +264,10 @@ class PersistentScheduledAutomationRepository(
                         "updated_at",
                         "last_run_at",
                         "next_run_at",
+                        "run_spec_json",
+                        "blocked_reason",
+                        "last_result_summary",
+                        "delivery_receipt_label",
                     ),
                     null,
                     null,
@@ -245,6 +299,11 @@ class PersistentScheduledAutomationRepository(
                                         now = now,
                                         lastRunAt = lastRunAt,
                                         nextRunAt = nextRunAt,
+                                        blockedReason = cursor.getString(cursor.getColumnIndexOrThrow("blocked_reason")),
+                                        lastResultSummary = cursor.getString(cursor.getColumnIndexOrThrow("last_result_summary")),
+                                        deliveryReceiptLabel = cursor.getString(
+                                            cursor.getColumnIndexOrThrow("delivery_receipt_label"),
+                                        ),
                                     ),
                                     status = status,
                                     createdAtEpochMillis = createdAt,
@@ -274,6 +333,14 @@ class PersistentScheduledAutomationRepository(
                                             DateUtils.MINUTE_IN_MILLIS,
                                         ).toString()
                                     },
+                                    runSpecJson = cursor.getString(cursor.getColumnIndexOrThrow("run_spec_json")),
+                                    blockedReason = cursor.getString(cursor.getColumnIndexOrThrow("blocked_reason")),
+                                    lastResultSummary = cursor.getString(
+                                        cursor.getColumnIndexOrThrow("last_result_summary"),
+                                    ),
+                                    deliveryReceiptLabel = cursor.getString(
+                                        cursor.getColumnIndexOrThrow("delivery_receipt_label"),
+                                    ),
                                 ),
                             )
                         }
@@ -288,8 +355,15 @@ class PersistentScheduledAutomationRepository(
     }
 }
 
-internal fun buildScheduledAutomationSummary(plan: ScheduledAutomationPlan): String {
-    return "Runs ${plan.scheduleLabel} via ${plan.deliveryLabel}."
+internal fun buildScheduledAutomationSummary(
+    plan: ScheduledAutomationPlan,
+    blockedReason: String? = null,
+): String {
+    return if (blockedReason.isNullOrBlank()) {
+        "Runs ${plan.scheduleLabel} via ${plan.deliveryLabel}."
+    } else {
+        "Runs ${plan.scheduleLabel} via ${plan.deliveryLabel}. Blocked: $blockedReason"
+    }
 }
 
 private fun decorateScheduledAutomationSummary(
@@ -298,8 +372,20 @@ private fun decorateScheduledAutomationSummary(
     now: Long,
     lastRunAt: Long?,
     nextRunAt: Long?,
+    blockedReason: String?,
+    lastResultSummary: String?,
+    deliveryReceiptLabel: String?,
 ): String {
     val details = buildList {
+        if (!blockedReason.isNullOrBlank()) {
+            add("Blocked: $blockedReason.")
+        }
+        if (!lastResultSummary.isNullOrBlank()) {
+            add(lastResultSummary)
+        }
+        if (!deliveryReceiptLabel.isNullOrBlank()) {
+            add("Delivery: $deliveryReceiptLabel.")
+        }
         if (lastRunAt != null) {
             add(
                 "Last run ${

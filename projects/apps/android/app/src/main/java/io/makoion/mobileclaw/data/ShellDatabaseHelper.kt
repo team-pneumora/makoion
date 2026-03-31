@@ -7,6 +7,40 @@ import android.database.sqlite.SQLiteOpenHelper
 class ShellDatabaseHelper(
     context: Context,
 ) : SQLiteOpenHelper(context, databaseName, null, databaseVersion) {
+    fun ensureMailboxSchema() {
+        val db = writableDatabase
+        createMailboxTables(db)
+    }
+
+    fun ensureDeliveryChannelSchema() {
+        val db = writableDatabase
+        createDeliveryChannelTables(db)
+        addColumnIfMissing(
+            db,
+            tableName = "delivery_channel_profiles",
+            columnName = "address",
+            columnDefinition = "TEXT",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "delivery_channel_profiles",
+            columnName = "config_json",
+            columnDefinition = "TEXT",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "delivery_channel_profiles",
+            columnName = "last_delivery_at",
+            columnDefinition = "INTEGER",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "delivery_channel_profiles",
+            columnName = "last_delivery_error",
+            columnDefinition = "TEXT",
+        )
+    }
+
     fun ensureMcpSkillSchema() {
         val db = writableDatabase
         createMcpSkillTables(db)
@@ -27,6 +61,31 @@ class ShellDatabaseHelper(
             columnName = "next_run_at",
             columnDefinition = "INTEGER",
         )
+        addColumnIfMissing(
+            db,
+            tableName = "scheduled_automation_records",
+            columnName = "run_spec_json",
+            columnDefinition = "TEXT",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "scheduled_automation_records",
+            columnName = "blocked_reason",
+            columnDefinition = "TEXT",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "scheduled_automation_records",
+            columnName = "last_result_summary",
+            columnDefinition = "TEXT",
+        )
+        addColumnIfMissing(
+            db,
+            tableName = "scheduled_automation_records",
+            columnName = "delivery_receipt_label",
+            columnDefinition = "TEXT",
+        )
+        ensureDeliveryChannelSchema()
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -44,6 +103,7 @@ class ShellDatabaseHelper(
         createCodeGenerationProjectTables(db)
         createScheduledAutomationTables(db)
         createMcpSkillTables(db)
+        createMailboxTables(db)
     }
 
     override fun onUpgrade(
@@ -363,6 +423,56 @@ class ShellDatabaseHelper(
                 columnDefinition = "TEXT",
             )
         }
+        if (oldVersion < 29) {
+            addColumnIfMissing(
+                db,
+                tableName = "scheduled_automation_records",
+                columnName = "run_spec_json",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "scheduled_automation_records",
+                columnName = "blocked_reason",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "scheduled_automation_records",
+                columnName = "last_result_summary",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "scheduled_automation_records",
+                columnName = "delivery_receipt_label",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "delivery_channel_profiles",
+                columnName = "address",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "delivery_channel_profiles",
+                columnName = "config_json",
+                columnDefinition = "TEXT",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "delivery_channel_profiles",
+                columnName = "last_delivery_at",
+                columnDefinition = "INTEGER",
+            )
+            addColumnIfMissing(
+                db,
+                tableName = "delivery_channel_profiles",
+                columnName = "last_delivery_error",
+                columnDefinition = "TEXT",
+            )
+        }
         if (oldVersion < 28) {
             addColumnIfMissing(
                 db,
@@ -382,6 +492,12 @@ class ShellDatabaseHelper(
                 columnName = "workflow_ids_json",
                 columnDefinition = "TEXT NOT NULL DEFAULT '[]'",
             )
+        }
+        if (oldVersion < 30) {
+            createMailboxTables(db)
+        }
+        if (oldVersion < 31) {
+            createChatAttachmentTables(db)
         }
     }
 
@@ -605,6 +721,7 @@ class ShellDatabaseHelper(
             )
             """.trimIndent(),
         )
+        createChatAttachmentTables(db)
         db.execSQL(
             """
             CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at
@@ -615,6 +732,32 @@ class ShellDatabaseHelper(
             """
             CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_created_at
             ON chat_messages(thread_id, created_at ASC)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createChatAttachmentTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS chat_message_attachments (
+                message_id TEXT NOT NULL,
+                position_index INTEGER NOT NULL,
+                attachment_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                uri TEXT,
+                size_bytes INTEGER,
+                size_label TEXT,
+                source_label TEXT,
+                PRIMARY KEY (message_id, position_index)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_message
+            ON chat_message_attachments(message_id, position_index ASC)
             """.trimIndent(),
         )
     }
@@ -735,6 +878,10 @@ class ShellDatabaseHelper(
                 summary TEXT NOT NULL,
                 supported_deliveries_json TEXT NOT NULL DEFAULT '[]',
                 destination_label TEXT,
+                address TEXT,
+                config_json TEXT,
+                last_delivery_at INTEGER,
+                last_delivery_error TEXT,
                 updated_at INTEGER NOT NULL
             )
             """.trimIndent(),
@@ -814,6 +961,10 @@ class ShellDatabaseHelper(
                 status TEXT NOT NULL,
                 last_run_at INTEGER,
                 next_run_at INTEGER,
+                run_spec_json TEXT,
+                blocked_reason TEXT,
+                last_result_summary TEXT,
+                delivery_receipt_label TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
@@ -823,6 +974,63 @@ class ShellDatabaseHelper(
             """
             CREATE INDEX IF NOT EXISTS idx_scheduled_automation_status
             ON scheduled_automation_records(status, updated_at DESC)
+            """.trimIndent(),
+        )
+    }
+
+    private fun createMailboxTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mailbox_connection_profiles (
+                mailbox_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                inbox_folder TEXT NOT NULL,
+                promotions_folder TEXT NOT NULL,
+                last_sync_at INTEGER,
+                last_error TEXT,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mailbox_connection_profiles_status
+            ON mailbox_connection_profiles(status, updated_at DESC)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS email_triage_records (
+                id TEXT PRIMARY KEY,
+                mailbox_id TEXT NOT NULL,
+                automation_id TEXT NOT NULL,
+                message_key TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                classification TEXT NOT NULL,
+                action_label TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                snippet TEXT NOT NULL,
+                received_at INTEGER,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_triage_records_updated_at
+            ON email_triage_records(updated_at DESC, classification)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_triage_records_automation_id
+            ON email_triage_records(automation_id)
             """.trimIndent(),
         )
     }
@@ -862,6 +1070,6 @@ class ShellDatabaseHelper(
 
     companion object {
         private const val databaseName = "mobileclaw_shell.db"
-        private const val databaseVersion = 28
+        private const val databaseVersion = 31
     }
 }

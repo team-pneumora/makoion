@@ -14,6 +14,14 @@ class ModelProviderSettingsRepositoryTest {
         assertEquals("openai", profiles.single { it.isDefault }.providerId)
         assertTrue(profiles.all { it.supportedModels.isNotEmpty() })
         assertTrue(profiles.all { it.selectedModel == it.defaultModel })
+        assertEquals(
+            listOf("gpt-5.4", "gpt-5.4-pro", "gpt-5-mini", "gpt-5-nano", "gpt-4.1"),
+            profiles.first { it.providerId == "openai" }.supportedModels,
+        )
+        assertEquals(
+            listOf("claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"),
+            profiles.first { it.providerId == "anthropic" }.supportedModels,
+        )
     }
 
     @Test
@@ -23,9 +31,9 @@ class ModelProviderSettingsRepositoryTest {
                 ModelProviderProfileState(
                     providerId = "openai",
                     displayName = "OpenAI",
-                    supportedModels = listOf("gpt-4.1-mini"),
-                    defaultModel = "gpt-4.1-mini",
-                    selectedModel = "gpt-4.1-mini",
+                    supportedModels = listOf("gpt-5.4"),
+                    defaultModel = "gpt-5.4",
+                    selectedModel = "gpt-5.4",
                     enabled = false,
                     isDefault = true,
                     credentialStatus = ModelProviderCredentialStatus.Stored,
@@ -35,9 +43,9 @@ class ModelProviderSettingsRepositoryTest {
                 ModelProviderProfileState(
                     providerId = "anthropic",
                     displayName = "Anthropic",
-                    supportedModels = listOf("claude-3.7-sonnet"),
-                    defaultModel = "claude-3.7-sonnet",
-                    selectedModel = "claude-3.7-sonnet",
+                    supportedModels = listOf("claude-sonnet-4-6"),
+                    defaultModel = "claude-sonnet-4-6",
+                    selectedModel = "claude-sonnet-4-6",
                     enabled = true,
                     isDefault = true,
                     credentialStatus = ModelProviderCredentialStatus.Missing,
@@ -61,9 +69,17 @@ class ModelProviderSettingsRepositoryTest {
 
         assertEquals("anthropic", preference.preferredProviderId)
         assertEquals("Anthropic", preference.preferredProviderLabel)
-        assertEquals("claude-3.7-sonnet", preference.preferredModel)
+        assertEquals("claude-sonnet-4-6", preference.preferredModel)
         assertEquals(listOf("anthropic", "google-gemini"), preference.enabledProviderIds)
         assertEquals(listOf("openai", "google-gemini"), preference.configuredProviderIds)
+    }
+
+    @Test
+    fun `normalize seed selected model keeps current choice only when still supported`() {
+        val openAiSeed = defaultModelProviderSeeds().first { it.providerId == "openai" }
+
+        assertEquals("gpt-5.4-pro", normalizeSeedSelectedModel("gpt-5.4-pro", openAiSeed))
+        assertEquals("gpt-5.4", normalizeSeedSelectedModel("gpt-4.1-mini", openAiSeed))
     }
 
     @Test

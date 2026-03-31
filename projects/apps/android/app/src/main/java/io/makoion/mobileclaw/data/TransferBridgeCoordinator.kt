@@ -73,20 +73,33 @@ class TransferBridgeCoordinator(
                 details = "Recovered $recoveredCount interrupted transfer drafts back into the queue.",
             )
         }
+        val manifestRecoverySnapshot = recoverManifestFallbackDrafts(now)
+        if (manifestRecoverySnapshot.requeuedCount > 0) {
+            auditTrailRepository.logAction(
+                action = "files.send_to_device",
+                result = "manifest_requeued",
+                details = "Requeued ${manifestRecoverySnapshot.requeuedCount} manifest-only draft(s) after binary sources became available again.",
+            )
+        }
         val dueQueuedDraftCount = withContext(Dispatchers.IO) { queryDueQueuedDraftCount(now) }
         val delayedQueuedSnapshot = withContext(Dispatchers.IO) { queryDelayedQueuedRetrySnapshot(now) }
-        val immediateDrainRequested = recoveredCount > 0 || dueQueuedDraftCount > 0
+        val immediateDrainRequested =
+            recoveredCount > 0 || manifestRecoverySnapshot.requeuedCount > 0 || dueQueuedDraftCount > 0
         when {
             scheduleWork && immediateDrainRequested -> scheduleDrain()
-            scheduleWork && delayedQueuedSnapshot.nextAttemptAtEpochMillis != null -> {
-                scheduleDrain(delayedQueuedSnapshot.nextAttemptAtEpochMillis - now)
-            }
+            scheduleWork -> scheduleFollowUpWork(
+                now = now,
+                delayedQueuedSnapshot = delayedQueuedSnapshot,
+                pendingManifestDraftCount = manifestRecoverySnapshot.pendingCandidateCount,
+            )
         }
         return TransferRecoverySnapshot(
             recoveredStaleDraftCount = recoveredCount,
             dueQueuedDraftCount = dueQueuedDraftCount,
             delayedQueuedDraftCount = delayedQueuedSnapshot.queuedCount,
             nextAttemptAtEpochMillis = delayedQueuedSnapshot.nextAttemptAtEpochMillis,
+            recoveredManifestDraftCount = manifestRecoverySnapshot.requeuedCount,
+            pendingManifestDraftCount = manifestRecoverySnapshot.pendingCandidateCount,
             immediateDrainRequested = immediateDrainRequested,
         )
     }
@@ -95,9 +108,13 @@ class TransferBridgeCoordinator(
         val now = System.currentTimeMillis()
         val recoverySnapshot = recoverShellState(scheduleWork = false)
         val recoveredCount = recoverySnapshot.recoveredStaleDraftCount
+        val recoveredManifestCount = recoverySnapshot.recoveredManifestDraftCount
         val drafts = withContext(Dispatchers.IO) { queryQueuedDrafts(now) }
         if (drafts.isEmpty()) {
-            scheduleNextQueuedDrain(now)
+            scheduleFollowUpWork(
+                now = now,
+                pendingManifestDraftCount = queryManifestRecoveryPendingCount(),
+            )
             return
         }
         var deliveredCount = 0
@@ -137,7 +154,10 @@ class TransferBridgeCoordinator(
             }
         }
         val completedAt = System.currentTimeMillis()
-        val scheduledRetrySnapshot = scheduleNextQueuedDrain(completedAt)
+        val followUpSnapshot = scheduleFollowUpWork(
+            now = completedAt,
+            pendingManifestDraftCount = queryManifestRecoveryPendingCount(),
+        )
         auditTrailRepository.logAction(
             action = "devices.transport",
             result = "drain_completed",
@@ -148,7 +168,8 @@ class TransferBridgeCoordinator(
                 retryScheduledCount = retryScheduledCount,
                 skippedCount = skippedCount,
                 recoveredCount = recoveredCount,
-                scheduledRetrySnapshot = scheduledRetrySnapshot,
+                recoveredManifestCount = recoveredManifestCount,
+                followUpSnapshot = followUpSnapshot,
             ),
         )
     }
@@ -465,12 +486,28 @@ class TransferBridgeCoordinator(
         }
     }
 
-    private fun scheduleNextQueuedDrain(now: Long): QueuedRetrySnapshot {
-        val snapshot = queryDelayedQueuedRetrySnapshot(now)
-        snapshot.nextAttemptAtEpochMillis?.let { nextAttemptAt ->
-            scheduleDrain(nextAttemptAt - now)
+    private suspend fun scheduleFollowUpWork(
+        now: Long,
+        delayedQueuedSnapshot: QueuedRetrySnapshot = queryDelayedQueuedRetrySnapshot(now),
+        pendingManifestDraftCount: Int,
+    ): TransferFollowUpSnapshot {
+        val manifestPollAt = if (pendingManifestDraftCount > 0) {
+            now + manifestRecoveryPollIntervalMs
+        } else {
+            null
         }
-        return snapshot
+        val nextAttemptAt = listOfNotNull(
+            delayedQueuedSnapshot.nextAttemptAtEpochMillis,
+            manifestPollAt,
+        ).minOrNull()
+        nextAttemptAt?.let {
+            scheduleDrain(it - now)
+        }
+        return TransferFollowUpSnapshot(
+            queuedRetrySnapshot = delayedQueuedSnapshot,
+            pendingManifestDraftCount = pendingManifestDraftCount,
+            nextAttemptAtEpochMillis = nextAttemptAt,
+        )
     }
 
     private fun queryDelayedQueuedRetrySnapshot(now: Long): QueuedRetrySnapshot {
@@ -508,6 +545,200 @@ class TransferBridgeCoordinator(
         )
     }
 
+    private suspend fun recoverManifestFallbackDrafts(now: Long): ManifestRecoverySnapshot {
+        val candidates = withContext(Dispatchers.IO) { queryManifestRecoveryCandidates() }
+        if (candidates.isEmpty()) {
+            return ManifestRecoverySnapshot()
+        }
+
+        var pendingCandidateCount = 0
+        var requeuedCount = 0
+        candidates.groupBy { it.deviceId }.forEach { (deviceId, drafts) ->
+            val device = queryPairedDevice(deviceId)
+            if (
+                device == null ||
+                device.transportMode != DeviceTransportMode.DirectHttp ||
+                device.endpointUrl.isNullOrBlank() ||
+                device.trustedSecret.isNullOrBlank()
+            ) {
+                return@forEach
+            }
+            val pendingTransferIds = queryPendingTransferIds(device) ?: run {
+                pendingCandidateCount += drafts.size
+                return@forEach
+            }
+            drafts.forEach { draft ->
+                if (draft.id !in pendingTransferIds) {
+                    return@forEach
+                }
+                if (draft.fileReferences.all { sourceUriFor(it.sourceId) != null }) {
+                    if (requeueManifestRecoveryDraft(draft, now)) {
+                        requeuedCount += 1
+                    } else {
+                        pendingCandidateCount += 1
+                    }
+                } else {
+                    pendingCandidateCount += 1
+                }
+            }
+        }
+        return ManifestRecoverySnapshot(
+            requeuedCount = requeuedCount,
+            pendingCandidateCount = pendingCandidateCount,
+        )
+    }
+
+    private fun queryManifestRecoveryCandidates(): List<PendingTransferDraft> {
+        val drafts = mutableListOf<PendingTransferDraft>()
+        databaseHelper.readableDatabase.query(
+            "transfer_outbox",
+            arrayOf(
+                "id",
+                "device_id",
+                "device_name",
+                "file_names_json",
+                "approval_request_id",
+                "file_refs_json",
+                "attempt_count",
+            ),
+            "status = ? AND delivery_mode = ?",
+            arrayOf(TransferDraftStatus.Delivered.name, "manifest_only"),
+            null,
+            null,
+            "delivered_at DESC, created_at DESC",
+        ).use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow("id")
+            val deviceIdIndex = cursor.getColumnIndexOrThrow("device_id")
+            val deviceNameIndex = cursor.getColumnIndexOrThrow("device_name")
+            val fileNamesIndex = cursor.getColumnIndexOrThrow("file_names_json")
+            val approvalRequestIdIndex = cursor.getColumnIndexOrThrow("approval_request_id")
+            val fileRefsIndex = cursor.getColumnIndexOrThrow("file_refs_json")
+            val attemptCountIndex = cursor.getColumnIndexOrThrow("attempt_count")
+
+            while (cursor.moveToNext()) {
+                drafts += PendingTransferDraft(
+                    id = cursor.getString(idIndex),
+                    deviceId = cursor.getString(deviceIdIndex),
+                    deviceName = cursor.getString(deviceNameIndex),
+                    approvalRequestId = cursor.getString(approvalRequestIdIndex),
+                    fileNames = jsonArrayToList(cursor.getString(fileNamesIndex)),
+                    fileReferences = jsonArrayToFileReferences(cursor.getString(fileRefsIndex)),
+                    attemptCount = cursor.getInt(attemptCountIndex),
+                )
+            }
+        }
+        return drafts
+    }
+
+    private suspend fun queryManifestRecoveryPendingCount(): Int {
+        val candidates = withContext(Dispatchers.IO) { queryManifestRecoveryCandidates() }
+        if (candidates.isEmpty()) {
+            return 0
+        }
+        var pendingCandidateCount = 0
+        candidates.groupBy { it.deviceId }.forEach { (deviceId, drafts) ->
+            val device = queryPairedDevice(deviceId)
+            if (
+                device == null ||
+                device.transportMode != DeviceTransportMode.DirectHttp ||
+                device.endpointUrl.isNullOrBlank() ||
+                device.trustedSecret.isNullOrBlank()
+            ) {
+                return@forEach
+            }
+            val pendingTransferIds = queryPendingTransferIds(device) ?: run {
+                pendingCandidateCount += drafts.size
+                return@forEach
+            }
+            pendingCandidateCount += drafts.count { it.id in pendingTransferIds }
+        }
+        return pendingCandidateCount
+    }
+
+    private fun queryPendingTransferIds(device: BridgeDeviceState): Set<String>? {
+        val endpoint = device.endpointUrl ?: return emptySet()
+        val secret = device.trustedSecret ?: return emptySet()
+        return runCatching {
+            val connection = (URL(pendingTransfersUrlFor(endpoint)).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 4_000
+                readTimeout = 4_000
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("X-MobileClaw-Trusted-Secret", secret)
+            }
+            val responseCode = connection.responseCode
+            val responseBody = runCatching {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            }.getOrElse {
+                connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            }
+            connection.disconnect()
+            if (responseCode !in 200..299) {
+                null
+            } else {
+                val json = JSONObject(responseBody)
+                val pendingTransfers = json.optJSONArray("pending_transfers")
+                if (pendingTransfers == null) {
+                    emptySet<String>()
+                } else {
+                    buildSet {
+                        for (index in 0 until pendingTransfers.length()) {
+                            val item = pendingTransfers.optJSONObject(index) ?: continue
+                            item.optString("transfer_id").takeIf { it.isNotBlank() }?.let(::add)
+                        }
+                    }
+                }
+            }
+        }.getOrNull()
+    }
+
+    private suspend fun requeueManifestRecoveryDraft(
+        draft: PendingTransferDraft,
+        now: Long,
+    ): Boolean {
+        val updated = withContext(Dispatchers.IO) {
+            val updatedRows = databaseHelper.writableDatabase.update(
+                "transfer_outbox",
+                ContentValues().apply {
+                    put("status", TransferDraftStatus.Queued.name)
+                    put("updated_at", now)
+                    put("next_attempt_at", now)
+                    putNull("transport_endpoint")
+                    putNull("delivery_mode")
+                    putNull("receipt_json")
+                    put(
+                        "last_error",
+                        "Recovered a manifest-only fallback after binary sources became available again.",
+                    )
+                },
+                "id = ? AND status = ? AND delivery_mode = ?",
+                arrayOf(draft.id, TransferDraftStatus.Delivered.name, "manifest_only"),
+            )
+            if (updatedRows == 1) {
+                databaseHelper.writableDatabase.update(
+                    "paired_devices",
+                    ContentValues().apply {
+                        put("status", "Retry scheduled")
+                    },
+                    "id = ?",
+                    arrayOf(draft.deviceId),
+                )
+            }
+            updatedRows == 1
+        }
+        if (updated) {
+            updateLinkedTask(
+                draft = draft,
+                status = AgentTaskStatus.RetryScheduled,
+                summary = "Binary sources became available again for ${draft.deviceName}; bridge delivery will retry now.",
+                replyPreview = "Transfer recovery resumed for ${draft.deviceName}.",
+                nextRetryAtEpochMillis = now,
+                lastError = "Manifest-only fallback recovered and requeued for binary delivery.",
+            )
+        }
+        return updated
+    }
+
     private fun buildDrainSummary(
         processedCount: Int,
         deliveredCount: Int,
@@ -515,7 +746,8 @@ class TransferBridgeCoordinator(
         retryScheduledCount: Int,
         skippedCount: Int,
         recoveredCount: Int,
-        scheduledRetrySnapshot: QueuedRetrySnapshot,
+        recoveredManifestCount: Int,
+        followUpSnapshot: TransferFollowUpSnapshot,
     ): String {
         return buildString {
             append("Transfer drain processed ")
@@ -537,12 +769,22 @@ class TransferBridgeCoordinator(
                 append(recoveredCount)
                 append(" stale sending draft(s) first")
             }
-            scheduledRetrySnapshot.nextAttemptAtEpochMillis?.let { nextAttemptAt ->
+            if (recoveredManifestCount > 0) {
+                append(". Requeued ")
+                append(recoveredManifestCount)
+                append(" manifest-only recovery draft(s)")
+            }
+            followUpSnapshot.queuedRetrySnapshot.nextAttemptAtEpochMillis?.let { nextAttemptAt ->
                 append(". ")
-                append(scheduledRetrySnapshot.queuedCount)
+                append(followUpSnapshot.queuedRetrySnapshot.queuedCount)
                 append(" delayed queued draft(s) remain; next retry in ")
                 append(((nextAttemptAt - System.currentTimeMillis()).coerceAtLeast(0L)) / 1000L)
                 append("s")
+            }
+            if (followUpSnapshot.pendingManifestDraftCount > 0) {
+                append(". ")
+                append(followUpSnapshot.pendingManifestDraftCount)
+                append(" manifest-only draft(s) remain pending recovery pull")
             }
             append(".")
         }
@@ -886,6 +1128,11 @@ class TransferBridgeCoordinator(
         }.getOrNull()
     }
 
+    private fun pendingTransfersUrlFor(endpoint: String): String {
+        val url = URL(endpoint)
+        return URL(url.protocol, url.host, url.port, "/api/v1/transfers/pending").toString()
+    }
+
     private fun computeRetryDelayMs(attemptNumber: Int): Long {
         val boundedAttempt = attemptNumber.coerceIn(1, retryDelayStepsMs.size)
         return retryDelayStepsMs[boundedAttempt - 1]
@@ -1061,6 +1308,7 @@ class TransferBridgeCoordinator(
         private const val maxArchiveBytes = 16L * 1024L * 1024L
         private const val maxDeliveryAttempts = 5
         private const val staleSendingTimeoutMs = 90_000L
+        private const val manifestRecoveryPollIntervalMs = 60_000L
         private const val minRetryDelayMs = 15_000L
         private const val maxReplyPreviewLength = 240
         private val acceptedReceiptStatuses = setOf("accepted", "ok", "completed")
@@ -1083,11 +1331,24 @@ private data class QueuedRetrySnapshot(
     val nextAttemptAtEpochMillis: Long?,
 )
 
+private data class ManifestRecoverySnapshot(
+    val requeuedCount: Int = 0,
+    val pendingCandidateCount: Int = 0,
+)
+
+private data class TransferFollowUpSnapshot(
+    val queuedRetrySnapshot: QueuedRetrySnapshot,
+    val pendingManifestDraftCount: Int = 0,
+    val nextAttemptAtEpochMillis: Long? = null,
+)
+
 data class TransferRecoverySnapshot(
     val recoveredStaleDraftCount: Int = 0,
     val dueQueuedDraftCount: Int = 0,
     val delayedQueuedDraftCount: Int = 0,
     val nextAttemptAtEpochMillis: Long? = null,
+    val recoveredManifestDraftCount: Int = 0,
+    val pendingManifestDraftCount: Int = 0,
     val immediateDrainRequested: Boolean = false,
 )
 

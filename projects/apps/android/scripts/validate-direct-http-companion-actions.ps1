@@ -35,56 +35,13 @@ $companionDir = Join-Path $repoRoot "projects\apps\desktop-companion"
 $companionScript = Join-Path $companionDir "run-companion.ps1"
 $adbPath = Join-Path $env:LOCALAPPDATA "Android\Sdk\platform-tools\adb.exe"
 $packageName = "io.makoion.hub.dev"
+$powerShellPath = (Get-Process -Id $PID).Path
 $actionsDirName = "actions"
 $sessionTag = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+$validationStateRemotePath = "files/debug-validation-state.json"
 $inboxPath = Join-Path $companionDir "inbox-validate-companion-actions-$sessionTag"
 $stdoutLog = Join-Path $companionDir "companion-actions-$sessionTag.log"
 $stderrLog = Join-Path $companionDir "companion-actions-$sessionTag.err"
-$pythonScript = @'
-import json
-import sqlite3
-import sys
-
-db_path = sys.argv[1]
-
-connection = sqlite3.connect(db_path)
-connection.row_factory = sqlite3.Row
-
-def row_to_dict(row):
-    if row is None:
-        return None
-    return {key: row[key] for key in row.keys()}
-
-latest_device = row_to_dict(
-    connection.execute(
-        """
-        SELECT id, name, role, status, transport_mode, endpoint_url, validation_mode, paired_at
-        FROM paired_devices
-        ORDER BY paired_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-)
-
-recent_audits = [
-    row_to_dict(row)
-    for row in connection.execute(
-        """
-        SELECT action, result, details, created_at
-        FROM audit_events
-        ORDER BY created_at DESC
-        LIMIT 64
-        """
-    ).fetchall()
-]
-
-connection.close()
-
-print(json.dumps({
-    "latest_device": latest_device,
-    "recent_audits": recent_audits,
-}))
-'@
 
 if (-not (Test-Path $adbPath)) {
     throw "adb.exe was not found at $adbPath"
@@ -113,11 +70,48 @@ function Resolve-TargetSerial {
     return ($devices[0] -split "\s+")[0]
 }
 
+function Wait-ForResolvedDevice {
+    param([int]$TimeoutSeconds = 30)
+
+    $serialPattern = "^{0}`tdevice$" -f [regex]::Escape($script:ResolvedSerial)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $devices = @(& $adbPath devices | Select-Object -Skip 1)
+        if ($devices | Where-Object { $_ -match $serialPattern }) {
+            return
+        }
+        & $adbPath reconnect | Out-Null
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Android device $($script:ResolvedSerial) is unavailable."
+}
+
+function Get-LogExcerpt {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+
+    return ((Get-Content -Path $Path -Tail 40) -join [Environment]::NewLine).Trim()
+}
+
 function Wait-CompanionHealth {
-    param([int]$PortNumber)
+    param(
+        [int]$PortNumber,
+        [System.Diagnostics.Process]$Process,
+        [string]$StdoutLogPath,
+        [string]$StderrLogPath
+    )
 
     $lastError = $null
     for ($index = 0; $index -lt 25; $index++) {
+        if ($Process -and $Process.HasExited) {
+            $stderr = Get-LogExcerpt -Path $StderrLogPath
+            $stdout = Get-LogExcerpt -Path $StdoutLogPath
+            throw "Companion process exited before /health became ready (exit code $($Process.ExitCode)). stderr: $stderr stdout: $stdout".Trim()
+        }
         try {
             return Invoke-RestMethod -Uri "http://127.0.0.1:$PortNumber/health" -TimeoutSec 2
         } catch {
@@ -132,8 +126,10 @@ function Start-ValidationCompanion {
     param([int]$PortNumber, [string]$InboxDirectory)
 
     New-Item -ItemType Directory -Force -Path $InboxDirectory | Out-Null
-    $process = Start-Process pwsh -ArgumentList @(
+    $process = Start-Process $powerShellPath -ArgumentList @(
         "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
         "-File",
         $companionScript,
         "--host",
@@ -143,7 +139,11 @@ function Start-ValidationCompanion {
         "--inbox-dir",
         $InboxDirectory
     ) -WorkingDirectory $companionDir -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
-    $health = Wait-CompanionHealth -PortNumber $PortNumber
+    $health = Wait-CompanionHealth `
+        -PortNumber $PortNumber `
+        -Process $process `
+        -StdoutLogPath $stdoutLog `
+        -StderrLogPath $stderrLog
     return [pscustomobject]@{
         Process = $process
         Health = $health
@@ -177,6 +177,7 @@ function Invoke-DebugTransportCommand {
         "shell",
         "am",
         "broadcast",
+        "--include-stopped-packages",
         "-a",
         "$packageName.DEBUG_TRANSPORT",
         "-n",
@@ -196,8 +197,11 @@ function Invoke-DebugTransportCommand {
     & $adbPath @arguments | Out-Null
 }
 
-function Pull-MobileClawDatabase {
-    param([string]$DestinationPath)
+function Pull-AppFileFromDevice {
+    param(
+        [string]$RemotePath,
+        [string]$DestinationPath
+    )
 
     if (Test-Path $DestinationPath) {
         Remove-Item $DestinationPath -Force
@@ -209,33 +213,26 @@ function Pull-MobileClawDatabase {
         "run-as",
         $packageName,
         "cat",
-        "databases/mobileclaw_shell.db"
+        $RemotePath
     ) -RedirectStandardOutput $DestinationPath -RedirectStandardError "$DestinationPath.err" -Wait -PassThru -NoNewWindow
 
-    if ($process.ExitCode -ne 0) {
-        $stderr = if (Test-Path "$DestinationPath.err") {
-            Get-Content -Raw "$DestinationPath.err"
-        } else {
-            ""
-        }
-        throw "Failed to pull mobileclaw_shell.db from the device. $stderr".Trim()
+    if ($process.ExitCode -ne 0 -or -not (Test-Path $DestinationPath) -or (Get-Item $DestinationPath).Length -le 0) {
+        $stderr = if (Test-Path "$DestinationPath.err") { Get-Content -Raw "$DestinationPath.err" } else { "" }
+        throw "Failed to pull $RemotePath from the device. $stderr".Trim()
     }
 
-    if (Test-Path "$DestinationPath.err") {
-        Remove-Item "$DestinationPath.err" -Force
-    }
+    Remove-Item "$DestinationPath.err" -Force -ErrorAction SilentlyContinue
 }
 
 function Read-ValidationState {
-    $dbPath = Join-Path $env:TEMP ("makoion-companion-actions-{0}.db" -f ([guid]::NewGuid()))
-    Pull-MobileClawDatabase -DestinationPath $dbPath
+    $jsonPath = Join-Path $env:TEMP ("makoion-companion-actions-{0}.json" -f ([guid]::NewGuid()))
     try {
-        $stateJson = $pythonScript | python - $dbPath
-        return $stateJson | ConvertFrom-Json -Depth 8
+        Invoke-DebugTransportCommand -Command "dump_validation_state"
+        Start-Sleep -Milliseconds 300
+        Pull-AppFileFromDevice -RemotePath $validationStateRemotePath -DestinationPath $jsonPath
+        return (Get-Content -Raw $jsonPath) | ConvertFrom-Json -Depth 8
     } finally {
-        if (Test-Path $dbPath) {
-            Remove-Item $dbPath -Force
-        }
+        Remove-Item $jsonPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -518,6 +515,7 @@ function Invoke-WorkflowValidation {
 }
 
 $script:ResolvedSerial = Resolve-TargetSerial -RequestedSerial $Serial
+Wait-ForResolvedDevice
 $companion = $null
 $results = [System.Collections.Generic.List[object]]::new()
 
@@ -525,7 +523,7 @@ try {
     Write-ValidationStep "Starting desktop companion on port $Port"
     $companion = Start-ValidationCompanion -PortNumber $Port -InboxDirectory $inboxPath
     Write-ValidationStep "Bootstrapping Direct HTTP device against $($companion.Health.endpoint)"
-    $bootstrap = & pwsh -NoProfile -File $bootstrapScript -Serial $script:ResolvedSerial -ValidationMode "normal" -EndpointPreset $EndpointPreset -Port $Port | ConvertFrom-Json
+    $bootstrap = & $powerShellPath -NoProfile -ExecutionPolicy Bypass -File $bootstrapScript -Serial $script:ResolvedSerial -ValidationMode "normal" -EndpointPreset $EndpointPreset -Port $Port | ConvertFrom-Json
     Start-Sleep -Seconds 1
 
     $bootstrappedState = Wait-ForState -Description "bootstrapped Direct HTTP device" -TimeoutSeconds 20 -Predicate {

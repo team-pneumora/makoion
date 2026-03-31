@@ -21,6 +21,8 @@ class ScheduledAutomationCoordinator(
     private val context: Context,
     private val scheduledAutomationRepository: ScheduledAutomationRepository,
     private val auditTrailRepository: AuditTrailRepository,
+    private val scheduledAgentRunner: ScheduledAgentRunner,
+    private val deliveryRouter: DeliveryRouter,
 ) {
     private val coordinatorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -89,6 +91,10 @@ class ScheduledAutomationCoordinator(
                     ScheduledAutomationStatus.Paused -> snapshot.copy(
                         pausedCount = snapshot.pausedCount + 1,
                     )
+                    ScheduledAutomationStatus.Blocked,
+                    ScheduledAutomationStatus.Degraded -> snapshot.copy(
+                        pausedCount = snapshot.pausedCount + 1,
+                    )
                     ScheduledAutomationStatus.Active -> snapshot
                 }
                 WorkManager.getInstance(context).cancelUniqueWork(
@@ -134,25 +140,42 @@ class ScheduledAutomationCoordinator(
             automationId = automation.id,
             lastRunAtEpochMillis = executedAt,
             nextRunAtEpochMillis = nextRunAt,
+            status = ScheduledAutomationStatus.Active,
         ) ?: automation
-        val deliveryMode = resolveDeliveryMode(updated.deliveryLabel)
-        ShellNotificationCenter.showAutomationExecution(
-            context = context,
-            automation = updated,
-            deliveryMode = deliveryMode,
-            trigger = trigger,
-        )
+        val executionResult = scheduledAgentRunner.execute(updated)
+        val receipt = if (executionResult.status == ScheduledAutomationStatus.Blocked || !executionResult.deliverToUser) {
+            DeliveryReceipt(
+                channelId = "chat-only",
+                channelLabel = "Chat summary",
+                delivered = false,
+                detail = executionResult.blockedReason ?: executionResult.summary,
+            )
+        } else {
+            deliveryRouter.deliverAutomationAlert(updated, executionResult)
+        }
+        val finalized = scheduledAutomationRepository.noteExecution(
+            automationId = updated.id,
+            lastRunAtEpochMillis = executedAt,
+            nextRunAtEpochMillis = nextRunAt,
+            status = executionResult.status,
+            resultSummary = executionResult.summary,
+            blockedReason = executionResult.blockedReason,
+            deliveryReceiptLabel = receipt.detail,
+        ) ?: updated
+        val deliveryMode = resolveDeliveryMode(receipt.channelId)
         auditTrailRepository.logAction(
             action = "automation.execute",
             result = deliveryMode.auditResult,
             details = buildExecutionDetails(
-                automation = updated,
+                automation = finalized,
                 deliveryMode = deliveryMode,
                 trigger = trigger,
+                executionResult = executionResult,
+                receipt = receipt,
             ),
-            requestId = updated.id,
+            requestId = finalized.id,
         )
-        return updated
+        return finalized
     }
 
     private fun enqueueScheduledWork(
@@ -216,10 +239,11 @@ class ScheduledAutomationCoordinator(
         return next.toInstant().toEpochMilli()
     }
 
-    private fun resolveDeliveryMode(deliveryLabel: String): AutomationDeliveryMode {
-        return when (deliveryLabel) {
-            "Email",
-            "Telegram" -> AutomationDeliveryMode.LocalFallback
+    private fun resolveDeliveryMode(channelIdOrLabel: String): AutomationDeliveryMode {
+        return when (channelIdOrLabel) {
+            "telegram-bot-delivery",
+            "Telegram" -> AutomationDeliveryMode.Telegram
+            "chat-only" -> AutomationDeliveryMode.Blocked
             else -> AutomationDeliveryMode.LocalNotification
         }
     }
@@ -228,14 +252,18 @@ class ScheduledAutomationCoordinator(
         automation: ScheduledAutomationRecord,
         deliveryMode: AutomationDeliveryMode,
         trigger: String,
+        executionResult: AutomationExecutionResult,
+        receipt: DeliveryReceipt,
     ): String {
         val deliveryDetails = when (deliveryMode) {
             AutomationDeliveryMode.LocalNotification ->
                 "Delivered through the on-device notification channel."
-            AutomationDeliveryMode.LocalFallback ->
-                "Requested external delivery is still staged, so the run was surfaced through the local notification channel."
+            AutomationDeliveryMode.Telegram ->
+                "Delivered through the Telegram relay."
+            AutomationDeliveryMode.Blocked ->
+                "The run stayed blocked and no delivery channel was used."
         }
-        return "Executed ${automation.title} via ${automation.scheduleLabel} ($trigger trigger). $deliveryDetails"
+        return "Executed ${automation.title} via ${automation.scheduleLabel} ($trigger trigger). ${executionResult.summary} $deliveryDetails Receipt: ${receipt.detail}"
     }
 
     companion object {
@@ -254,7 +282,8 @@ enum class AutomationDeliveryMode(
     val auditResult: String,
 ) {
     LocalNotification("delivered"),
-    LocalFallback("local_fallback"),
+    Telegram("telegram_delivered"),
+    Blocked("blocked"),
 }
 
 data class ScheduledAutomationSyncSnapshot(

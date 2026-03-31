@@ -341,58 +341,10 @@ class ShellRecoveryCoordinator(
                     }
                 }
                 ApprovalInboxStatus.Approved -> {
-                    val execution = organizeExecutionRepository.findByApprovalId(approvalId)
-                    if (execution == null) {
-                        val summary = "Recovery found an approved request without a durable execution result."
-                        val scheduledTask = agentTaskRetryCoordinator.markTaskRetryScheduled(
-                            taskId = task.id,
-                            summary = "$summary The retry worker will resume it using the shared task backoff policy.",
-                            errorMessage = "Approved task had no durable execution result during recovery.",
-                            replyPreview = task.replyPreview,
-                            immediate = true,
-                        )
-                        if (scheduledTask?.status == AgentTaskStatus.RetryScheduled) {
-                            snapshot = snapshot.copy(
-                                retryScheduledTaskCount = snapshot.retryScheduledTaskCount + 1,
-                            )
-                        } else if (scheduledTask?.status == AgentTaskStatus.Failed) {
-                            snapshot = snapshot.copy(
-                                interruptedTaskCount = snapshot.interruptedTaskCount + 1,
-                            )
-                        }
-                    } else {
-                        val recoveredStatus = when {
-                            execution.result.deleteConsentRequiredCount > 0 -> AgentTaskStatus.WaitingUser
-                            execution.result.failedCount == 0 && execution.result.copiedOnlyCount == 0 -> AgentTaskStatus.Succeeded
-                            else -> AgentTaskStatus.Failed
-                        }
-                        val summary = when (recoveredStatus) {
-                            AgentTaskStatus.WaitingUser ->
-                                execution.result.statusNote
-                                    ?: "Recovery restored an organize task that is still waiting for Android delete consent."
-                            AgentTaskStatus.Succeeded ->
-                                "Recovery restored a successful organize execution."
-                            else ->
-                                "Recovery restored an organize execution that finished with issues."
-                        }
-                        if (
-                            updateRecoveredTask(
-                                task = task,
-                                status = recoveredStatus,
-                                summary = summary,
-                                replyPreview = execution.result.summaryWithStatusNote.take(maxRecoveredReplyPreviewLength),
-                            )
-                        ) {
-                            snapshot = if (recoveredStatus == AgentTaskStatus.WaitingUser) {
-                                snapshot.copy(
-                                    waitingUserTaskCount = snapshot.waitingUserTaskCount + 1,
-                                )
-                            } else {
-                                snapshot.copy(
-                                    restoredExecutionTaskCount = snapshot.restoredExecutionTaskCount + 1,
-                                )
-                            }
-                        }
+                    snapshot = when (task.actionKey) {
+                        filesOrganizeExecuteActionKey -> recoverApprovedOrganizeTask(task, approvalId, snapshot)
+                        filesTransferExecuteActionKey -> recoverApprovedTransferTask(task, approvalId, snapshot)
+                        else -> recoverUnsupportedApprovedTask(task, snapshot)
                     }
                 }
                 null -> {
@@ -414,6 +366,7 @@ class ShellRecoveryCoordinator(
         status: AgentTaskStatus,
         summary: String,
         replyPreview: String? = null,
+        lastError: String? = null,
     ): Boolean {
         if (task.status == status && task.summary == summary && replyPreview == null) {
             return false
@@ -423,9 +376,114 @@ class ShellRecoveryCoordinator(
             status = status,
             summary = summary,
             replyPreview = replyPreview,
-            lastError = task.lastError,
+            lastError = lastError,
         )
         return true
+    }
+
+    private suspend fun recoverApprovedOrganizeTask(
+        task: AgentTaskRecord,
+        approvalId: String,
+        snapshot: AgentTaskRecoverySnapshot,
+    ): AgentTaskRecoverySnapshot {
+        val execution = organizeExecutionRepository.findByApprovalId(approvalId)
+        if (execution == null) {
+            val summary = "Recovery found an approved organize request without a durable execution result."
+            val scheduledTask = agentTaskRetryCoordinator.markTaskRetryScheduled(
+                taskId = task.id,
+                summary = "$summary The retry worker will resume it using the shared task backoff policy.",
+                errorMessage = "Approved organize task had no durable execution result during recovery.",
+                replyPreview = task.replyPreview,
+                immediate = true,
+            )
+            return when (scheduledTask?.status) {
+                AgentTaskStatus.RetryScheduled -> snapshot.copy(
+                    retryScheduledTaskCount = snapshot.retryScheduledTaskCount + 1,
+                )
+                AgentTaskStatus.Failed -> snapshot.copy(
+                    interruptedTaskCount = snapshot.interruptedTaskCount + 1,
+                )
+                else -> snapshot
+            }
+        }
+
+        val recoveredStatus = when {
+            execution.result.deleteConsentRequiredCount > 0 -> AgentTaskStatus.WaitingUser
+            execution.result.failedCount == 0 && execution.result.copiedOnlyCount == 0 -> AgentTaskStatus.Succeeded
+            else -> AgentTaskStatus.Failed
+        }
+        val summary = when (recoveredStatus) {
+            AgentTaskStatus.WaitingUser ->
+                execution.result.statusNote
+                    ?: "Recovery restored an organize task that is still waiting for Android delete consent."
+            AgentTaskStatus.Succeeded ->
+                "Recovery restored a successful organize execution."
+            else ->
+                "Recovery restored an organize execution that finished with issues."
+        }
+        if (
+            updateRecoveredTask(
+                task = task,
+                status = recoveredStatus,
+                summary = summary,
+                replyPreview = execution.result.summaryWithStatusNote.take(maxRecoveredReplyPreviewLength),
+            )
+        ) {
+            return if (recoveredStatus == AgentTaskStatus.WaitingUser) {
+                snapshot.copy(
+                    waitingUserTaskCount = snapshot.waitingUserTaskCount + 1,
+                )
+            } else {
+                snapshot.copy(
+                    restoredExecutionTaskCount = snapshot.restoredExecutionTaskCount + 1,
+                )
+            }
+        }
+        return snapshot
+    }
+
+    private suspend fun recoverApprovedTransferTask(
+        task: AgentTaskRecord,
+        approvalId: String,
+        snapshot: AgentTaskRecoverySnapshot,
+    ): AgentTaskRecoverySnapshot {
+        val relatedDrafts = devicePairingRepository.transferDrafts.value.filter { draft ->
+            draft.approvalRequestId == approvalId
+        }
+        val resolution = resolveTransferTaskRecovery(relatedDrafts)
+        if (
+            updateRecoveredTask(
+                task = task,
+                status = resolution.status,
+                summary = resolution.summary,
+                replyPreview = resolution.replyPreview.take(maxRecoveredReplyPreviewLength),
+            )
+        ) {
+            return snapshot.copy(
+                restoredTransferTaskCount = snapshot.restoredTransferTaskCount + 1,
+            )
+        }
+        return snapshot
+    }
+
+    private suspend fun recoverUnsupportedApprovedTask(
+        task: AgentTaskRecord,
+        snapshot: AgentTaskRecoverySnapshot,
+    ): AgentTaskRecoverySnapshot {
+        val summary = "Recovery found an approved ${task.actionKey} task, but no dedicated recovery adapter is available yet. Inspect it from Dashboard before retrying."
+        if (
+            updateRecoveredTask(
+                task = task,
+                status = AgentTaskStatus.WaitingResource,
+                summary = summary,
+                replyPreview = "Approved ${task.actionKey} task needs manual inspection after recovery.",
+            )
+        ) {
+            return snapshot.copy(
+                unsupportedApprovedTaskCount = snapshot.unsupportedApprovedTaskCount + 1,
+            )
+        }
+        return snapshot
     }
 
     private fun buildTaskRecoverySummary(
@@ -453,6 +511,12 @@ class ShellRecoveryCoordinator(
                     }
                     if (taskRecoverySnapshot.restoredExecutionTaskCount > 0) {
                         add("${taskRecoverySnapshot.restoredExecutionTaskCount} restored-execution")
+                    }
+                    if (taskRecoverySnapshot.restoredTransferTaskCount > 0) {
+                        add("${taskRecoverySnapshot.restoredTransferTaskCount} restored-transfer")
+                    }
+                    if (taskRecoverySnapshot.unsupportedApprovedTaskCount > 0) {
+                        add("${taskRecoverySnapshot.unsupportedApprovedTaskCount} unsupported-approved")
                     }
                 }
                 if (changedStates.isEmpty()) {
@@ -533,5 +597,7 @@ private data class AgentTaskRecoverySnapshot(
     val retryScheduledTaskCount: Int = 0,
     val cancelledTaskCount: Int = 0,
     val restoredExecutionTaskCount: Int = 0,
+    val restoredTransferTaskCount: Int = 0,
+    val unsupportedApprovedTaskCount: Int = 0,
     val retryWorkScheduled: Boolean = false,
 )

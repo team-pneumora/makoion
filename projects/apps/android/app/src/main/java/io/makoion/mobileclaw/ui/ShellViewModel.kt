@@ -9,11 +9,11 @@ import androidx.lifecycle.viewModelScope
 import io.makoion.mobileclaw.MobileClawApplication
 import io.makoion.mobileclaw.data.ApprovalInboxItem
 import io.makoion.mobileclaw.data.ApprovalActionResult
-import io.makoion.mobileclaw.data.AgentDestination
 import io.makoion.mobileclaw.data.AgentTaskRecord
 import io.makoion.mobileclaw.data.AgentTurnContext
 import io.makoion.mobileclaw.data.AgentTurnResult
 import io.makoion.mobileclaw.data.AuditTrailEvent
+import io.makoion.mobileclaw.data.ChatAttachment
 import io.makoion.mobileclaw.data.ChatMessage
 import io.makoion.mobileclaw.data.ChatMessageRole
 import io.makoion.mobileclaw.data.ChatThreadRecord
@@ -27,6 +27,7 @@ import io.makoion.mobileclaw.data.CompanionSessionNotifyResult
 import io.makoion.mobileclaw.data.CompanionWorkflowRunResult
 import io.makoion.mobileclaw.data.DeliveryChannelProfileState
 import io.makoion.mobileclaw.data.ExternalEndpointProfileState
+import io.makoion.mobileclaw.data.EmailTriageRecord
 import io.makoion.mobileclaw.data.FileIndexState
 import io.makoion.mobileclaw.data.FileOrganizePlan
 import io.makoion.mobileclaw.data.FileOrganizeStrategy
@@ -34,6 +35,7 @@ import io.makoion.mobileclaw.data.FilePreviewDetail
 import io.makoion.mobileclaw.data.FileSummaryDetail
 import io.makoion.mobileclaw.data.ModelProviderCredentialStatus
 import io.makoion.mobileclaw.data.ModelProviderProfileState
+import io.makoion.mobileclaw.data.MailboxConnectionProfileState
 import io.makoion.mobileclaw.data.PairedDeviceState
 import io.makoion.mobileclaw.data.PairingSessionState
 import io.makoion.mobileclaw.data.PersistedOrganizeExecution
@@ -115,6 +117,7 @@ data class ShellCard(
 data class ChatState(
     val draft: String = "",
     val messages: List<ChatMessage> = emptyList(),
+    val stagedAttachments: List<ChatAttachment> = emptyList(),
     val isProcessing: Boolean = false,
 )
 
@@ -142,6 +145,8 @@ data class ShellUiState(
     val providerProfiles: List<ModelProviderProfileState> = emptyList(),
     val externalEndpoints: List<ExternalEndpointProfileState> = emptyList(),
     val deliveryChannels: List<DeliveryChannelProfileState> = emptyList(),
+    val mailboxConnections: List<MailboxConnectionProfileState> = emptyList(),
+    val emailTriageRecords: List<EmailTriageRecord> = emptyList(),
     val chatState: ChatState = ChatState(),
     val activeChatThread: ChatThreadRecord? = null,
     val chatThreads: List<ChatThreadRecord> = emptyList(),
@@ -286,9 +291,11 @@ private data class ShellSupportSnapshot(
     val providerProfiles: List<ModelProviderProfileState>,
     val externalEndpoints: List<ExternalEndpointProfileState>,
     val deliveryChannels: List<DeliveryChannelProfileState>,
+    val mailboxConnections: List<MailboxConnectionProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
     val codeGenerationProjects: List<CodeGenerationProjectRecord>,
+    val emailTriageRecords: List<EmailTriageRecord>,
 )
 
 private data class SettingsSnapshot(
@@ -296,9 +303,11 @@ private data class SettingsSnapshot(
     val providerProfiles: List<ModelProviderProfileState>,
     val externalEndpoints: List<ExternalEndpointProfileState>,
     val deliveryChannels: List<DeliveryChannelProfileState>,
+    val mailboxConnections: List<MailboxConnectionProfileState>,
     val resourceRegistryEntries: List<ResourceRegistryEntryState>,
     val scheduledAutomations: List<ScheduledAutomationRecord>,
     val codeGenerationProjects: List<CodeGenerationProjectRecord>,
+    val emailTriageRecords: List<EmailTriageRecord>,
 )
 
 private data class ResourceSettingsSnapshot(
@@ -306,6 +315,7 @@ private data class ResourceSettingsSnapshot(
     val providerProfiles: List<ModelProviderProfileState>,
     val externalEndpoints: List<ExternalEndpointProfileState>,
     val deliveryChannels: List<DeliveryChannelProfileState>,
+    val mailboxConnections: List<MailboxConnectionProfileState>,
 )
 
 private data class ResourceRegistrySyncInput(
@@ -449,26 +459,31 @@ class ShellViewModel(
                     appContainer.modelProviderSettingsRepository.profiles,
                     appContainer.externalEndpointRepository.profiles,
                     appContainer.deliveryChannelRepository.profiles,
-                ) { cloudDriveConnections, providerProfiles, externalEndpoints, deliveryChannels ->
+                    appContainer.mailboxConnectionRepository.profiles,
+                ) { cloudDriveConnections, providerProfiles, externalEndpoints, deliveryChannels, mailboxConnections ->
                     ResourceSettingsSnapshot(
                         cloudDriveConnections = cloudDriveConnections,
                         providerProfiles = providerProfiles,
                         externalEndpoints = externalEndpoints,
                         deliveryChannels = deliveryChannels,
+                        mailboxConnections = mailboxConnections,
                     )
                 },
                 appContainer.resourceRegistryRepository.entries,
                 appContainer.scheduledAutomationRepository.automations,
                 appContainer.codeGenerationProjectRepository.projects,
-            ) { settingsInputs, resourceRegistryEntries, scheduledAutomations, codeGenerationProjects ->
+                appContainer.emailTriageRepository.records,
+            ) { settingsInputs, resourceRegistryEntries, scheduledAutomations, codeGenerationProjects, emailTriageRecords ->
                 SettingsSnapshot(
                     cloudDriveConnections = settingsInputs.cloudDriveConnections,
                     providerProfiles = settingsInputs.providerProfiles,
                     externalEndpoints = settingsInputs.externalEndpoints,
                     deliveryChannels = settingsInputs.deliveryChannels,
+                    mailboxConnections = settingsInputs.mailboxConnections,
                     resourceRegistryEntries = resourceRegistryEntries,
                     scheduledAutomations = scheduledAutomations,
                     codeGenerationProjects = codeGenerationProjects,
+                    emailTriageRecords = emailTriageRecords,
                 )
             },
         ) { chatThreads, approvals, voice, auditInputs, settingsInputs ->
@@ -481,9 +496,11 @@ class ShellViewModel(
                 providerProfiles = settingsInputs.providerProfiles,
                 externalEndpoints = settingsInputs.externalEndpoints,
                 deliveryChannels = settingsInputs.deliveryChannels,
+                mailboxConnections = settingsInputs.mailboxConnections,
                 resourceRegistryEntries = settingsInputs.resourceRegistryEntries,
                 scheduledAutomations = settingsInputs.scheduledAutomations,
                 codeGenerationProjects = settingsInputs.codeGenerationProjects,
+                emailTriageRecords = settingsInputs.emailTriageRecords,
             )
         },
     ) { shellInputs, deviceInputs, supportInputs ->
@@ -531,6 +548,8 @@ class ShellViewModel(
             providerProfiles = supportInputs.providerProfiles,
             externalEndpoints = supportInputs.externalEndpoints,
             deliveryChannels = supportInputs.deliveryChannels,
+            mailboxConnections = supportInputs.mailboxConnections,
+            emailTriageRecords = supportInputs.emailTriageRecords,
             activeChatThread = supportInputs.chatThreads.activeThread,
             chatThreads = supportInputs.chatThreads.threads,
             agentTasks = agentTasks,
@@ -686,6 +705,7 @@ class ShellViewModel(
             chatState.update { current ->
                 current.copy(
                     draft = "",
+                    stagedAttachments = emptyList(),
                     isProcessing = false,
                 )
             }
@@ -699,6 +719,7 @@ class ShellViewModel(
             chatState.update { current ->
                 current.copy(
                     draft = "",
+                    stagedAttachments = emptyList(),
                     isProcessing = false,
                 )
             }
@@ -731,24 +752,59 @@ class ShellViewModel(
         selectedSection.value = ShellSection.Chat
     }
 
+    fun stageChatAttachments(uris: List<Uri>) {
+        if (uris.isEmpty()) {
+            return
+        }
+        viewModelScope.launch {
+            val resolved = appContainer.chatAttachmentResolver.resolve(uris)
+            if (resolved.isEmpty()) {
+                return@launch
+            }
+            chatState.update { current ->
+                val merged = LinkedHashMap<String, ChatAttachment>()
+                current.stagedAttachments.forEach { attachment ->
+                    merged[attachment.id] = attachment
+                }
+                resolved.forEach { attachment ->
+                    merged[attachment.id] = attachment
+                }
+                current.copy(stagedAttachments = merged.values.toList())
+            }
+            selectedSection.value = ShellSection.Chat
+        }
+    }
+
+    fun removeChatAttachment(attachmentId: String) {
+        chatState.update { current ->
+            current.copy(
+                stagedAttachments = current.stagedAttachments.filterNot { it.id == attachmentId },
+            )
+        }
+    }
+
     fun submitChatPrompt() {
-        val prompt = chatState.value.draft.trim()
-        if (prompt.isBlank()) {
+        val current = chatState.value
+        val prompt = current.draft.trim()
+        if (prompt.isBlank() && current.stagedAttachments.isEmpty()) {
             return
         }
         submitPrompt(prompt)
     }
 
     private fun submitPrompt(prompt: String) {
+        val stagedAttachments = chatState.value.stagedAttachments
         val activeThreadId = appContainer.chatTranscriptRepository.activeThread.value?.id ?: "thread-primary"
         val userMessage = ChatMessage(
             id = "user-${System.currentTimeMillis()}",
             role = ChatMessageRole.User,
             text = prompt,
+            attachments = stagedAttachments,
         )
         chatState.update {
             it.copy(
                 draft = "",
+                stagedAttachments = emptyList(),
                 messages = it.messages + userMessage,
                 isProcessing = true,
             )
@@ -766,6 +822,8 @@ class ShellViewModel(
                         approvals = currentUiState.approvals,
                         tasks = currentUiState.agentTasks,
                         auditEvents = currentUiState.auditEvents,
+                        chatMessages = chatState.value.messages,
+                        attachments = stagedAttachments,
                         pairedDevices = currentUiState.deviceControlState.pairedDevices,
                         selectedTargetDeviceId = currentUiState.deviceControlState.selectedTargetDeviceId,
                         cloudDriveConnections = currentUiState.cloudDriveConnections,
@@ -780,7 +838,7 @@ class ShellViewModel(
                 appContainer.auditTrailRepository.logAction(
                     action = "agent.turn",
                     result = "failed",
-                    details = "Prompt: ${prompt.take(160)} | ${error.message ?: error::class.java.simpleName}",
+                    details = "Prompt: ${prompt.take(160)} | Attachments: ${stagedAttachments.size} | ${error.message ?: error::class.java.simpleName}",
                 )
                 appendChatMessage(
                     ChatMessage(
@@ -1006,6 +1064,10 @@ class ShellViewModel(
         }
     }
 
+    suspend fun revealModelProviderCredential(providerId: String): String? {
+        return appContainer.modelProviderSettingsRepository.revealCredential(providerId)
+    }
+
     fun activateScheduledAutomation(automationId: String) {
         viewModelScope.launch {
             appContainer.scheduledAutomationCoordinator.activateAutomation(automationId)
@@ -1113,9 +1175,6 @@ class ShellViewModel(
                         "Approval request submitted. Review it in Dashboard before any files move."
                     },
                 )
-            }
-            if (request != null) {
-                selectedSection.value = ShellSection.Dashboard
             }
             appContainer.auditTrailRepository.refresh()
         }
@@ -1679,17 +1738,7 @@ class ShellViewModel(
             threadId = linkedTask?.threadId,
         )
         chatState.update { it.copy(isProcessing = false) }
-        selectedSection.value = result.destination.toShellSection()
         surfaceTaskFollowUps(appContainer.agentTaskRepository.tasks.value)
-    }
-
-    private fun AgentDestination.toShellSection(): ShellSection {
-        return when (this) {
-            AgentDestination.Chat -> ShellSection.Chat
-            AgentDestination.Dashboard -> ShellSection.Dashboard
-            AgentDestination.History -> ShellSection.History
-            AgentDestination.Settings -> ShellSection.Settings
-        }
     }
 
     private suspend fun surfaceTaskFollowUps(tasks: List<AgentTaskRecord>) {

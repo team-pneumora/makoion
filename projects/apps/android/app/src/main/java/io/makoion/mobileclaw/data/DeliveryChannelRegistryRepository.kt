@@ -37,8 +37,13 @@ data class DeliveryChannelProfileState(
     val summary: String,
     val supportedDeliveries: List<String>,
     val destinationLabel: String? = null,
+    val address: String? = null,
+    val configSummary: String? = null,
     val updatedAtEpochMillis: Long,
     val updatedAtLabel: String,
+    val lastDeliveryAtEpochMillis: Long? = null,
+    val lastDeliveryAtLabel: String? = null,
+    val lastDeliveryError: String? = null,
 )
 
 internal data class SeededDeliveryChannelProfile(
@@ -61,10 +66,30 @@ interface DeliveryChannelRegistryRepository {
         destinationLabel: String? = null,
     )
 
+    suspend fun configureTelegramBinding(
+        channelId: String,
+        chatId: String,
+        destinationLabel: String?,
+    )
+
+    suspend fun noteDeliveryAttempt(
+        channelId: String,
+        deliveredAtEpochMillis: Long,
+        error: String? = null,
+    )
+
+    suspend fun telegramBinding(channelId: String = "telegram-bot-delivery"): TelegramDeliveryBinding?
+
     suspend fun resetChannel(channelId: String)
 
     suspend fun refresh()
 }
+
+data class TelegramDeliveryBinding(
+    val channelId: String,
+    val chatId: String,
+    val destinationLabel: String?,
+)
 
 internal fun defaultDeliveryChannelSeeds(): List<SeededDeliveryChannelProfile> {
     return listOf(
@@ -137,6 +162,10 @@ class PersistentDeliveryChannelRegistryRepository(
                     "Webhook delivery staging is recorded. Signed payload templates, retry policy, and audit review are still pending."
             },
             destinationLabel = null,
+            address = null,
+            configSummary = null,
+            lastDeliveryAtEpochMillis = null,
+            lastDeliveryError = null,
         )
     }
 
@@ -153,7 +182,107 @@ class PersistentDeliveryChannelRegistryRepository(
             status = DeliveryChannelStatus.Connected,
             summary = "Mock-ready delivery target recorded for $recordedLabel. Real credential binding, delivery retries, and user-level routing still need to replace this placeholder state.",
             destinationLabel = recordedLabel,
+            address = null,
+            configSummary = null,
+            lastDeliveryAtEpochMillis = null,
+            lastDeliveryError = null,
         )
+    }
+
+    override suspend fun configureTelegramBinding(
+        channelId: String,
+        chatId: String,
+        destinationLabel: String?,
+    ) {
+        val seed = defaultDeliveryChannelSeeds().firstOrNull { it.channelId == channelId } ?: return
+        val trimmedChatId = chatId.trim()
+        if (trimmedChatId.isBlank()) {
+            return
+        }
+        val label = destinationLabel?.trim().takeUnless { it.isNullOrBlank() } ?: "Chat $trimmedChatId"
+        updateChannel(
+            seed = seed,
+            status = DeliveryChannelStatus.Connected,
+            summary = "Telegram delivery is active for $label. Scheduled alerts can now deliver through the bound chat before falling back to local notifications.",
+            destinationLabel = label,
+            address = trimmedChatId,
+            configSummary = "Bound target chat $trimmedChatId",
+            lastDeliveryAtEpochMillis = null,
+            lastDeliveryError = null,
+        )
+    }
+
+    override suspend fun noteDeliveryAttempt(
+        channelId: String,
+        deliveredAtEpochMillis: Long,
+        error: String?,
+    ) {
+        withContext(Dispatchers.IO) {
+            databaseHelper.ensureDeliveryChannelSchema()
+            val db = databaseHelper.writableDatabase
+            ensureSeedData(db)
+            val current = db.query(
+                channelTable,
+                arrayOf(
+                    "channel_id",
+                    "display_name",
+                    "type_id",
+                    "status",
+                    "summary",
+                    "supported_deliveries_json",
+                    "destination_label",
+                    "address",
+                    "config_json",
+                ),
+                "channel_id = ?",
+                arrayOf(channelId),
+                null,
+                null,
+                null,
+            ).use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    null
+                } else {
+                    ContentValues().apply {
+                        put("channel_id", cursor.getString(cursor.getColumnIndexOrThrow("channel_id")))
+                        put("display_name", cursor.getString(cursor.getColumnIndexOrThrow("display_name")))
+                        put("type_id", cursor.getString(cursor.getColumnIndexOrThrow("type_id")))
+                        put("status", cursor.getString(cursor.getColumnIndexOrThrow("status")))
+                        put("summary", cursor.getString(cursor.getColumnIndexOrThrow("summary")))
+                        put(
+                            "supported_deliveries_json",
+                            cursor.getString(cursor.getColumnIndexOrThrow("supported_deliveries_json")),
+                        )
+                        put("destination_label", cursor.getString(cursor.getColumnIndexOrThrow("destination_label")))
+                        put("address", cursor.getString(cursor.getColumnIndexOrThrow("address")))
+                        put("config_json", cursor.getString(cursor.getColumnIndexOrThrow("config_json")))
+                    }
+                }
+            } ?: return@withContext
+            current.put("updated_at", deliveredAtEpochMillis)
+            current.put("last_delivery_at", deliveredAtEpochMillis)
+            if (error.isNullOrBlank()) {
+                current.putNull("last_delivery_error")
+            } else {
+                current.put("last_delivery_error", error)
+            }
+            db.insertWithOnConflict(channelTable, null, current, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        refresh()
+    }
+
+    override suspend fun telegramBinding(channelId: String): TelegramDeliveryBinding? {
+        refresh()
+        return _profiles.value.firstOrNull { it.channelId == channelId }
+            ?.takeIf { it.type == DeliveryChannelType.TelegramBot && it.status == DeliveryChannelStatus.Connected }
+            ?.address
+            ?.let { chatId ->
+                TelegramDeliveryBinding(
+                    channelId = channelId,
+                    chatId = chatId,
+                    destinationLabel = _profiles.value.firstOrNull { it.channelId == channelId }?.destinationLabel,
+                )
+            }
     }
 
     override suspend fun resetChannel(channelId: String) {
@@ -167,11 +296,16 @@ class PersistentDeliveryChannelRegistryRepository(
             } else {
                 null
             },
+            address = null,
+            configSummary = null,
+            lastDeliveryAtEpochMillis = null,
+            lastDeliveryError = null,
         )
     }
 
     override suspend fun refresh() {
         withContext(Dispatchers.IO) {
+            databaseHelper.ensureDeliveryChannelSchema()
             val db = databaseHelper.writableDatabase
             ensureSeedData(db)
             _profiles.value = queryProfiles(db)
@@ -183,8 +317,13 @@ class PersistentDeliveryChannelRegistryRepository(
         status: DeliveryChannelStatus,
         summary: String,
         destinationLabel: String?,
+        address: String?,
+        configSummary: String?,
+        lastDeliveryAtEpochMillis: Long?,
+        lastDeliveryError: String?,
     ) {
         withContext(Dispatchers.IO) {
+            databaseHelper.ensureDeliveryChannelSchema()
             val db = databaseHelper.writableDatabase
             ensureSeedData(db)
             db.insertWithOnConflict(
@@ -198,7 +337,19 @@ class PersistentDeliveryChannelRegistryRepository(
                     put("summary", summary)
                     put("supported_deliveries_json", JSONArray(seed.supportedDeliveries).toString())
                     put("destination_label", destinationLabel)
+                    put("address", address)
+                    put("config_json", configSummary)
                     put("updated_at", System.currentTimeMillis())
+                    if (lastDeliveryAtEpochMillis == null) {
+                        putNull("last_delivery_at")
+                    } else {
+                        put("last_delivery_at", lastDeliveryAtEpochMillis)
+                    }
+                    if (lastDeliveryError.isNullOrBlank()) {
+                        putNull("last_delivery_error")
+                    } else {
+                        put("last_delivery_error", lastDeliveryError)
+                    }
                 },
                 SQLiteDatabase.CONFLICT_REPLACE,
             )
@@ -224,6 +375,10 @@ class PersistentDeliveryChannelRegistryRepository(
                     } else {
                         putNull("destination_label")
                     }
+                    putNull("address")
+                    putNull("config_json")
+                    putNull("last_delivery_at")
+                    putNull("last_delivery_error")
                     put("updated_at", now)
                 },
                 SQLiteDatabase.CONFLICT_IGNORE,
@@ -243,7 +398,11 @@ class PersistentDeliveryChannelRegistryRepository(
                 "summary",
                 "supported_deliveries_json",
                 "destination_label",
+                "address",
+                "config_json",
                 "updated_at",
+                "last_delivery_at",
+                "last_delivery_error",
             ),
             null,
             null,
@@ -273,12 +432,29 @@ class PersistentDeliveryChannelRegistryRepository(
                             destinationLabel = cursor.getString(
                                 cursor.getColumnIndexOrThrow("destination_label"),
                             ),
+                            address = cursor.getString(
+                                cursor.getColumnIndexOrThrow("address"),
+                            ),
+                            configSummary = cursor.getString(
+                                cursor.getColumnIndexOrThrow("config_json"),
+                            ),
                             updatedAtEpochMillis = updatedAt,
                             updatedAtLabel = DateUtils.getRelativeTimeSpanString(
                                 updatedAt,
                                 now,
                                 DateUtils.MINUTE_IN_MILLIS,
                             ).toString(),
+                            lastDeliveryAtEpochMillis = cursor.optLong("last_delivery_at"),
+                            lastDeliveryAtLabel = cursor.optLong("last_delivery_at")?.let { timestamp ->
+                                DateUtils.getRelativeTimeSpanString(
+                                    timestamp,
+                                    now,
+                                    DateUtils.MINUTE_IN_MILLIS,
+                                ).toString()
+                            },
+                            lastDeliveryError = cursor.getString(
+                                cursor.getColumnIndexOrThrow("last_delivery_error"),
+                            ),
                         ),
                     )
                 }
@@ -307,5 +483,14 @@ class PersistentDeliveryChannelRegistryRepository(
 
     companion object {
         private const val channelTable = "delivery_channel_profiles"
+        private const val telegramChannelId = "telegram-bot-delivery"
     }
+}
+
+private fun android.database.Cursor.optLong(columnName: String): Long? {
+    val index = getColumnIndex(columnName)
+    if (index < 0 || isNull(index)) {
+        return null
+    }
+    return getLong(index)
 }

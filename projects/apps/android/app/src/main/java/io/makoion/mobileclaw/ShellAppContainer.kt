@@ -2,9 +2,19 @@ package io.makoion.mobileclaw
 
 import android.app.Application
 import io.makoion.mobileclaw.data.AndroidFileIndexRepository
+import io.makoion.mobileclaw.data.AndroidChatAttachmentResolver
+import io.makoion.mobileclaw.data.AndroidKeystoreDeliveryChannelCredentialVault
 import io.makoion.mobileclaw.data.AgentTaskEngine
 import io.makoion.mobileclaw.data.AgentTaskRetryCoordinator
 import io.makoion.mobileclaw.data.AndroidKeystoreModelProviderCredentialVault
+import io.makoion.mobileclaw.data.AndroidKeystoreMailboxCredentialVault
+import io.makoion.mobileclaw.data.DefaultAgentRuntimeContextProvider
+import io.makoion.mobileclaw.data.DefaultDeliveryRouter
+import io.makoion.mobileclaw.data.DefaultScheduledAgentRunner
+import io.makoion.mobileclaw.data.ImapMailboxGateway
+import io.makoion.mobileclaw.data.HttpTelegramDeliveryGateway
+import io.makoion.mobileclaw.data.PersistentEmailTriageRepository
+import io.makoion.mobileclaw.data.PersistentMailboxConnectionRepository
 import io.makoion.mobileclaw.data.PersistentDeliveryChannelRegistryRepository
 import io.makoion.mobileclaw.data.PersistentExternalEndpointRegistryRepository
 import io.makoion.mobileclaw.data.PersistentCloudDriveConnectionRepository
@@ -21,6 +31,7 @@ import io.makoion.mobileclaw.data.PersistentOrganizeDebugSettingsRepository
 import io.makoion.mobileclaw.data.PersistentOrganizeExecutionRepository
 import io.makoion.mobileclaw.data.PersistentResourceRegistryRepository
 import io.makoion.mobileclaw.data.PersistentScheduledAutomationRepository
+import io.makoion.mobileclaw.data.HttpProviderConversationClient
 import io.makoion.mobileclaw.data.ScheduledAutomationCoordinator
 import io.makoion.mobileclaw.data.VoiceEntryCoordinator
 import io.makoion.mobileclaw.data.PersistentApprovalInboxRepository
@@ -37,6 +48,7 @@ class ShellAppContainer(
     private val databaseHelper = ShellDatabaseHelper(application)
 
     val fileIndexRepository = AndroidFileIndexRepository(application)
+    val chatAttachmentResolver = AndroidChatAttachmentResolver(application)
     val fileGraphActionPlanner = LocalFileGraphActionPlanner()
     val organizeDebugSettingsRepository = PersistentOrganizeDebugSettingsRepository(application)
     val auditTrailRepository = PersistentAuditTrailRepository(
@@ -68,6 +80,16 @@ class ShellAppContainer(
     val deliveryChannelRepository = PersistentDeliveryChannelRegistryRepository(
         databaseHelper = databaseHelper,
     )
+    val deliveryChannelCredentialVault = AndroidKeystoreDeliveryChannelCredentialVault(application)
+    val mailboxConnectionRepository = PersistentMailboxConnectionRepository(
+        databaseHelper = databaseHelper,
+        auditTrailRepository = auditTrailRepository,
+    )
+    val mailboxCredentialVault = AndroidKeystoreMailboxCredentialVault(application)
+    val emailTriageRepository = PersistentEmailTriageRepository(
+        databaseHelper = databaseHelper,
+    )
+    val mailboxGateway = ImapMailboxGateway()
     val codeGenerationProjectRepository = PersistentCodeGenerationProjectRepository(
         databaseHelper = databaseHelper,
         auditTrailRepository = auditTrailRepository,
@@ -81,11 +103,6 @@ class ShellAppContainer(
     )
     val scheduledAutomationRepository = PersistentScheduledAutomationRepository(
         databaseHelper = databaseHelper,
-        auditTrailRepository = auditTrailRepository,
-    )
-    val scheduledAutomationCoordinator = ScheduledAutomationCoordinator(
-        context = application,
-        scheduledAutomationRepository = scheduledAutomationRepository,
         auditTrailRepository = auditTrailRepository,
     )
     val transferBridgeCoordinator = TransferBridgeCoordinator(
@@ -128,6 +145,47 @@ class ShellAppContainer(
         devicePairingRepository = devicePairingRepository,
         agentTaskRetryCoordinator = agentTaskRetryCoordinator,
     )
+    val providerConversationClient = HttpProviderConversationClient(
+        settingsRepository = modelProviderSettingsRepository,
+        credentialVault = modelProviderCredentialVault,
+    )
+    val agentRuntimeContextProvider = DefaultAgentRuntimeContextProvider(
+        fileIndexRepository = fileIndexRepository,
+        approvalInboxRepository = approvalInboxRepository,
+        agentTaskRepository = agentTaskRepository,
+        auditTrailRepository = auditTrailRepository,
+        chatTranscriptRepository = chatTranscriptRepository,
+        devicePairingRepository = devicePairingRepository,
+        cloudDriveConnectionRepository = cloudDriveConnectionRepository,
+        modelProviderSettingsRepository = modelProviderSettingsRepository,
+        externalEndpointRepository = externalEndpointRepository,
+        deliveryChannelRepository = deliveryChannelRepository,
+        mailboxConnectionRepository = mailboxConnectionRepository,
+        emailTriageRepository = emailTriageRepository,
+        scheduledAutomationRepository = scheduledAutomationRepository,
+    )
+    val scheduledAgentRunner = DefaultScheduledAgentRunner(
+        contextProvider = agentRuntimeContextProvider,
+        providerConversationClient = providerConversationClient,
+        mailboxConnectionRepository = mailboxConnectionRepository,
+        mailboxCredentialVault = mailboxCredentialVault,
+        mailboxGateway = mailboxGateway,
+        emailTriageRepository = emailTriageRepository,
+    )
+    val telegramDeliveryGateway = HttpTelegramDeliveryGateway()
+    val deliveryRouter = DefaultDeliveryRouter(
+        context = application,
+        deliveryChannelRepository = deliveryChannelRepository,
+        deliveryChannelCredentialVault = deliveryChannelCredentialVault,
+        telegramDeliveryGateway = telegramDeliveryGateway,
+    )
+    val scheduledAutomationCoordinator = ScheduledAutomationCoordinator(
+        context = application,
+        scheduledAutomationRepository = scheduledAutomationRepository,
+        auditTrailRepository = auditTrailRepository,
+        scheduledAgentRunner = scheduledAgentRunner,
+        deliveryRouter = deliveryRouter,
+    )
     val voiceEntryCoordinator = VoiceEntryCoordinator(application)
     val shellRecoveryCoordinator = ShellRecoveryCoordinator(
         approvalInboxRepository = approvalInboxRepository,
@@ -149,6 +207,8 @@ class ShellAppContainer(
         cloudDriveConnectionRepository = cloudDriveConnectionRepository,
         devicePairingRepository = devicePairingRepository,
         deliveryChannelRepository = deliveryChannelRepository,
+        mailboxConnectionRepository = mailboxConnectionRepository,
+        emailTriageRepository = emailTriageRepository,
         externalEndpointRepository = externalEndpointRepository,
         mcpSkillRepository = mcpSkillRepository,
         scheduledAutomationRepository = scheduledAutomationRepository,
@@ -157,6 +217,11 @@ class ShellAppContainer(
         codeGenerationProjectRepository = codeGenerationProjectRepository,
         codeGenerationWorkspaceExecutor = codeGenerationWorkspaceExecutor,
         phoneAgentActionCoordinator = phoneAgentActionCoordinator,
+        providerConversationClient = providerConversationClient,
+        deliveryChannelCredentialVault = deliveryChannelCredentialVault,
+        mailboxCredentialVault = mailboxCredentialVault,
+        mailboxGateway = mailboxGateway,
+        telegramDeliveryGateway = telegramDeliveryGateway,
     )
     val agentTaskEngine = AgentTaskEngine(
         agentTaskRepository = agentTaskRepository,

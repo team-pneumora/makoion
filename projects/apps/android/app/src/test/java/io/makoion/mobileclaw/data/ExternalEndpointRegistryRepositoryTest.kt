@@ -8,6 +8,7 @@ class ExternalEndpointRegistryRepositoryTest {
     @Test
     fun `default external endpoint seeds cover mcp browser and api categories`() {
         val seeds = defaultExternalEndpointSeeds()
+        val mcpSeed = seeds.first { it.endpointId == "companion-mcp-bridge" }
 
         assertEquals(
             listOf(
@@ -19,6 +20,8 @@ class ExternalEndpointRegistryRepositoryTest {
         )
         assertTrue(seeds.all { it.status == ExternalEndpointStatus.NeedsSetup })
         assertTrue(seeds.all { it.supportedCapabilities.isNotEmpty() })
+        assertTrue(mcpSeed.supportedCapabilities.contains("browser.navigate"))
+        assertTrue(mcpSeed.defaultToolNames.contains("browser.extract"))
     }
 
     @Test

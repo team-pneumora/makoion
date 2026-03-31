@@ -41,26 +41,119 @@ function Invoke-AdbProcess {
     }
 }
 
+function Test-AndroidServiceReady {
+    param(
+        [string]$TargetSerial,
+        [string]$ServiceName
+    )
+
+    $serviceCheck = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "shell", "service", "check", $ServiceName)
+    return $serviceCheck.ExitCode -eq 0 -and $serviceCheck.Output -match "Service\s+${ServiceName}:\s+found"
+}
+
+function Wait-ForAndroidServices {
+    param(
+        [string]$TargetSerial,
+        [int]$TimeoutSeconds = 60
+    )
+
+    & $adbPath -s $TargetSerial wait-for-device | Out-Null
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $bootCompleted = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "shell", "getprop", "sys.boot_completed")
+        $devBootCompleted = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "shell", "getprop", "dev.bootcomplete")
+        if (
+            (($bootCompleted.ExitCode -eq 0 -and $bootCompleted.Output.Trim() -eq "1") -or
+                ($devBootCompleted.ExitCode -eq 0 -and $devBootCompleted.Output.Trim() -eq "1")) -and
+            (Test-AndroidServiceReady -TargetSerial $TargetSerial -ServiceName "package") -and
+            (Test-AndroidServiceReady -TargetSerial $TargetSerial -ServiceName "activity")
+        ) {
+            return
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Android services were not ready on $TargetSerial within $TimeoutSeconds seconds."
+}
+
+function Should-RetryForAndroidServices {
+    param([string]$Output)
+
+    if ([string]::IsNullOrWhiteSpace($Output)) {
+        return $false
+    }
+
+    return $Output -match "Can't find service: package|Can't find service: activity|device offline|no devices/emulators found|Cannot broadcast before boot completed|Can't find service: window"
+}
+
+function Invoke-AdbCommandWithServiceRetry {
+    param(
+        [string]$TargetSerial,
+        [string[]]$Arguments,
+        [string]$FailureMessage,
+        [int]$MaxAttempts = 3
+    )
+
+    $lastOutput = ""
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Wait-ForAndroidServices -TargetSerial $TargetSerial
+        $result = Invoke-AdbProcess -Arguments (@("-s", $TargetSerial) + $Arguments)
+        if ($result.ExitCode -eq 0 -and -not (Should-RetryForAndroidServices -Output $result.Output)) {
+            return $result
+        }
+
+        $lastOutput = $result.Output
+        if ($attempt -lt $MaxAttempts -and (Should-RetryForAndroidServices -Output $lastOutput)) {
+            Start-Sleep -Seconds 2
+            continue
+        }
+
+        throw "$FailureMessage $lastOutput".Trim()
+    }
+
+    throw "$FailureMessage $lastOutput".Trim()
+}
+
 function Install-DebugApk {
     param([string]$TargetSerial, [string]$ResolvedApkPath)
 
-    $installAttempt = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "install", "-r", $ResolvedApkPath)
-    if ($installAttempt.ExitCode -eq 0) {
-        return
-    }
-
-    $installText = $installAttempt.Output
-    if ($installText -like "*INSTALL_FAILED_UPDATE_INCOMPATIBLE*") {
-        & $adbPath -s $TargetSerial uninstall $packageName | Out-Null
-        $reinstallAttempt = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "install", $ResolvedApkPath)
-        if ($reinstallAttempt.ExitCode -eq 0) {
+    $lastInstallText = ""
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Wait-ForAndroidServices -TargetSerial $TargetSerial
+        $installAttempt = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "install", "-r", $ResolvedApkPath)
+        if ($installAttempt.ExitCode -eq 0) {
             return
         }
-        $reinstallText = $reinstallAttempt.Output
-        throw "Debug APK reinstall failed after uninstalling conflicting package. $reinstallText".Trim()
+
+        $installText = $installAttempt.Output
+        $lastInstallText = $installText
+        if ($installText -like "*INSTALL_FAILED_UPDATE_INCOMPATIBLE*") {
+            & $adbPath -s $TargetSerial uninstall $packageName | Out-Null
+            Wait-ForAndroidServices -TargetSerial $TargetSerial
+            $reinstallAttempt = Invoke-AdbProcess -Arguments @("-s", $TargetSerial, "install", $ResolvedApkPath)
+            if ($reinstallAttempt.ExitCode -eq 0) {
+                return
+            }
+            $installText = $reinstallAttempt.Output
+            $lastInstallText = $installText
+            if ($installText -notlike "*INSTALL_FAILED_UPDATE_INCOMPATIBLE*") {
+                if ($attempt -lt 3 -and (Should-RetryForAndroidServices -Output $installText)) {
+                    Start-Sleep -Seconds 2
+                    continue
+                }
+                throw "Debug APK reinstall failed after uninstalling conflicting package. $installText".Trim()
+            }
+        }
+
+        if ($attempt -lt 3 -and (Should-RetryForAndroidServices -Output $installText)) {
+            Start-Sleep -Seconds 2
+            continue
+        }
+
+        throw "Debug APK install failed. $installText".Trim()
     }
 
-    throw "Debug APK install failed. $installText".Trim()
+    throw "Debug APK install failed after retries. $lastInstallText".Trim()
 }
 
 function Resolve-DebugApkPath {
@@ -140,18 +233,41 @@ if ($EndpointPreset -eq "adb_reverse") {
     $endpoint = "http://10.0.2.2:$Port/api/v1/transfers"
 }
 
+Wait-ForAndroidServices -TargetSerial $targetSerial
 Install-DebugApk -TargetSerial $targetSerial -ResolvedApkPath $apkPath
-& $adbPath -s $targetSerial shell am broadcast `
-    -a $debugAction `
-    --include-stopped-packages `
-    -n $debugReceiver `
-    --es command bootstrap_direct_http_device `
-    --es endpoint_preset $EndpointPreset `
-    --es endpoint_url $endpoint `
-    --es validation_mode $ValidationMode | Out-Null
-& $adbPath -s $targetSerial shell am start `
-    -n $mainActivity `
-    --es open_section devices | Out-Null
+Wait-ForAndroidServices -TargetSerial $targetSerial
+(Invoke-AdbCommandWithServiceRetry -TargetSerial $targetSerial -FailureMessage "Debug bootstrap broadcast failed." -Arguments @(
+    "shell",
+    "am",
+    "broadcast",
+    "-a",
+    $debugAction,
+    "--include-stopped-packages",
+    "-n",
+    $debugReceiver,
+    "--es",
+    "command",
+    "bootstrap_direct_http_device",
+    "--es",
+    "endpoint_preset",
+    $EndpointPreset,
+    "--es",
+    "endpoint_url",
+    $endpoint,
+    "--es",
+    "validation_mode",
+    $ValidationMode
+)) | Out-Null
+(Invoke-AdbCommandWithServiceRetry -TargetSerial $targetSerial -FailureMessage "Debug bootstrap activity launch failed." -Arguments @(
+    "shell",
+    "am",
+    "start",
+    "-n",
+    $mainActivity,
+    "--es",
+    "open_section",
+    "devices"
+)) | Out-Null
 
 [pscustomobject]@{
     serial = $targetSerial

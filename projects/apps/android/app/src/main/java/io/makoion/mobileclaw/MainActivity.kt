@@ -2,18 +2,18 @@ package io.makoion.mobileclaw
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.fragment.app.FragmentActivity
 import io.makoion.mobileclaw.notifications.ShellNotificationCenter
 import io.makoion.mobileclaw.ui.MobileClawShellApp
 import io.makoion.mobileclaw.ui.ShellSection
 import io.makoion.mobileclaw.ui.theme.MobileClawTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private var requestedSection by mutableStateOf(ShellSection.Chat)
     private var requestedTaskId by mutableStateOf<String?>(null)
     private var requestedTaskFollowUpKey by mutableStateOf<String?>(null)

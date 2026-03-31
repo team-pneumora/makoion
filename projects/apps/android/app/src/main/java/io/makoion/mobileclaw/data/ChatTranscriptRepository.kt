@@ -24,6 +24,7 @@ data class ChatMessage(
     val id: String,
     val role: ChatMessageRole,
     val text: String,
+    val attachments: List<ChatAttachment> = emptyList(),
     val linkedTaskId: String? = null,
     val linkedApprovalId: String? = null,
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
@@ -117,6 +118,25 @@ class PersistentChatTranscriptRepository(
                     SQLiteDatabase.CONFLICT_IGNORE,
                 )
                 if (insertResult != -1L) {
+                    message.attachments.forEachIndexed { index, attachment ->
+                        db.insertWithOnConflict(
+                            "chat_message_attachments",
+                            null,
+                            ContentValues().apply {
+                                put("message_id", message.id)
+                                put("position_index", index)
+                                put("attachment_id", attachment.id)
+                                put("kind", attachment.kind.name)
+                                put("display_name", attachment.displayName)
+                                put("mime_type", attachment.mimeType)
+                                put("uri", attachment.uri)
+                                put("size_bytes", attachment.sizeBytes)
+                                put("size_label", attachment.sizeLabel)
+                                put("source_label", attachment.sourceLabel)
+                            },
+                            SQLiteDatabase.CONFLICT_REPLACE,
+                        )
+                    }
                     val nextTitle = if (
                         message.role == ChatMessageRole.User &&
                         userMessageCountBeforeInsert == 0L &&
@@ -227,6 +247,7 @@ class PersistentChatTranscriptRepository(
                 title = primaryThreadTitle,
                 seedMessages = true,
             )
+            removePrimaryAssistantOnlyIntroMessagesIfUntouched(db)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -268,6 +289,9 @@ class PersistentChatTranscriptRepository(
         )
         if (messageCount == 0L) {
             val seedMessagesForThread = defaultSeedMessages(threadId)
+            if (seedMessagesForThread.isEmpty()) {
+                return
+            }
             seedMessagesForThread.forEach { message ->
                 db.insertWithOnConflict(
                     "chat_messages",
@@ -293,6 +317,67 @@ class PersistentChatTranscriptRepository(
                 arrayOf(threadId),
             )
         }
+    }
+
+    private fun removePrimaryAssistantOnlyIntroMessagesIfUntouched(db: SQLiteDatabase) {
+        val existingMessages = mutableListOf<LegacySeedMessage>()
+        db.query(
+            "chat_messages",
+            arrayOf("id", "role", "text", "linked_task_id", "linked_approval_id"),
+            "thread_id = ?",
+            arrayOf(primaryThreadId),
+            null,
+            null,
+            "created_at ASC, id ASC",
+        ).use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow("id")
+            val roleIndex = cursor.getColumnIndexOrThrow("role")
+            val textIndex = cursor.getColumnIndexOrThrow("text")
+            val linkedTaskIdIndex = cursor.getColumnIndexOrThrow("linked_task_id")
+            val linkedApprovalIdIndex = cursor.getColumnIndexOrThrow("linked_approval_id")
+            while (cursor.moveToNext()) {
+                existingMessages += LegacySeedMessage(
+                    id = cursor.getString(idIndex),
+                    role = cursor.getString(roleIndex),
+                    text = cursor.getString(textIndex),
+                    linkedTaskId = cursor.getString(linkedTaskIdIndex),
+                    linkedApprovalId = cursor.getString(linkedApprovalIdIndex),
+                )
+            }
+        }
+        if (existingMessages.isEmpty()) {
+            return
+        }
+        val shouldClearLegacySeed = existingMessages.size == 2 &&
+            existingMessages[0].id == "$primaryThreadId-assistant-welcome" &&
+            existingMessages[0].role == ChatMessageRole.Assistant.name &&
+            existingMessages[0].text == legacyWelcomeMessage &&
+            existingMessages[0].linkedTaskId == null &&
+            existingMessages[0].linkedApprovalId == null &&
+            existingMessages[1].id == "$primaryThreadId-assistant-guidance" &&
+            existingMessages[1].role == ChatMessageRole.Assistant.name &&
+            existingMessages[1].text == legacyGuidanceMessage &&
+            existingMessages[1].linkedTaskId == null &&
+            existingMessages[1].linkedApprovalId == null
+        val shouldClearAssistantOnlyIntroResidue = existingMessages.all { message ->
+            message.role == ChatMessageRole.Assistant.name && message.linkedApprovalId == null
+        }
+        if (!shouldClearLegacySeed && !shouldClearAssistantOnlyIntroResidue) {
+            return
+        }
+        db.delete(
+            "chat_messages",
+            "thread_id = ?",
+            arrayOf(primaryThreadId),
+        )
+        db.update(
+            "chat_threads",
+            ContentValues().apply {
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id = ?",
+            arrayOf(primaryThreadId),
+        )
     }
 
     private fun queryThreads(
@@ -383,10 +468,12 @@ class PersistentChatTranscriptRepository(
             val createdAtIndex = cursor.getColumnIndexOrThrow("created_at")
 
             while (cursor.moveToNext()) {
+                val messageId = cursor.getString(idIndex)
                 messages += ChatMessage(
-                    id = cursor.getString(idIndex),
+                    id = messageId,
                     role = ChatMessageRole.valueOf(cursor.getString(roleIndex)),
                     text = cursor.getString(textIndex),
+                    attachments = queryAttachmentsForMessage(messageId),
                     linkedTaskId = cursor.getString(linkedTaskIdIndex),
                     linkedApprovalId = cursor.getString(linkedApprovalIdIndex),
                     createdAtEpochMillis = cursor.getLong(createdAtIndex),
@@ -397,21 +484,52 @@ class PersistentChatTranscriptRepository(
     }
 
     private fun defaultSeedMessages(threadId: String): List<ChatMessage> {
-        val now = System.currentTimeMillis()
-        return listOf(
-            ChatMessage(
-                id = "$threadId-assistant-welcome",
-                role = ChatMessageRole.Assistant,
-                text = "Makoion lives on this phone and will use your connected resources on your behalf.",
-                createdAtEpochMillis = now,
+        return emptyList()
+    }
+
+    private fun queryAttachmentsForMessage(messageId: String): List<ChatAttachment> {
+        val attachments = mutableListOf<ChatAttachment>()
+        databaseHelper.readableDatabase.query(
+            "chat_message_attachments",
+            arrayOf(
+                "attachment_id",
+                "kind",
+                "display_name",
+                "mime_type",
+                "uri",
+                "size_bytes",
+                "size_label",
+                "source_label",
             ),
-            ChatMessage(
-                id = "$threadId-assistant-guidance",
-                role = ChatMessageRole.Assistant,
-                text = "Ask for file summaries, organize planning, companion transfer approvals, approval decisions, failed-task retries, dashboard status, history, settings, or companion surfaces.",
-                createdAtEpochMillis = now + 1L,
-            ),
-        )
+            "message_id = ?",
+            arrayOf(messageId),
+            null,
+            null,
+            "position_index ASC",
+        ).use { cursor ->
+            val attachmentIdIndex = cursor.getColumnIndexOrThrow("attachment_id")
+            val kindIndex = cursor.getColumnIndexOrThrow("kind")
+            val displayNameIndex = cursor.getColumnIndexOrThrow("display_name")
+            val mimeTypeIndex = cursor.getColumnIndexOrThrow("mime_type")
+            val uriIndex = cursor.getColumnIndexOrThrow("uri")
+            val sizeBytesIndex = cursor.getColumnIndexOrThrow("size_bytes")
+            val sizeLabelIndex = cursor.getColumnIndexOrThrow("size_label")
+            val sourceLabelIndex = cursor.getColumnIndexOrThrow("source_label")
+
+            while (cursor.moveToNext()) {
+                attachments += ChatAttachment(
+                    id = cursor.getString(attachmentIdIndex),
+                    kind = ChatAttachmentKind.valueOf(cursor.getString(kindIndex)),
+                    displayName = cursor.getString(displayNameIndex),
+                    mimeType = cursor.getString(mimeTypeIndex),
+                    uri = cursor.getString(uriIndex),
+                    sizeBytes = cursor.getLongOrNull(sizeBytesIndex),
+                    sizeLabel = cursor.getString(sizeLabelIndex),
+                    sourceLabel = cursor.getString(sourceLabelIndex),
+                )
+            }
+        }
+        return attachments
     }
 
     private fun queryThreadTitle(
@@ -473,5 +591,21 @@ class PersistentChatTranscriptRepository(
         private const val chatThreadPreferencesName = "makoion_chat_threads"
         private const val activeThreadKey = "active_thread_id"
         private const val maxThreadTitleLength = 56
+        private const val legacyWelcomeMessage =
+            "Makoion lives on this phone and will use your connected resources on your behalf."
+        private const val legacyGuidanceMessage =
+            "Ask for file summaries, organize planning, companion transfer approvals, approval decisions, failed-task retries, dashboard status, history, settings, or companion surfaces."
     }
+}
+
+private data class LegacySeedMessage(
+    val id: String,
+    val role: String,
+    val text: String,
+    val linkedTaskId: String?,
+    val linkedApprovalId: String?,
+)
+
+private fun android.database.Cursor.getLongOrNull(index: Int): Long? {
+    return if (isNull(index)) null else getLong(index)
 }

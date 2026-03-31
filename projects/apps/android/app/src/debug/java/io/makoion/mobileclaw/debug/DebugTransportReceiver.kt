@@ -390,6 +390,17 @@ class DebugTransportReceiver : BroadcastReceiver() {
                 )
                 openDevices(context)
             }
+            commandMaterializeDebugTransferSources -> {
+                materializeDebugTransferSources(
+                    context = context,
+                    application = application,
+                    requestedTransferId = intent.getStringExtra(extraTransferId),
+                    filePrefix = intent.getStringExtra(extraFilePrefix),
+                )
+                if (shouldOpenDevices(intent)) {
+                    openDevices(context)
+                }
+            }
             commandOpenDevices -> {
                 openDevices(context)
             }
@@ -597,6 +608,89 @@ class DebugTransportReceiver : BroadcastReceiver() {
         }
     }
 
+    private suspend fun materializeDebugTransferSources(
+        context: Context,
+        application: MobileClawApplication,
+        requestedTransferId: String?,
+        filePrefix: String?,
+    ) {
+        val databaseHelper = ShellDatabaseHelper(context)
+        val draft = databaseHelper.readableDatabase.query(
+            "transfer_outbox",
+            arrayOf("id", "file_names_json"),
+            when {
+                !requestedTransferId.isNullOrBlank() -> "id = ?"
+                !filePrefix.isNullOrBlank() -> "file_names_json LIKE ?"
+                else -> "status = ?"
+            },
+            when {
+                !requestedTransferId.isNullOrBlank() -> arrayOf(requestedTransferId)
+                !filePrefix.isNullOrBlank() -> arrayOf("%${filePrefix.trim()}%")
+                else -> arrayOf(TransferDraftStatus.Delivered.name)
+            },
+            null,
+            null,
+            "created_at DESC",
+            "1",
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) {
+                null
+            } else {
+                cursor.getString(cursor.getColumnIndexOrThrow("id")) to
+                    JSONArray(cursor.getString(cursor.getColumnIndexOrThrow("file_names_json")))
+            }
+        } ?: return
+
+        val payloadDir = File(context.cacheDir, debugArchiveDirName).apply {
+            mkdirs()
+        }
+        val fileReferences = JSONArray()
+        for (index in 0 until draft.second.length()) {
+            val fileName = draft.second.getString(index)
+            val materializedFile = File(
+                payloadDir,
+                "${draft.first}-${index + 1}-${fileName.replace(Regex("""[\\/:*?"<>|]+"""), "_")}",
+            )
+            materializedFile.writeText(
+                buildString {
+                    appendLine("Recovered debug transfer payload")
+                    appendLine("transfer_id=${draft.first}")
+                    appendLine("file_name=$fileName")
+                    appendLine("generated_at=${System.currentTimeMillis()}")
+                },
+                StandardCharsets.UTF_8,
+            )
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.debug.fileprovider",
+                materializedFile,
+            )
+            fileReferences.put(
+                JSONObject()
+                    .put("source_id", contentUri.toString())
+                    .put("name", fileName)
+                    .put("mime_type", "text/plain"),
+            )
+        }
+
+        databaseHelper.writableDatabase.update(
+            "transfer_outbox",
+            ContentValues().apply {
+                put("file_refs_json", fileReferences.toString())
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id = ?",
+            arrayOf(draft.first),
+        )
+
+        application.appContainer.auditTrailRepository.logAction(
+            action = "devices.debug_transport",
+            result = "debug_sources_materialized",
+            details = "Materialized resolvable debug file sources for ${draft.first}.",
+        )
+        application.appContainer.transferBridgeCoordinator.scheduleRecovery()
+    }
+
     private fun dumpValidationState(context: Context) {
         val outputFile = File(context.filesDir, validationStateFileName)
         val errorFile = File(context.filesDir, validationStateErrorFileName)
@@ -664,7 +758,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
                     databaseHelper.readableDatabase.rawQuery(
                         """
                         SELECT id, device_id, device_name, status, attempt_count, file_names_json, next_attempt_at,
-                               last_error, created_at, updated_at
+                               last_error, created_at, updated_at, delivery_mode, transport_endpoint, receipt_json
                         FROM transfer_outbox
                         ORDER BY created_at DESC
                         LIMIT 32
@@ -685,6 +779,18 @@ class DebugTransportReceiver : BroadcastReceiver() {
                                         put("last_error", cursor.getString(cursor.getColumnIndexOrThrow("last_error")))
                                         put("created_at", cursor.getLong(cursor.getColumnIndexOrThrow("created_at")))
                                         put("updated_at", cursor.getLong(cursor.getColumnIndexOrThrow("updated_at")))
+                                        put("delivery_mode", cursor.getString(cursor.getColumnIndexOrThrow("delivery_mode")))
+                                        put("transport_endpoint", cursor.getString(cursor.getColumnIndexOrThrow("transport_endpoint")))
+                                        cursor.getString(cursor.getColumnIndexOrThrow("receipt_json"))
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?.let { receiptJson ->
+                                                put(
+                                                    "receipt",
+                                                    runCatching { JSONObject(receiptJson) }.getOrDefault(
+                                                        JSONObject().put("raw", receiptJson),
+                                                    ),
+                                                )
+                                            }
                                     },
                                 )
                             }
@@ -800,6 +906,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
         const val extraValidationMode = "validation_mode"
         const val extraEndpointPreset = "endpoint_preset"
         const val extraEndpointUrl = "endpoint_url"
+        const val extraTransferId = "transfer_id"
         const val extraFileCount = "file_count"
         const val extraFilePrefix = "file_prefix"
         const val extraFileSizeKiB = "file_size_kib"
@@ -833,6 +940,7 @@ class DebugTransportReceiver : BroadcastReceiver() {
         const val commandRequeueFailed = "requeue_failed"
         const val commandQueueDebugTransfer = "queue_debug_transfer"
         const val commandQueueDebugArchiveTransfer = "queue_debug_archive_transfer"
+        const val commandMaterializeDebugTransferSources = "materialize_debug_transfer_sources"
         const val commandOpenDevices = "open_devices"
 
         private const val endpointPresetAdbReverse = "adb_reverse"

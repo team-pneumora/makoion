@@ -2,7 +2,7 @@
 
 Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 수준까지 올리고, 핵심 사용자 흐름의 성공/실패 판단 근거를 문서로 남긴다.
 
-기준 날짜: 2026-03-14
+기준 날짜: 2026-03-25
 
 ---
 
@@ -56,6 +56,10 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 - [x] `Queue send to selected device` 실행
 - [x] `Transfer test status`에서 `Delivery = Success` 확인
 - [x] transfer draft 최종 상태 `Delivered` 확인
+- [x] 2026-03-25 build에서 approved transfer task action key가 `files.transfer.execute` 로 일치하도록 정리됨
+- [x] 2026-03-25 build에서 shell recovery가 approved transfer task를 durable `transfer_outbox` draft 상태 기준으로 복원하고 organize retry로 오분류하지 않음
+- [x] 2026-03-25 build에서 Direct HTTP unresolved payload fallback 이 companion pending transfer inventory + Android pull recovery 로 다시 archive 전송까지 이어짐
+- [x] 동일 `transfer_id` 기준으로 manifest-only placeholder 가 archive materialization 으로 승격되고 companion pending 목록에서 제거됨
 
 ### 음성 엔트리 / 알림
 
@@ -87,6 +91,17 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 - [x] `scripts/validate-shell-recovery-soak.ps1` 30분 duration rerun 이 실기기 `adb reverse` Direct HTTP 환경에서 통과
   - 기록: `19 iterations`, `37 checks`, `0 failures`
   - stale sending manual recovery false-negative를 만들던 debug command auto-open foreground recovery race 제거 후 재검증
+- [x] `scripts/validate-shell-recovery.ps1` 를 emulator `emulator_host` Direct HTTP 환경에서도 실행
+- [x] `scripts/validate-shell-lifecycle-recovery.ps1` 를 emulator `emulator_host` Direct HTTP 환경에서도 실행
+- [x] delayed retry queued 판정이 emulator timing skew 에도 false-negative 없이 유지되도록 validation 스크립트가 안정화됨
+- [x] bootstrap-transport-validation 경로가 Android package/activity service readiness wait + install/broadcast/activity retry를 사용해 장시간 soak 중 system-service race를 흡수함
+- [x] `scripts/validate-shell-recovery-soak.ps1` 120분 duration rerun 이 emulator `emulator_host` Direct HTTP 환경에서 통과
+  - 기록: `34 iterations`, `68 checks`, `0 failures`
+- [x] `scripts/validate-direct-http-pull-recovery.ps1` 를 emulator `emulator_host` Direct HTTP 환경에서 실행
+- [x] unresolved payload fallback 이 최초 `manifest_only` receipt 후 pending placeholder 로 남고, on-device source materialization 뒤 동일 `transfer_id` 의 `archive_zip` 재전송으로 복구됨
+- [x] companion materialized transfer directory 에 실제 `files/` 가 생성되고 placeholder 용 `requested-files/` 는 cleanup 됨
+- [x] `scripts/validate-direct-http-drafts.ps1` full rerun 이 emulator `emulator_host` Direct HTTP 환경에서 다시 통과
+- [x] `delayed_ack`, `timeout_once` 케이스의 validation false-negative 가 stale sending recovery trigger 와 delayed ack timing 조정 후 사라짐
 
 ### companion actions seed
 
@@ -112,11 +127,12 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 
 ## 남은 보강 검증
 
-- [ ] background / 장시간 런타임 기준 transfer retry 및 task recovery soak 검증
-  - 현재까지는 `validate-shell-recovery.ps1`, `validate-shell-lifecycle-recovery.ps1`, `validate-shell-recovery-soak.ps1` short smoke loop 기준 baseline recovery가 실기기 통과
-  - 2026-03-14 기준 `validate-shell-recovery-soak.ps1` 는 `DurationMinutes`, `StepTimeoutMinutes`, artifact directory, default `summary.json` output을 지원해 multi-hour run 자동화 준비가 됨
-  - 2026-03-14 기준 validation cleanup 추가 후 8-iteration short soak 재검증도 통과했고 device/session/draft 누적이 더 이상 커지지 않음
-  - 2026-03-14 기준 30분 duration rerun 도 `19 iterations`, `37 checks`, `0 failures` 로 통과했지만, multi-hour soak 는 아직 남아 있음
+- [x] background / 장시간 런타임 기준 transfer retry 및 task recovery soak 검증
+  - 실기기 `adb reverse` 기준 short smoke, 8-iteration rerun, 30분 duration rerun 이 이미 통과
+  - 2026-03-25 기준 emulator `emulator_host` 120분 duration rerun 도 `34 iterations`, `68 checks`, `0 failures` 로 통과
+  - bootstrap/service race와 delayed retry false-negative까지 validation 스크립트에 흡수되어 unattended soak 경로가 닫힘
+- [x] Direct HTTP unresolved payload fallback / pull-based recovery 검증
+  - 2026-03-25 기준 emulator `emulator_host` 에서 manifest-only pending placeholder -> same `transfer_id` archive recovery -> pending cleanup 까지 자동 검증 통과
 ---
 
 ## Phase 1 판정
@@ -135,4 +151,4 @@ Phase 1의 목표: Android shell MVP를 실기기 기준으로 검증 가능한 
 - foreground recovery 기본 경로: 통과
 - shell recovery stale/due/delayed retry: 통과
 
-남아 있는 항목은 실패 복구와 권한 edge case를 더 단단하게 만드는 보강 검증이다.
+남아 있는 항목은 실패 복구가 아니라, 이후 Phase 2 범위의 UX 정리와 권한 edge case를 더 다듬는 후속 작업이다.
